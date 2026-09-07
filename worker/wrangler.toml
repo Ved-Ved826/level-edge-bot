@@ -19,6 +19,9 @@ fallthrough = false
 
 [vars]
 DATABASE_URL = "libsql://..."
+DISCORD_APPLICATION_ID = "..."
 
 [secrets]
 # Set via: wrangler secret put DISCORD_BOT_TOKEN
+# Set via: wrangler secret put DISCORD_PUBLIC_KEY
+# Set via: wrangler secret put DATABASE_AUTH_TOKEN
