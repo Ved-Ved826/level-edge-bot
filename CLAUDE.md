@@ -371,3 +371,21 @@ Discord отклоняет endpoint без валидной верификаци
 
 Не логируй содержимое CSV нигде, кроме самого файла — там персональные данные юзеров.
 ```
+
+## ⚠️ CRITICAL ENVIRONMENT & PROCESS RULES (WINDOWS)
+
+### 1. PROCESS SAFETY (DO NOT KILL PROXY / OMNIROUTE)
+- **NEVER** run `taskkill /F /IM node.exe` or kill arbitrary Node processes!
+- The local AI proxy **Omniroute** runs on port `20128` as a Node process. Killing Node terminates your own API connection (`ConnectionRefused`).
+- To stop dev servers or specific processes, kill **ONLY by specific PID** or port:
+  - Find PID: `netstat -ano | findstr :8787`
+  - Kill ONLY that PID: `taskkill /PID <PID> /F`
+
+### 2. FILE EDITING IN WINDOWS (NO BROKEN HEREDOC / WRITE APPEND BUGS)
+- NEVER use unquoted `cat << EOF` in bash/sh (it evaluates `$vars` and breaks TypeScript/JS code).
+- When completely rewriting a file, NEVER append to it. Always ensure the file is deleted or cleanly overwritten using Python or Node.js scripts if tool writes fail.
+- Clean rewrite command if needed:
+  `node -e "fs.writeFileSync('path/to/file', Buffer.from('...', 'utf-8'))"`
+
+### 3. PREVENT RUNAWAY LOOPS
+- If a file has syntax errors, DO NOT attempt 10 blind micro-edits in a loop. Stop, inspect file line count with `git diff` or a single read, and ask the user or fix cleanly.
