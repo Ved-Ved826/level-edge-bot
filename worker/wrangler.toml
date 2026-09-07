@@ -1,6 +1,7 @@
 name = "level-edge-worker"
 main = "src/worker.ts"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 
 [env.production]
 routes = [
@@ -12,11 +13,6 @@ routes = [
   { pattern = "http://localhost:8787/*" }
 ]
 
-[[rules]]
-type = "Data"
-globs = ["**/*.ttf"]
-fallthrough = false
-
 [vars]
 DATABASE_URL = "libsql://..."
 DISCORD_APPLICATION_ID = "..."
@@ -25,3 +21,14 @@ DISCORD_APPLICATION_ID = "..."
 # Set via: wrangler secret put DISCORD_BOT_TOKEN
 # Set via: wrangler secret put DISCORD_PUBLIC_KEY
 # Set via: wrangler secret put DATABASE_AUTH_TOKEN
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = false
+
+[[rules]]
+type = "Data"
+globs = ["**/*.ttf"]
+fallthrough = false
+
