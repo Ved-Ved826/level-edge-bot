@@ -24,3 +24,16 @@ export const calculateXpForLevel = (level: number): number => {
   const base = level / 0.1;
   return Math.round(base * base);
 };
+
+export const getNextLevelXp = (currentLevel: number): number => {
+  const nextLevel = currentLevel + 1;
+  return calculateXpForLevel(nextLevel);
+};
+
+export const getXpProgress = (xp: number): { level: number; currentLevelXp: number; nextLevelXp: number; progress: number } => {
+  const level = calculateLevel(xp);
+  const currentLevelXp = calculateXpForLevel(level);
+  const nextLevelXp = calculateXpForLevel(level + 1);
+  const progress = ((xp - currentLevelXp) / (nextLevelXp - currentLevelXp)) * 100;
+  return { level, currentLevelXp, nextLevelXp, progress };
+};
