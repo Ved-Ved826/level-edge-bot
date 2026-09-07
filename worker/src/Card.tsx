@@ -17,7 +17,7 @@ export interface CardProps {
 export const Card = (props: CardProps) => {
   const { username, avatarBase64, level, rank, totalUsers, xp, nextLevelXp, progress, messagesCount, voiceHours, statusColor = '#43b581' } = props;
   const boundedProgress = Math.min(Math.max(progress, 0), 100);
-  return React.createElement('div', { style: { display: 'flex', flexDirection: 'row', width: '800px', height: '280px', backgroundColor: '#1e1f22', borderRadius: '24px', padding: '30px', boxSizing: 'border-box', color: '#ffffff', fontFamily: 'Inter, sans-serif', alignItems: 'center', border: '1px solid #2b2d31' } }, 
+  return React.createElement('div', { style: { display: 'flex', flexDirection: 'row', width: '800px', height: '280px', backgroundColor: '#1e1f22', borderRadius: '24px', padding: '30px', boxSizing: 'border-box', color: '#ffffff', fontFamily: 'Inter, sans-serif', alignItems: 'center', border: '1px solid #2b2d31' } },
     React.createElement('div', { style: { display: 'flex', position: 'relative', width: '160px', height: '160px', marginRight: '32px', flexShrink: 0 } },
       React.createElement('img', { src: avatarBase64, alt: username, style: { width: '160px', height: '160px', borderRadius: '80px', border: `4px solid ${statusColor}`, objectFit: 'cover' } }),
       React.createElement('div', { style: { display: 'flex', position: 'absolute', bottom: '4px', right: '4px', width: '32px', height: '32px', borderRadius: '16px', backgroundColor: statusColor, border: '4px solid #1e1f22' } })
@@ -45,7 +45,7 @@ export const Card = (props: CardProps) => {
           )
         ),
         React.createElement('div', { style: { display: 'flex', alignItems: 'center', backgroundColor: '#2b2d31', padding: '8px 16px', borderRadius: '12px', gap: '10px' } },
-          React.createElement('span', { style: { fontSize: '18px' } }, '🎙️'),
+          React.createElement('span', { style: { fontSize: '18px' } }, '🎙'),
           React.createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
             React.createElement('span', { style: { fontSize: '12px', color: '#949ba4' } }, 'Voice'),
             React.createElement('span', { style: { fontSize: '16px', fontWeight: 600 } }, `${voiceHours} h`)

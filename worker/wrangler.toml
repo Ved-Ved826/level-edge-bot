@@ -31,4 +31,3 @@ fallthrough = false
 type = "Data"
 globs = ["**/*.ttf"]
 fallthrough = false
-
