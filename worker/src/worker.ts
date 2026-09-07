@@ -121,13 +121,15 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
   if (!uid || !gid || !user) return { error: "No user or guild" };
   try {
     const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
-    const ures = await db.execute({ sql: "SELECT xp, messages_count, voice_seconds FROM users WHERE user_id = ? AND guild_id = ?", args: [uid, gid] });
+    // Достаём xp, messages_count, voice_seconds, streak_days
+    const ures = await db.execute({ sql: "SELECT xp, messages_count, voice_seconds, streak_days FROM users WHERE user_id = ? AND guild_id = ?", args: [uid, gid] });
     if (ures.rows.length === 0) return { error: "User not found" };
     const udata = ures.rows[0];
     const xp = (udata.xp as number) || 0;
     const msgc = (udata.messages_count as number) || 0;
     const voicesec = (udata.voice_seconds as number) || 0;
     const vh = Math.floor(voicesec / 3600);
+    const streakDays = (udata.streak_days as number) || 0;
     const rres = await db.execute({ sql: "SELECT COUNT(*) as rank FROM users WHERE guild_id = ? AND xp > ?", args: [gid, xp] });
     const rank = ((rres.rows[0]?.rank as number) || 0) + 1;
     const tres = await db.execute({ sql: "SELECT COUNT(*) as total FROM users WHERE guild_id = ?", args: [gid] });
@@ -135,7 +137,7 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
     const lvl = calculateLevel(xp);
     const prog = getXpProgress(xp);
     const avatar = await fetchAvatarAsBase64(user);
-    const png = await renderCardToPng({ username: user.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, statusColor: "#23a55a" });
+    const png = await renderCardToPng({ username: user.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, streakDays, statusColor: "#23a55a" });
     return { png, username: user.username };
   } catch (err) {
     console.error("[Error] rank cmd:", err);
@@ -370,11 +372,20 @@ async function getUserQuestProgress(db: any, userId: string, guildId: string): P
   }
 }
 
-function buildRankTodayEmbed(userId: string, username: string, activity: any, questProgress: any, today: string) {
+function buildRankTodayEmbed(userId: string, username: string, activity: any, questProgress: any, today: string, streakData: { streakDays: number; streakFreezes: number }) {
   const msgc = activity.messages_count;
   const voicesec = activity.voice_seconds;
   const vh = Math.floor(voicesec / 3600);
   const vm = Math.floor(voicesec / 60);
+  const streakDays = streakData.streakDays;
+  const streakFreezes = streakData.streakFreezes;
+
+  // Формирование текста множителя XP
+  let multiplierText = "1.0x";
+  if (streakDays >= 30) multiplierText = "1.25x (+25%)";
+  else if (streakDays >= 14) multiplierText = "1.15x (+15%)";
+  else if (streakDays >= 7) multiplierText = "1.10x (+10%)";
+  else if (streakDays >= 3) multiplierText = "1.05x (+5%)";
 
   return {
     embeds: [
@@ -386,6 +397,7 @@ function buildRankTodayEmbed(userId: string, username: string, activity: any, qu
           { name: "💬 Сообщений", value: `**${msgc.toLocaleString()}**`, inline: true },
           { name: "🎙 В голосовом канале", value: `**${vm} мин.** (${vh} ч. ${vm % 60} мин.)`, inline: true },
           { name: "🎯 Выполнено квестов", value: `**${questProgress.completed} / ${questProgress.total}**`, inline: true },
+          { name: "🔥 Стрик активности", value: `**${streakDays} дн.** (${multiplierText}) | 🧊 Заморозок: **${streakFreezes}**`, inline: true },
         ],
         footer: { text: `Дата: ${today} • Сброс в 00:00 (Владивосток, UTC+10)` },
       },
@@ -525,8 +537,19 @@ export default {
               const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
               const activity = await getUserDailyActivity(db, uid, gid);
               const questProgress = await getUserQuestProgress(db, uid, gid);
+
+              // Достаём данные о стрике
+              const streakRes = await db.execute({
+                sql: "SELECT streak_days, streak_freezes FROM users WHERE user_id = ? AND guild_id = ?",
+                args: [uid, gid],
+              });
+              const streakData = {
+                streakDays: (streakRes.rows[0]?.streak_days as number) || 0,
+                streakFreezes: (streakRes.rows[0]?.streak_freezes as number) || 0,
+              };
+
               const today = getVladivostokDate();
-              const result = buildRankTodayEmbed(uid, user.username, activity, questProgress, today);
+              const result = buildRankTodayEmbed(uid, user.username, activity, questProgress, today, streakData);
 
               const resp = await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
                 method: "PATCH",

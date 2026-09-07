@@ -11,6 +11,7 @@ export interface CardProps {
   progress: number;
   messagesCount: number;
   voiceHours: number;
+  streakDays?: number;
   statusColor?: string;
 }
 
@@ -25,6 +26,7 @@ export const Card = ({
   progress,
   messagesCount,
   voiceHours,
+  streakDays,
   statusColor = '#23a55a',
 }: CardProps) => {
   const boundedProgress = Math.min(Math.max(progress, 0), 100);
@@ -121,7 +123,7 @@ export const Card = ({
             {username}
           </span>
 
-          {/* Плашки Ранг и Уровень */}
+          {/* Плашки Ранг, Уровень и Стрик */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             {/* Ранг */}
             <div
@@ -155,6 +157,25 @@ export const Card = ({
               <span style={{ fontSize: '12px', color: '#808bf5', fontWeight: 600 }}>УРОВЕНЬ</span>
               <span style={{ fontSize: '18px', color: '#ffffff', fontWeight: 700 }}>{level}</span>
             </div>
+
+            {/* Бейдж Стрика (Огоньки 🔥) */}
+            {streakDays && streakDays > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: '4px',
+                  backgroundColor: 'rgba(255, 136, 0, 0.15)',
+                  padding: '4px 10px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 136, 0, 0.4)',
+                }}
+              >
+                <span style={{ fontSize: '12px', color: '#ff8800', fontWeight: 600 }}>🔥</span>
+                <span style={{ fontSize: '18px', color: '#ffaa44', fontWeight: 700 }}>{streakDays}</span>
+                <span style={{ fontSize: '12px', color: '#ff9c2e' }}>дн.</span>
+              </div>
+            )}
           </div>
         </div>
 

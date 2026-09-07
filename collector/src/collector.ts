@@ -109,6 +109,33 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 003: Колонки для стриков активности (Этап 2)
+    // ============================================
+    if (!columns.includes('streak_days')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN streak_days INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: streak_days');
+    }
+
+    if (!columns.includes('last_streak_date')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN last_streak_date TEXT DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: last_streak_date');
+    }
+
+    if (!columns.includes('streak_freezes')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN streak_freezes INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: streak_freezes');
+    }
+
+    // ============================================
     // Миграция 002: Таблицы ежедневной активности и квестов
     // ============================================
     const dailyActivityCheck = await db.execute({
@@ -226,6 +253,166 @@ function getVladivostokDate(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+// ============================================
+// Функции для работы со стриками активности (Этап 2)
+// ============================================
+
+// Вычисление множителя XP от длины стрика
+function getXpMultiplier(streakDays: number): number {
+  if (streakDays >= 30) return 1.25;  // +25%
+  if (streakDays >= 14) return 1.15;  // +15%
+  if (streakDays >= 7) return 1.10;   // +10%
+  if (streakDays >= 3) return 1.05;   // +5%
+  return 1.0;
+}
+
+// Проверка условий для активности пользователя (для стрика)
+function checkActivityCondition(activity: { messages_count: number; voice_seconds: number }, questCompleted: boolean): boolean {
+  // Условия: 20+ сообщений ИЛИ 15+ минут (900 секунд) в войсе ИЛИ закрыт хотя бы 1 квест
+  return activity.messages_count >= 20 || activity.voice_seconds >= 900 || questCompleted;
+}
+
+// Получение данных для проверки стрика (активность + квесты)
+async function getUserStreakData(db: any, userId: string, guildId: string): Promise<{ activity: any; questCompleted: boolean }> {
+  const today = getVladivostokDate();
+
+  // Получаем ежедневную активность
+  const activityResult = await db.execute({
+    sql: 'SELECT messages_count, voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
+    args: [userId, guildId, today],
+  });
+
+  const activity = activityResult.rows.length > 0
+    ? { messages_count: (activityResult.rows[0].messages_count as number) || 0, voice_seconds: (activityResult.rows[0].voice_seconds as number) || 0 }
+    : { messages_count: 0, voice_seconds: 0 };
+
+  // Проверяем, закрыт ли хотя бы 1 квест сегодня
+  const questResult = await db.execute({
+    sql: 'SELECT COUNT(*) as completed FROM user_quest_progress WHERE user_id = ? AND guild_id = ? AND completed_at IS NOT NULL',
+    args: [userId, guildId],
+  });
+
+  const questCompleted = (questResult.rows[0]?.completed as number) > 0;
+
+  return { activity, questCompleted };
+}
+
+// Обновление стрика пользователя
+async function updateUserStreak(db: any, userId: string, guildId: string): Promise<{ streakDays: number; streakFreezes: number; updated: boolean }> {
+  const today = getVladivostokDate();
+
+  try {
+    // Получаем текущие данные пользователя
+    const userResult = await db.execute({
+      sql: 'SELECT streak_days, last_streak_date, streak_freezes FROM users WHERE user_id = ? AND guild_id = ?',
+      args: [userId, guildId],
+    });
+
+    if (userResult.rows.length === 0) {
+      // Пользователь не найден - создаём запись с дефолтными значениями
+      await db.execute({
+        sql: 'UPDATE users SET streak_days = 1, last_streak_date = ? WHERE user_id = ? AND guild_id = ?',
+        args: [today, userId, guildId],
+      });
+      return { streakDays: 1, streakFreezes: 0, updated: true };
+    }
+
+    const userRow = userResult.rows[0];
+    let streakDays = (userRow.streak_days as number) || 0;
+    const lastStreakDate = userRow.last_streak_date as string | null;
+    let streakFreezes = (userRow.streak_freezes as number) || 0;
+
+    // Если сегодня уже обновляли стрик - ничего не делаем
+    if (lastStreakDate === today) {
+      return { streakDays, streakFreezes, updated: false };
+    }
+
+    // Получаем данные для проверки активности
+    const { activity, questCompleted } = await getUserStreakData(db, userId, guildId);
+
+    // Проверяем условие активности
+    if (!checkActivityCondition(activity, questCompleted)) {
+      // Условие не выполнено - сброс стрика
+      await db.execute({
+        sql: 'UPDATE users SET streak_days = 1, last_streak_date = ? WHERE user_id = ? AND guild_id = ?',
+        args: [today, userId, guildId],
+      });
+      return { streakDays: 1, streakFreezes, updated: true };
+    }
+
+    // Пользователь активен - проверяем разницу с вчерашним днём
+    let newStreakDays = streakDays;
+    let needUpdate = false;
+
+    if (lastStreakDate === null) {
+      // Первый день активности
+      newStreakDays = 1;
+      needUpdate = true;
+    } else {
+      // Вычисляем разницу в днях между today и last_streak_date
+      // Формат даты: YYYY-MM-DD
+      const todayParts = today.split('-').map(Number);
+      const lastParts = lastStreakDate.split('-').map(Number);
+
+      const todayDate = new Date(todayParts[0], todayParts[1] - 1, todayParts[2]);
+      const lastDate = new Date(lastParts[0], lastParts[1] - 1, lastParts[2]);
+
+      const diffTime = todayDate.getTime() - lastDate.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 1) {
+        // Вчера был последний день стрика - продолжаем
+        newStreakDays = streakDays + 1;
+        needUpdate = true;
+      } else if (diffDays > 1) {
+        // Прошло 2+ дня - проверяем заморозки
+        if (streakFreezes > 0) {
+          // Есть заморозка - тратим её и сохраняем стрик
+          streakFreezes -= 1;
+          needUpdate = true;
+          console.log(`[Streak] User ${userId} used freeze to preserve streak`);
+        } else {
+          // Нет заморозки - сброс
+          newStreakDays = 1;
+          needUpdate = true;
+        }
+      }
+      // Если diffDays === 0 (уже обновляли сегодня) - ничего не делаем
+    }
+
+    if (needUpdate) {
+      await db.execute({
+        sql: 'UPDATE users SET streak_days = ?, last_streak_date = ?, streak_freezes = ? WHERE user_id = ? AND guild_id = ?',
+        args: [newStreakDays, today, streakFreezes, userId, guildId],
+      });
+    }
+
+    return { streakDays: newStreakDays, streakFreezes, updated: needUpdate };
+  } catch (err) {
+    console.error('[Streak] Error updating streak:', err);
+    return { streakDays: 0, streakFreezes: 0, updated: false };
+  }
+}
+
+// Начисление XP с множителем стрика
+async function awardXpWithStreak(db: any, userId: string, guildId: string, baseXp: number): Promise<number> {
+  // Сначала обновляем стрик
+  const { streakDays } = await updateUserStreak(db, userId, guildId);
+
+  // Применяем множитель
+  const multiplier = getXpMultiplier(streakDays);
+  const finalXp = Math.round(baseXp * multiplier);
+
+  await db.execute({
+    sql: 'UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?',
+    args: [finalXp, userId, guildId],
+  });
+
+  console.log(`[Streak] User ${userId} received ${baseXp} XP x${multiplier} = ${finalXp} XP (streak: ${streakDays} days)`);
+
+  return finalXp;
 }
 
 // Инициализация пула квестов в БД
