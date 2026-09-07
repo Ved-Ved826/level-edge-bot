@@ -1,6 +1,10 @@
 import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
 import { createClient } from '@libsql/client';
-import { calculateLevel, calculateXpForLevel } from '@shared/types';
+
+// Re-export from shared types
+const calculateLevel = (xp: number): number => {
+  return Math.floor(0.1 * Math.sqrt(xp));
+};
 
 const client = new Client({
   intents: [
@@ -82,8 +86,9 @@ client.on('messageCreate', async (message: Message) => {
 });
 
 client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState) => {
-  const { userId, guild } = newState;
-  if (!guild) return;
+  const userId = newState.member?.id;
+  const { guild } = newState;
+  if (!guild || !userId) return;
 
   try {
     const now = Date.now();

@@ -11,8 +11,9 @@
     "resolveJsonModule": true,
     "outDir": "./dist",
     "rootDir": "./src",
+    "baseUrl": "..",
     "paths": {
-      "@shared/types": ["../shared/dist/index.js"]
+      "@shared/types": ["shared/src/index.ts"]
     }
   },
   "include": ["src/**/*"],
