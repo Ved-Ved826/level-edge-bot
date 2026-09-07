@@ -218,9 +218,14 @@ async function migrateSchema() {
 // Функции для работы с квестами и ежедневной активностью
 // ============================================
 
-function getTodayUTC(): string {
-  const now = new Date();
-  return now.toISOString().slice(0, 10); // YYYY-MM-DD
+// Получение текущей даты по времени Владивостока (UTC+10, 00:00 сброс)
+function getVladivostokDate(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Vladivostok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
 }
 
 // Инициализация пула квестов в БД
@@ -258,7 +263,7 @@ async function ensureQuestsPool(db: any): Promise<void> {
 
 // Получение активных квестов гильдии на сегодня
 async function getDailyQuests(db: any, guildId: string): Promise<any[]> {
-  const today = getTodayUTC();
+  const today = getVladivostokDate();
   try {
     const result = await db.execute({
       sql: `SELECT qd.*, qp.title, qp.description, qp.quest_type, qp.reward_xp
@@ -276,12 +281,12 @@ async function getDailyQuests(db: any, guildId: string): Promise<any[]> {
 
 // Генерация ID для daily quest записи
 function generateDailyQuestId(guildId: string, questId: string, index: number): string {
-  return `${guildId}_${getTodayUTC()}_${index}`;
+  return `${guildId}_${getVladivostokDate()}_${index}`;
 }
 
 // Назначение квестов гильдии на сегодня (если не назначены)
 async function ensureDailyQuests(db: any, guildId: string): Promise<any[]> {
-  const today = getTodayUTC();
+  const today = getVladivostokDate();
   try {
     // Проверяем, есть ли уже квесты на сегодня
     const existing = await db.execute({
@@ -419,7 +424,7 @@ async function updateQuestProgress(db: any, userId: string, guildId: string, que
 
 // Обновление ежедневной активности пользователя
 async function updateDailyActivity(db: any, userId: string, guildId: string, messages: number, voiceSeconds: number): Promise<void> {
-  const today = getTodayUTC();
+  const today = getVladivostokDate();
   try {
     await db.execute({
       sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count, voice_seconds)
@@ -437,7 +442,7 @@ async function updateDailyActivity(db: any, userId: string, guildId: string, mes
 
 // Проверка квестов типа messages при создании сообщения
 async function checkQuestsForMessage(db: any, userId: string, guildId: string, message: Message): Promise<void> {
-  const today = getTodayUTC();
+  const today = getVladivostokDate();
 
   try {
     // Получаем активные квесты гильдии на сегодня типа messages
@@ -487,7 +492,7 @@ async function checkQuestsForMessage(db: any, userId: string, guildId: string, m
 
 // Проверка квестов типа voice при изменении голосового статуса
 async function checkQuestsForVoice(db: any, userId: string, guildId: string, voiceSeconds: number, now: Date): Promise<void> {
-  const today = getTodayUTC();
+  const today = getVladivostokDate();
 
   try {
     // Получаем активные квесты гильдии на сегодня типа voice
@@ -560,7 +565,7 @@ client.on('messageCreate', async (message: Message) => {
   const { author, guild } = message;
   const guildId = guild.id;
   const userId = author.id;
-  const today = getTodayUTC();
+  const today = getVladivostokDate();
 
   try {
     const now = Date.now();
@@ -651,7 +656,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
   const { guild } = newState;
   if (!guild || !userId) return;
 
-  const today = getTodayUTC();
+  const today = getVladivostokDate();
 
   try {
     const now = Date.now();
