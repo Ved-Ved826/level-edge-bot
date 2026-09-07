@@ -3,25 +3,11 @@ main = "src/worker.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-[env.production]
-routes = [
-  { pattern = "https://level-edge.your-domain.com/*", zone_name = "your-domain.com" }
-]
-
-[env.development]
-routes = [
-  { pattern = "http://localhost:8787/*" }
-]
-
 [vars]
-DATABASE_URL = "libsql://..."
-DISCORD_APPLICATION_ID = "..."
+DATABASE_URL = "libsql://disbot-db-zomka.aws-ap-northeast-1.turso.io"
+DISCORD_APPLICATION_ID = "939777923320283176"
 
-[secrets]
-# Set via: wrangler secret put DISCORD_BOT_TOKEN
-# Set via: wrangler secret put DISCORD_PUBLIC_KEY
-# Set via: wrangler secret put DATABASE_AUTH_TOKEN
-
+# Правила для импорта бинарников
 [[rules]]
 type = "CompiledWasm"
 globs = ["**/*.wasm"]
