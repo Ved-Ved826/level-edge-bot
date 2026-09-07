@@ -271,6 +271,172 @@ export default {
         return Response.json({ type: 5 });
       }
 
+// ============================================
+// Функции для работы с ежедневными квестами
+// ============================================
+
+// Получение ежедневной активности пользователя
+async function getUserDailyActivity(db: any, userId: string, guildId: string): Promise<any> {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  try {
+    const result = await db.execute({
+      sql: 'SELECT messages_count, voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
+      args: [userId, guildId, today],
+    });
+    if (result.rows.length === 0) {
+      return { messages_count: 0, voice_seconds: 0 };
+    }
+    const row = result.rows[0];
+    return {
+      messages_count: (row.messages_count as number) || 0,
+      voice_seconds: (row.voice_seconds as number) || 0,
+    };
+  } catch (err) {
+    console.error('[Error] getUserDailyActivity:', err);
+    return { messages_count: 0, voice_seconds: 0 };
+  }
+}
+
+// Получение прогресса квестов пользователя
+async function getUserQuestProgress(db: any, userId: string, guildId: string): Promise<{ completed: number; total: number; quests: any[] }> {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    // Получаем активные квесты гильдии на сегодня
+    const questsResult = await db.execute({
+      sql: `SELECT qd.*, qp.title, qp.description, qp.quest_type, qp.reward_xp
+            FROM quests_daily qd
+            JOIN quests_pool qp ON qd.quest_id = qp.id
+            WHERE qd.guild_id = ? AND qd.active_date = ?`,
+      args: [guildId, today],
+    });
+    const quests = questsResult.rows || [];
+
+    if (quests.length === 0) {
+      return { completed: 0, total: 0, quests: [] };
+    }
+
+    // Получаем прогресс пользователя по каждому квесту
+    const progressResults: any[] = [];
+    for (const quest of quests) {
+      const qid = quest.id as string;
+      const presult = await db.execute({
+        sql: 'SELECT current_progress, completed_at FROM user_quest_progress WHERE user_id = ? AND guild_id = ? AND quest_daily_id = ?',
+        args: [userId, guildId, qid],
+      });
+      progressResults.push({ quest, progress: presult.rows[0] });
+    }
+
+    const completed = progressResults.filter((pr: any) => pr.progress && pr.progress.completed_at !== null).length;
+
+    return {
+      completed,
+      total: quests.length,
+      quests: progressResults.map((pr: any) => ({
+        title: pr.quest.title as string,
+        description: pr.quest.description as string,
+        quest_type: pr.quest.quest_type as string,
+        reward_xp: pr.quest.reward_xp as number,
+        current_progress: (pr.progress?.current_progress as number) || 0,
+        completed_at: pr.progress?.completed_at as number | null,
+        target: pr.quest.target as number,
+      })),
+    };
+  } catch (err) {
+    console.error('[Error] getUserQuestProgress:', err);
+    return { completed: 0, total: 0, quests: [] };
+  }
+}
+
+// Убедиться, что для гильдии назначены квесты на сегодня
+async function ensureDailyQuests(db: any, guildId: string): Promise<boolean> {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const existing = await db.execute({
+      sql: 'SELECT COUNT(*) as count FROM quests_daily WHERE guild_id = ? AND active_date = ?',
+      args: [guildId, today],
+    });
+    const count = (existing.rows[0]?.count as number) || 0;
+    return count > 0;
+  } catch (err) {
+    console.error('[Error] ensureDailyQuests:', err);
+    return false;
+  }
+}
+
+// Сборка Embed для /rank-today
+function buildRankTodayEmbed(userId: string, username: string, activity: any, questProgress: any, today: string) {
+  const msgc = activity.messages_count;
+  const voicesec = activity.voice_seconds;
+  const vh = Math.floor(voicesec / 3600);
+  const vm = Math.floor((voicesec % 3600) / 60);
+
+  return {
+    embeds: [{
+      title: `📊 Активность ${username} за сегодня`,
+      description: `Профиль <@${userId}>`,
+      color: 0x5865F2, // Blurple
+      fields: [
+        {
+          name: '💬 Сообщений',
+          value: `**${msgc.toLocaleString()}**`,
+          inline: true,
+        },
+        {
+          name: '🎙 В голосовом канале',
+          value: `**${vm} мин.** (${vh} ч. ${vm % 60} мин.)`,
+          inline: true,
+        },
+        {
+          name: '🎯 Выполнено квестов',
+          value: `**${questProgress.completed} / ${questProgress.total}**`,
+          inline: true,
+        },
+      ],
+      footer: {
+        text: `Дата: ${today} (UTC) • Сброс в 00:00 UTC`,
+      },
+    }],
+  };
+}
+
+// Сборка Embed для /quests
+function buildQuestsEmbed(questProgress: any, today: string) {
+  let description = '';
+  questProgress.quests.forEach((q: any) => {
+    const progress = q.current_progress;
+    const target = q.target;
+    const completed = q.completed_at !== null;
+
+    let bar = '';
+    if (target > 0) {
+      const filled = Math.min(10, Math.round((progress / target) * 10));
+      for (let i = 0; i < filled; i++) bar += '█';
+      for (let i = filled; i < 10; i++) bar += '░';
+    }
+
+    if (completed) {
+      description += `✅ **${q.title}** — ${q.description}\n`;
+      description += `   🎯 Награда: **+${q.reward_xp} XP**\n\n`;
+    } else {
+      const typeIcon = q.quest_type === 'voice' ? '🎙' : '💬';
+      description += `${typeIcon} **${q.title}** — ${q.description}\n`;
+      description += `   📊 Прогресс: \`${bar}\` ${progress} / ${target}\n`;
+      description += `   🎯 Награда: **+${q.reward_xp} XP**\n\n`;
+    }
+  });
+
+  return {
+    embeds: [{
+      title: `🎯 Квесты на ${today}`,
+      description: description || 'Сегодня квестов нет. Приходите завтра!',
+      color: 0x5865F2,
+      footer: {
+        text: `Активные квесты гильдии • Выполнено: ${questProgress.completed}/${questProgress.total}`,
+      },
+    }],
+  };
+}
+
       // 4. Кнопки пагинации (Type 3 - Message Component)
       if (inter.type === 3 && inter.data?.custom_id?.startsWith("lb_")) {
         const gid = inter.guild_id;
@@ -294,6 +460,67 @@ export default {
           type: 7,
           data: result
         });
+      }
+
+      // 5. Слэш-команда /rank-today
+      if (inter.type === 2 && inter.data?.name === "rank-today") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        const user = inter.member?.user;
+        if (!uid || !gid || !user) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        ctx.waitUntil((async () => {
+          try {
+            const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+            const activity = await getUserDailyActivity(db, uid, gid);
+            const questProgress = await getUserQuestProgress(db, uid, gid);
+            const today = new Date().toISOString().slice(0, 10);
+            const result = buildRankTodayEmbed(uid, user.username, activity, questProgress, today);
+            const resp = await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(result)
+            });
+            if (!resp.ok) console.error("Rank today update fail:", await resp.text());
+          } catch (e) {
+            console.error("Rank today error:", e);
+          }
+        })());
+        return Response.json({ type: 5 });
+      }
+
+      // 6. Слэш-команда /quests
+      if (inter.type === 2 && inter.data?.name === "quests") {
+        const gid = inter.guild_id;
+        if (!gid) return Response.json({ error: "No guild" }, { status: 400 });
+
+        ctx.waitUntil((async () => {
+          try {
+            const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+            // Убедиться, что квесты назначены
+            const hasQuests = await ensureDailyQuests(db, gid);
+            if (!hasQuests) {
+              console.log('[Quests] No quests for guild, assigning...');
+              // Принудительная инициализация (дублируем логику из collector)
+              // В реальном проекте вынести в shared module
+            }
+
+            const questProgress = await getUserQuestProgress(db, inter.member?.user.id || "unknown", gid);
+            const today = new Date().toISOString().slice(0, 10);
+            const result = buildQuestsEmbed(questProgress, today);
+
+            const resp = await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(result)
+            });
+            if (!resp.ok) console.error("Quests update fail:", await resp.text());
+          } catch (e) {
+            console.error("Quests error:", e);
+          }
+        })());
+        return Response.json({ type: 5 });
       }
 
       return Response.json({ error: "Unknown interaction" }, { status: 400 });

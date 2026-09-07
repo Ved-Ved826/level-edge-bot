@@ -13,6 +13,39 @@ http.createServer((req, res) => {
   console.log(`[Healthcheck] Listening on port ${PORT}`);
 });
 
+// ============================================
+// Пул квестов (дублировано для collector, избегаем tsconfig issues)
+// ============================================
+interface QuestTemplate {
+  id: string;
+  title: string;
+  desc: string;
+  type: 'messages' | 'voice' | 'combo';
+  target: number;
+  xp: number;
+}
+
+const QUESTS_POOL: QuestTemplate[] = [
+  // Текстовые квесты
+  { id: 'messages_warmup_10_50xp', title: 'Разминка пальцев', desc: '10 сообщений', type: 'messages', target: 10, xp: 50 },
+  { id: 'messages_active_30_150xp', title: 'Активный спикер', desc: '30 сообщений', type: 'messages', target: 30, xp: 150 },
+  { id: 'messages_god_60_300xp', title: 'Гроза чата', desc: '60 сообщений', type: 'messages', target: 60, xp: 300 },
+  { id: 'messages_wall_100_500xp', title: 'Стена текста', desc: '100 сообщений', type: 'messages', target: 100, xp: 500 },
+  { id: 'messages_long_20_100xp', title: 'Философ', desc: '20 сообщений > 100 символов', type: 'messages', target: 20, xp: 100 },
+  // Голосовые квесты
+  { id: 'voice_peep_15_100xp', title: 'Заглянул на огонек', desc: '15 минут в войсе', type: 'voice', target: 15, xp: 100 },
+  { id: 'voice_deep_45_250xp', title: 'Душевный разговор', desc: '45 минут в войсе', type: 'voice', target: 45, xp: 250 },
+  { id: 'voice_marathon_90_450xp', title: 'Войс-марафон', desc: '90 минут в войсе', type: 'voice', target: 90, xp: 450 },
+  { id: 'voice_host_150_750xp', title: 'Хозяин эфира', desc: '150 минут в войсе', type: 'voice', target: 150, xp: 750 },
+  { id: 'voice_night_30_200xp', title: 'Ночной дозор', desc: '30 минут после 00:00 UTC', type: 'voice', target: 30, xp: 200 },
+  // Комбо и особые
+  { id: 'combo_double_25_25_300xp', title: 'Двойной удар', desc: '25 сообщ. + 25 мин войса', type: 'combo', target: 25, xp: 300 },
+  { id: 'combo_morning_15_100xp', title: 'Утренний кофе', desc: '15 сообщений (06:00-12:00)', type: 'messages', target: 15, xp: 100 },
+  { id: 'combo_night_10_20_150xp', title: 'Совместное усилие', desc: '10 сообщ. + 20 мин войса', type: 'combo', target: 10, xp: 150 },
+  { id: 'combo_balance_50_50_400xp', title: 'Баланс', desc: '50 сообщ. + 50 мин войса', type: 'combo', target: 50, xp: 400 },
+  { id: 'combo_super_100_100_800xp', title: 'Ирония судьбы', desc: '100 сообщ. + 100 мин войса', type: 'combo', target: 100, xp: 800 },
+];
+
 // Re-export from shared types (duplicate for collector to avoid tsconfig issues)
 const calculateLevel = (xp: number): number => {
   return Math.floor(0.1 * Math.sqrt(xp));
@@ -75,6 +108,90 @@ async function migrateSchema() {
       console.log('[Migrate] Added column: voice_segment_muted');
     }
 
+    // ============================================
+    // Миграция 002: Таблицы ежедневной активности и квестов
+    // ============================================
+    const dailyActivityCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_daily_activity'",
+      args: [],
+    });
+
+    if (dailyActivityCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE user_daily_activity (
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          activity_date TEXT NOT NULL,
+          messages_count INTEGER NOT NULL DEFAULT 0,
+          voice_seconds INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (user_id, guild_id, activity_date)
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: user_daily_activity');
+    }
+
+    const questsPoolCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='quests_pool'",
+      args: [],
+    });
+
+    if (questsPoolCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE quests_pool (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          quest_type TEXT NOT NULL,
+          target_value INTEGER NOT NULL,
+          reward_xp INTEGER NOT NULL,
+          is_active INTEGER NOT NULL DEFAULT 1
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: quests_pool');
+    }
+
+    const questsDailyCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='quests_daily'",
+      args: [],
+    });
+
+    if (questsDailyCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE quests_daily (
+          id TEXT PRIMARY KEY,
+          guild_id TEXT NOT NULL,
+          quest_id TEXT NOT NULL,
+          active_date TEXT NOT NULL,
+          target INTEGER NOT NULL,
+          reward_xp INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: quests_daily');
+    }
+
+    const userQuestProgressCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_quest_progress'",
+      args: [],
+    });
+
+    if (userQuestProgressCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE user_quest_progress (
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          quest_daily_id TEXT NOT NULL,
+          current_progress INTEGER NOT NULL DEFAULT 0,
+          completed_at INTEGER DEFAULT NULL,
+          PRIMARY KEY (user_id, guild_id, quest_daily_id)
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: user_quest_progress');
+    }
+
     // Проверка таблицы guild_settings
     const settingsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_settings'",
@@ -97,9 +214,339 @@ async function migrateSchema() {
   }
 }
 
+// ============================================
+// Функции для работы с квестами и ежедневной активностью
+// ============================================
+
+function getTodayUTC(): string {
+  const now = new Date();
+  return now.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+// Инициализация пула квестов в БД
+async function ensureQuestsPool(db: any): Promise<void> {
+  try {
+    const checkResult = await db.execute({
+      sql: 'SELECT COUNT(*) as count FROM quests_pool',
+      args: [],
+    });
+    const count = (checkResult.rows[0]?.count as number) || 0;
+
+    if (count === 0) {
+      console.log('[Quests] Pool is empty, initializing...');
+      const placeholders = QUESTS_POOL.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+      const values = QUESTS_POOL.flatMap(q => [
+        q.id,
+        q.title,
+        q.desc,
+        q.type === 'combo' ? 'messages' : q.type, // Для combo используем messages как базовый тип
+        q.target,
+        q.xp,
+        1
+      ]);
+
+      await db.execute({
+        sql: `INSERT INTO quests_pool (id, title, description, quest_type, target_value, reward_xp, is_active) VALUES ${placeholders}`,
+        args: values,
+      });
+      console.log(`[Quests] Initialized ${QUESTS_POOL.length} quests in pool`);
+    }
+  } catch (err) {
+    console.error('[Quests] Error ensuring pool:', err);
+  }
+}
+
+// Получение активных квестов гильдии на сегодня
+async function getDailyQuests(db: any, guildId: string): Promise<any[]> {
+  const today = getTodayUTC();
+  try {
+    const result = await db.execute({
+      sql: `SELECT qd.*, qp.title, qp.description, qp.quest_type, qp.reward_xp
+            FROM quests_daily qd
+            JOIN quests_pool qp ON qd.quest_id = qp.id
+            WHERE qd.guild_id = ? AND qd.active_date = ?`,
+      args: [guildId, today],
+    });
+    return result.rows || [];
+  } catch (err) {
+    console.error('[Quests] Error getting daily quests:', err);
+    return [];
+  }
+}
+
+// Генерация ID для daily quest записи
+function generateDailyQuestId(guildId: string, questId: string, index: number): string {
+  return `${guildId}_${getTodayUTC()}_${index}`;
+}
+
+// Назначение квестов гильдии на сегодня (если не назначены)
+async function ensureDailyQuests(db: any, guildId: string): Promise<any[]> {
+  const today = getTodayUTC();
+  try {
+    // Проверяем, есть ли уже квесты на сегодня
+    const existing = await db.execute({
+      sql: 'SELECT COUNT(*) as count FROM quests_daily WHERE guild_id = ? AND active_date = ?',
+      args: [guildId, today],
+    });
+    const count = (existing.rows[0]?.count as number) || 0;
+
+    if (count > 0) {
+      return getDailyQuests(db, guildId);
+    }
+
+    console.log(`[Quests] Assigning daily quests for guild ${guildId}...`);
+
+    // Получаем доступные квесты из пула
+    const poolResult = await db.execute({
+      sql: 'SELECT * FROM quests_pool WHERE is_active = 1',
+      args: [],
+    });
+    const pool = poolResult.rows || [];
+
+    if (pool.length === 0) {
+      console.warn('[Quests] No quests in pool!');
+      return [];
+    }
+
+    // Выбираем 3-4 случайных квеста:
+    // 1 текстовый (messages), 1 голосовой (voice), 1 сложный/комбо
+    const messagesQuests = pool.filter((q: any) => q.quest_type === 'messages' && q.quest_type !== 'voice');
+    const voiceQuests = pool.filter((q: any) => q.quest_type === 'voice');
+    const otherQuests = pool.filter((q: any) => q.quest_type === 'combo' || (q.quest_type !== 'messages' && q.quest_type !== 'voice'));
+
+    const selected: any[] = [];
+
+    // 1 текстовый квест (легкий)
+    if (messagesQuests.length > 0) {
+      const msg = messagesQuests[Math.floor(Math.random() * messagesQuests.length)];
+      selected.push({ ...msg, quest_type: 'messages' });
+    }
+
+    // 1 голосовой квест
+    if (voiceQuests.length > 0) {
+      const vo = voiceQuests[Math.floor(Math.random() * voiceQuests.length)];
+      selected.push({ ...vo, quest_type: 'voice' });
+    }
+
+    // 1 сложный/комбо квест
+    if (otherQuests.length > 0) {
+      const oth = otherQuests[Math.floor(Math.random() * otherQuests.length)];
+      selected.push({ ...oth, quest_type: oth.quest_type });
+    }
+
+    // Вставляем daily quests
+    const insertValues: any[] = [];
+    const insertPlaceholders: string[] = [];
+    selected.forEach((quest, idx) => {
+      insertPlaceholders.push('(?, ?, ?, ?, ?)');
+      insertValues.push(
+        generateDailyQuestId(guildId, quest.id, idx),
+        guildId,
+        quest.id,
+        today,
+        quest.target_value || quest.target,
+        quest.reward_xp || quest.xp
+      );
+    });
+
+    if (insertPlaceholders.length > 0) {
+      await db.execute({
+        sql: `INSERT INTO quests_daily (id, guild_id, quest_id, active_date, target, reward_xp) VALUES ${insertPlaceholders.join(', ')}`,
+        args: insertValues,
+      });
+      console.log(`[Quests] Assigned ${insertPlaceholders.length} quests for guild ${guildId}`);
+    }
+
+    return getDailyQuests(db, guildId);
+  } catch (err) {
+    console.error('[Quests] Error ensuring daily quests:', err);
+    return [];
+  }
+}
+
+// Обновление прогресса квеста пользователя
+async function updateQuestProgress(db: any, userId: string, guildId: string, questDailyId: string, increment: number, questType: string): Promise<void> {
+  try {
+    // UPSERT в прогресс
+    const upsertResult = await db.execute({
+      sql: `INSERT INTO user_quest_progress (user_id, guild_id, quest_daily_id, current_progress)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, guild_id, quest_daily_id)
+            DO UPDATE SET current_progress = current_progress + ?`,
+      args: [userId, guildId, questDailyId, increment, increment],
+    });
+
+    // Получаем текущий прогресс и цель
+    const progressResult = await db.execute({
+      sql: `SELECT uqp.current_progress, uqp.completed_at, qd.target, qd.reward_xp
+            FROM user_quest_progress uqp
+            JOIN quests_daily qd ON uqp.quest_daily_id = qd.id
+            WHERE uqp.user_id = ? AND uqp.guild_id = ? AND uqp.quest_daily_id = ?`,
+      args: [userId, guildId, questDailyId],
+    });
+
+    if (progressResult.rows.length === 0) return;
+
+    const row = progressResult.rows[0];
+    const current = (row.current_progress as number) || 0;
+    const completedAt = row.completed_at as number | null;
+    const target = (row.target as number) || 0;
+    const rewardXp = (row.reward_xp as number) || 0;
+
+    // Если завершен - пропускаем
+    if (completedAt !== null) return;
+
+    // Проверяем достижение цели
+    if (current >= target) {
+      // Начисляем XP
+      await db.execute({
+        sql: `UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?`,
+        args: [rewardXp, userId, guildId],
+      });
+
+      // Помечаем как выполненный
+      await db.execute({
+        sql: `UPDATE user_quest_progress SET completed_at = ? WHERE user_id = ? AND guild_id = ? AND quest_daily_id = ?`,
+        args: [Date.now(), userId, guildId, questDailyId],
+      });
+
+      console.log(`[Quest] User ${userId} completed quest ${questDailyId} - +${rewardXp} XP`);
+    }
+  } catch (err) {
+    console.error('[Quest] Error updating progress:', err);
+  }
+}
+
+// Обновление ежедневной активности пользователя
+async function updateDailyActivity(db: any, userId: string, guildId: string, messages: number, voiceSeconds: number): Promise<void> {
+  const today = getTodayUTC();
+  try {
+    await db.execute({
+      sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count, voice_seconds)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, guild_id, activity_date)
+            DO UPDATE SET
+              messages_count = messages_count + excluded.messages_count,
+              voice_seconds = voice_seconds + excluded.voice_seconds`,
+      args: [userId, guildId, today, messages, voiceSeconds],
+    });
+  } catch (err) {
+    console.error('[Activity] Error updating daily activity:', err);
+  }
+}
+
+// Проверка квестов типа messages при создании сообщения
+async function checkQuestsForMessage(db: any, userId: string, guildId: string, message: Message): Promise<void> {
+  const today = getTodayUTC();
+
+  try {
+    // Получаем активные квесты гильдии на сегодня типа messages
+    const questsResult = await db.execute({
+      sql: `SELECT qd.*, qp.quest_type
+            FROM quests_daily qd
+            JOIN quests_pool qp ON qd.quest_id = qp.id
+            WHERE qd.guild_id = ? AND qd.active_date = ? AND qp.quest_type IN ('messages', 'combo')`,
+      args: [guildId, today],
+    });
+
+    const quests = questsResult.rows || [];
+    if (quests.length === 0) return;
+
+    // Для квестов типа combo проверяем и голос
+    for (const quest of quests) {
+      const questDailyId = quest.id as string;
+      const questType = quest.quest_type as string;
+
+      if (questType === 'messages') {
+        // Обычный текстовый квест - инкремент на 1
+        await updateQuestProgress(db, userId, guildId, questDailyId, 1, 'messages');
+      } else if (questType === 'combo') {
+        // Комбо квест - проверяем текущий прогресс
+        // Для combo нужна специальная логика - обновляем на 1, но цель выше
+        await updateQuestProgress(db, userId, guildId, questDailyId, 1, 'combo');
+      }
+    }
+
+    // Проверка квеста "Философ" (сообщения > 100 символов)
+    const longTextQuestResult = await db.execute({
+      sql: `SELECT qd.id
+            FROM quests_daily qd
+            JOIN quests_pool qp ON qd.quest_id = qp.id
+            WHERE qd.guild_id = ? AND qd.active_date = ? AND qp.id = 'messages_long_20_100xp'`,
+      args: [guildId, today],
+    });
+
+    if (longTextQuestResult.rows.length > 0 && (message.content?.length || 0) > 100) {
+      const questDailyId = longTextQuestResult.rows[0].id as string;
+      await updateQuestProgress(db, userId, guildId, questDailyId, 1, 'messages');
+    }
+  } catch (err) {
+    console.error('[Quests] Error checking quests for message:', err);
+  }
+}
+
+// Проверка квестов типа voice при изменении голосового статуса
+async function checkQuestsForVoice(db: any, userId: string, guildId: string, voiceSeconds: number, now: Date): Promise<void> {
+  const today = getTodayUTC();
+
+  try {
+    // Получаем активные квесты гильдии на сегодня типа voice
+    const questsResult = await db.execute({
+      sql: `SELECT qd.*, qp.quest_type
+            FROM quests_daily qd
+            JOIN quests_pool qp ON qd.quest_id = qp.id
+            WHERE qd.guild_id = ? AND qd.active_date = ? AND qp.quest_type IN ('voice', 'combo')`,
+      args: [guildId, today],
+    });
+
+    const quests = questsResult.rows || [];
+    if (quests.length === 0) return;
+
+    // Переводим секунды в минуты
+    const voiceMinutes = Math.floor(voiceSeconds / 60);
+    if (voiceMinutes === 0) return;
+
+    // Для квестов типа voice и combo инкрементируем по минутам
+    for (const quest of quests) {
+      const questDailyId = quest.id as string;
+      const questType = quest.quest_type as string;
+
+      if (questType === 'voice') {
+        // Голосовой квест - инкрементируем по минутам
+        await updateQuestProgress(db, userId, guildId, questDailyId, voiceMinutes, 'voice');
+      } else if (questType === 'combo') {
+        // Комбо квест - инкрементируем по минутам
+        await updateQuestProgress(db, userId, guildId, questDailyId, voiceMinutes, 'combo');
+      }
+    }
+
+    // Проверка квеста "Ночной дозор" (после 00:00 UTC)
+    const hour = now.getUTCHours();
+    if (hour >= 0 && hour < 6) {
+      const nightQuestResult = await db.execute({
+        sql: `SELECT qd.id
+              FROM quests_daily qd
+              JOIN quests_pool qp ON qd.quest_id = qp.id
+              WHERE qd.guild_id = ? AND qd.active_date = ? AND qp.id = 'voice_night_30_200xp'`,
+        args: [guildId, today],
+      });
+
+      if (nightQuestResult.rows.length > 0) {
+        const questDailyId = nightQuestResult.rows[0].id as string;
+        await updateQuestProgress(db, userId, guildId, questDailyId, voiceMinutes, 'voice');
+      }
+    }
+  } catch (err) {
+    console.error('[Quests] Error checking quests for voice:', err);
+  }
+}
+
 client.on('ready', async () => {
   console.log(`[Collector] Starting migration...`);
   await migrateSchema();
+
+  // Инициализация пула квестов
+  await ensureQuestsPool(db);
 
   console.log(`[Collector] Ready as ${client.user?.tag}`);
   const memUsage = Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -112,6 +559,8 @@ client.on('messageCreate', async (message: Message) => {
 
   const { author, guild } = message;
   const guildId = guild.id;
+  const userId = author.id;
+  const today = getTodayUTC();
 
   try {
     const now = Date.now();
@@ -119,7 +568,7 @@ client.on('messageCreate', async (message: Message) => {
     // Get user and guild settings
     const userResult = await db.execute({
       sql: 'SELECT * FROM users WHERE user_id = ? AND guild_id = ?',
-      args: [author.id, guildId],
+      args: [userId, guildId],
     });
 
     const settingsResult = await db.execute({
@@ -138,9 +587,16 @@ client.on('messageCreate', async (message: Message) => {
       await db.execute({
         sql: `INSERT INTO users (user_id, guild_id, xp, level, messages_count, last_message_at)
               VALUES (?, ?, ?, ?, 1, ?)`,
-        args: [author.id, guildId, newXp, newLevel, Math.floor(now / 1000)],
+        args: [userId, guildId, newXp, newLevel, Math.floor(now / 1000)],
       });
-      console.log(`[Message] New user: ${author.username} (${author.id}) in ${guild.name} - XP: ${newXp}, Level: ${newLevel}`);
+      console.log(`[Message] New user: ${author.username} (${userId}) in ${guild.name} - XP: ${newXp}, Level: ${newLevel}`);
+
+      // Инициализация ежедневной активности для нового пользователя
+      await db.execute({
+        sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count)
+              VALUES (?, ?, ?, 1)`,
+        args: [userId, guildId, today],
+      });
     } else {
       const row = userResult.rows[0];
       const lastMessageAt = (row.last_message_at as number) || 0;
@@ -159,7 +615,16 @@ client.on('messageCreate', async (message: Message) => {
         sql: `UPDATE users
               SET xp = ?, level = ?, messages_count = messages_count + 1, last_message_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [newXp, newLevel, Math.floor(now / 1000), author.id, guildId],
+        args: [newXp, newLevel, Math.floor(now / 1000), userId, guildId],
+      });
+
+      // Обновление ежедневной активности
+      await db.execute({
+        sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count)
+              VALUES (?, ?, ?, 1)
+              ON CONFLICT(user_id, guild_id, activity_date)
+              DO UPDATE SET messages_count = messages_count + 1`,
+        args: [userId, guildId, today],
       });
 
       if (xpToAdd > 0) {
@@ -167,6 +632,14 @@ client.on('messageCreate', async (message: Message) => {
       } else {
         console.log(`[Message] ${author.username} - Cooldown (total messages: ${(row.messages_count as number) + 1})`);
       }
+
+      // Проверка квестов типа messages
+      await checkQuestsForMessage(db, userId, guildId, message);
+    }
+
+    // Обновление квестов (проверка ежедневных квестов каждые 10 сообщений для оптимизации)
+    if (Math.random() < 0.1) {
+      await ensureDailyQuests(db, guildId);
     }
   } catch (err) {
     console.error('[Error] messageCreate:', err);
@@ -177,6 +650,8 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
   const userId = newState.member?.id;
   const { guild } = newState;
   if (!guild || !userId) return;
+
+  const today = getTodayUTC();
 
   try {
     const now = Date.now();
@@ -190,6 +665,12 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
       await db.execute({
         sql: `INSERT INTO users (user_id, guild_id) VALUES (?, ?)`,
         args: [userId, guild.id],
+      });
+      // Инициализация ежедневной активности для нового пользователя
+      await db.execute({
+        sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, voice_seconds)
+              VALUES (?, ?, ?, 0)`,
+        args: [userId, guild.id, today],
       });
     }
 
@@ -228,6 +709,17 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
           voiceSecondsToAdd = elapsed;
         }
 
+        // Обновление ежедневной активности
+        if (voiceSecondsToAdd > 0) {
+          await db.execute({
+            sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, voice_seconds)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(user_id, guild_id, activity_date)
+                  DO UPDATE SET voice_seconds = voice_seconds + ?`,
+            args: [userId, guild.id, today, voiceSecondsToAdd, voiceSecondsToAdd],
+          });
+        }
+
         if (!newChannelId) {
           // Exiting voice completely
           await db.execute({
@@ -237,6 +729,11 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
             args: [voiceSecondsToAdd, userId, guild.id],
           });
           console.log(`[Voice] ${newState.member?.displayName} exited voice - added ${voiceSecondsToAdd}s (was muted: ${!!wasMuted})`);
+
+          // Проверка квестов типа voice
+          if (voiceSecondsToAdd > 0) {
+            await checkQuestsForVoice(db, userId, guild.id, voiceSecondsToAdd, new Date(now));
+          }
         } else {
           // Mute/deaf change, staying in voice
           const newMuteState = (newState.selfDeaf && newState.selfMute) ? 1 : 0;
@@ -247,6 +744,11 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
             args: [voiceSecondsToAdd, Math.floor(now / 1000), newMuteState, userId, guild.id],
           });
           console.log(`[Voice] ${newState.member?.displayName} mute changed - added ${voiceSecondsToAdd}s, new state: ${newMuteState}`);
+
+          // Проверка квестов типа voice
+          if (voiceSecondsToAdd > 0) {
+            await checkQuestsForVoice(db, userId, guild.id, voiceSecondsToAdd, new Date(now));
+          }
         }
       }
     }
