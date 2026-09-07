@@ -1,0 +1,20 @@
+{
+  "name": "collector",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist/collector.js",
+  "scripts": {
+    "dev": "node --watch dist/collector.js",
+    "build": "tsc",
+    "start": "node dist/collector.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "@libsql/client": "^0.5.6",
+    "@shared/types": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.10.6"
+  }
+}

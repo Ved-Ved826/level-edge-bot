@@ -1,0 +1,11 @@
+{
+  "name": "level-edge",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "workspaces": [
+    "collector",
+    "worker",
+    "shared"
+  ]
+}
