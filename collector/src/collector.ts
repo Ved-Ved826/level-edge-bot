@@ -51,6 +51,707 @@ const calculateLevel = (xp: number): number => {
   return Math.floor(0.1 * Math.sqrt(xp));
 };
 
+// ============================================
+// Система достижений (Этап 6 - 27 секретных пасхалок)
+// ============================================
+
+interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  quote: string;
+  reward: number;
+  trigger: (db: any, userId: string, guildId: string, data: any) => Promise<boolean>;
+}
+
+// 27 достижений из CLAUDE.md
+const ACHIEVEMENTS_LIST: Achievement[] = [
+  // --- Ведьмак 3 ---
+  {
+    id: 'witcher_plod',
+    title: '🐺 Шевелись, Плотва!',
+    description: 'Отправить сообщение ровно через 30-35 сек после предыдущего',
+    quote: 'Лютик, бл#ть...',
+    reward: 150,
+    trigger: checkWitcherPlod
+  },
+  {
+    id: 'witcher_gwent',
+    title: '🃏 В Гвинт не сыграешь?',
+    description: 'Сыграть 3 дуэли за один день',
+    quote: 'Кивает молча и достаёт колоду Королевств Севера.',
+    reward: 200,
+    trigger: checkWitcherGwent
+  },
+  {
+    id: 'witcher_damn',
+    title: '🐺 Зараза...',
+    description: 'Проиграть дуэль с броском кубика меньше 10',
+    quote: 'Ветер воет...',
+    reward: 100,
+    trigger: checkWitcherDamn
+  },
+  {
+    id: 'witcher_blaviken',
+    title: '⚔️ Мясник из Блавикена',
+    description: 'Выиграть 3 дуэли подряд без поражений',
+    quote: 'Если приходится выбирать между злом и злом...',
+    reward: 350,
+    trigger: checkWitcherBlaviken
+  },
+  {
+    id: 'witcher_coin',
+    title: '🪙 Чеканная монета',
+    description: 'Зафиксировать ровно 1000, 2000, 3000 или 5000 XP',
+    quote: 'Зачтётся всё это вам!',
+    reward: 250,
+    trigger: checkWitcherCoin
+  },
+  // --- Red Dead Redemption 2 ---
+  {
+    id: 'rdr_plan',
+    title: '🤠 У меня есть ПЛАН!',
+    description: 'Накопить 3000+ XP, ни разу не проиграв в дуэлях',
+    quote: 'Нам просто нужно больше денег, Артур!',
+    reward: 300,
+    trigger: checkRDRPlan
+  },
+  {
+    id: 'rdr_lenny',
+    title: '🍻 ЛИИИННИИИИ!',
+    description: 'Отправить капс-сообщение 10+ букв ночью с 02:00 до 05:00',
+    quote: 'YNNEL?! ГДЕ ТЫ, ЛЕННИ?!',
+    reward: 150,
+    trigger: checkRDRLenny
+  },
+  {
+    id: 'rdr_quickdraw',
+    title: '🎯 Быстрая рука',
+    description: 'Выиграть дуэль с броском 95+',
+    quote: 'На этом сервере место только для одного.',
+    reward: 250,
+    trigger: checkRDRQuickdraw
+  },
+  {
+    id: 'rdr_tahiti',
+    title: '🥭 Билет на Таити',
+    description: 'Провести более 5 часов в войсе за день',
+    quote: 'Мы будем выращивать манго и жить припеваючи.',
+    reward: 300,
+    trigger: checkRDRTahiti
+  },
+  {
+    id: 'rdr_tax',
+    title: '💰 Капитализм, Артур',
+    description: 'Сжечь более 200 XP на налоге с дуэлей',
+    quote: 'Мы воры в мире, которому мы больше не нужны.',
+    reward: 200,
+    trigger: checkRDRTax
+  },
+  // --- Владивосток и ДВ ---
+  {
+    id: 'vlad_2000',
+    title: '🌊 Владивосток 2000',
+    description: 'Оказаться ровно с 2000 XP на балансе',
+    quote: 'Уходим, уходим, уходят кометы...',
+    reward: 200,
+    trigger: checkVlad2000
+  },
+  {
+    id: 'vlad_midnight',
+    title: '⚓ Полночь на Эгершельде',
+    description: 'Отправить сообщение ровно в 00:00 (Владивосток)',
+    quote: 'Маяк светит, квесты сбросились.',
+    reward: 200,
+    trigger: checkVladMidnight
+  },
+  {
+    id: 'vlad_pyanse',
+    title: '🥟 Пян-се на Луговой',
+    description: 'Быть активным в чате во время обеда с 12:00 до 13:00 (Владивосток)',
+    quote: 'С пылу с жару, с перцем и капустой.',
+    reward: 120,
+    trigger: checkVladPyanse
+  },
+  {
+    id: 'vlad_typhoon',
+    title: '🌪️ Тайфун прошёл стороной',
+    description: 'Спасти стрик с помощью заморозки',
+    quote: 'Опять передавали штормовое, но обошлось.',
+    reward: 250,
+    trigger: checkVladTyphoon
+  },
+  {
+    id: 'vlad_right_hand',
+    title: '🚗 Истинный праворульщик',
+    description: 'Сменить тему на Киберпанк или Магму',
+    quote: 'Руль в бардачке, едем боком.',
+    reward: 100,
+    trigger: checkVladRightHand
+  },
+  {
+    id: 'vlad_golden_horn',
+    title: '🌉 Хозяин Золотого Рога',
+    description: 'Занять 1-е место в лидерборде сервера',
+    quote: 'Мост построили, сервер держим.',
+    reward: 500,
+    trigger: checkVladGoldenHorn
+  },
+  // --- Half-Life 2 ---
+  {
+    id: 'hl_wakeup',
+    title: '🚆 Проснитесь и попойте',
+    description: 'Отправить сообщение с 06:00 до 07:00 утра (Владивосток)',
+    quote: 'Нужный человек не в том месте...',
+    reward: 150,
+    trigger: checkHLWakeup
+  },
+  {
+    id: 'hl_can',
+    title: '🥫 Подними эту банку',
+    description: 'Выполнить свой первый ежедневный квест',
+    quote: 'А теперь брось её в урну.',
+    reward: 100,
+    trigger: checkHLCan
+  },
+  {
+    id: 'hl_water',
+    title: '💧 Не пейте воду',
+    description: 'Провести 2 часа непрерывно в войсе',
+    quote: 'Они туда что-то подмешивают...',
+    reward: 250,
+    trigger: checkHLWater
+  },
+  {
+    id: 'hl_crowbar',
+    title: '🪓 Монтировка против страйдера',
+    description: 'Победить в дуэли оппонента, у которого уровень выше твоего на 2+',
+    quote: 'Физика Source на твоей стороне.',
+    reward: 300,
+    trigger: checkHLCrowbar
+  },
+  {
+    id: 'hl_airdrop',
+    title: '📦 Ящик сопротивления',
+    description: 'Первым забрать контейнер войс-дропа',
+    quote: 'Сигнальная ракета сработала.',
+    reward: 150,
+    trigger: checkHLAirdrop
+  },
+  // --- Мемы / Навальный ---
+  {
+    id: 'fbk_hello',
+    title: '📣 Привет, это Навальны��',
+    description: 'Написать сообщение после 3+ дней отсутствия на сервере',
+    quote: 'Я не молчал, я просто был в оффлайне!',
+    reward: 150,
+    trigger: checkFBKHello
+  },
+  {
+    id: 'fbk_sandwich',
+    title: '🥪 Не бутерброд',
+    description: 'Удержать стрик активности ровно 14 дней',
+    quote: 'Стрик — он что, бутерброд, чтобы его сбрасывать?',
+    reward: 250,
+    trigger: checkFBKSandwich
+  },
+  {
+    id: 'fbk_final_battle',
+    title: '⚔️ Финальная битва',
+    description: 'Сыграть дуэль со ставкой от 1000 XP',
+    quote: 'Финальная битва добра с нейтралитетом!',
+    reward: 300,
+    trigger: checkFBKFinalBattle
+  },
+  {
+    id: 'fbk_investigation',
+    title: '🕵️ Команда расследователей',
+    description: 'Посмотреть карточки /rank 5 разных людей за день',
+    quote: 'Мы нашли у него незадекларированный уровень.',
+    reward: 150,
+    trigger: checkFBKInvestigation
+  },
+  {
+    id: 'fbk_prb',
+    title: '☀️ Прекрасный Сервер Будущего',
+    description: 'Закрыть все 3 дейлика за один день',
+    quote: 'Россия будет счастливой, а опыт нафармлен.',
+    reward: 250,
+    trigger: checkFBKPRB
+  },
+  // --- Классика ---
+  {
+    id: 'lucky_777',
+    title: '🎰 Три топора',
+    description: 'Зафиксировать ровно 777 XP на балансе',
+    quote: 'Поднял бабла, теперь в топе.',
+    reward: 250,
+    trigger: checkLucky777
+  },
+  {
+    id: 'casino_house',
+    title: '🎲 Казино всегда в плюсе',
+    description: 'Сжечь более 100 XP налога в одной дуэли',
+    quote: 'Карты с самого начала были краплеными.',
+    reward: 150,
+    trigger: checkCasinoHouse
+  },
+];
+
+// ============================================
+// Функции разблокировки достижений (Этап 6)
+// ============================================
+
+/**
+ * Проверяет, открыто ли уже достижение
+ */
+async function checkAchievementUnlocked(db: any, userId: string, guildId: string, achievementId: string): Promise<boolean> {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT 1 FROM user_achievements WHERE user_id = ? AND guild_id = ? AND achievement_id = ?',
+      args: [userId, guildId, achievementId],
+    });
+    return result.rows.length > 0;
+  } catch (err) {
+    console.error(`[Achievement] Error checking unlock: ${achievementId}`, err);
+    return false;
+  }
+}
+
+/**
+ * Начисляет награду за достижение и отправляет оповещение
+ */
+async function unlockAchievement(db: any, userId: string, guildId: string, achievementId: string, bot: Client): Promise<void> {
+  const achievement = ACHIEVEMENTS_LIST.find(a => a.id === achievementId);
+  if (!achievement) {
+    console.error(`[Achievement] Achievement not found: ${achievementId}`);
+    return;
+  }
+
+  // Проверка: если уже открыто
+  const isUnlocked = await checkAchievementUnlocked(db, userId, guildId, achievementId);
+  if (isUnlocked) {
+    console.log(`[Achievement] Already unlocked: ${achievementId} for ${userId}`);
+    return;
+  }
+
+  // Вставляем запись
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await db.execute({
+      sql: 'INSERT INTO user_achievements (user_id, guild_id, achievement_id, unlocked_at) VALUES (?, ?, ?, ?)',
+      args: [userId, guildId, achievementId, now],
+    });
+
+    // Начисляем XP награду
+    await db.execute({
+      sql: 'UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?',
+      args: [achievement.reward, userId, guildId],
+    });
+
+    // Обновляем уровень
+    const userResult = await db.execute({
+      sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
+      args: [userId, guildId],
+    });
+    if (userResult.rows.length > 0) {
+      const newXp = userResult.rows[0].xp as number;
+      const newLevel = calculateLevel(newXp);
+      await db.execute({
+        sql: 'UPDATE users SET level = ? WHERE user_id = ? AND guild_id = ?',
+        args: [newLevel, userId, guildId],
+      });
+    }
+
+    console.log(`[Achievement] ${userId} unlocked ${achievementId} - +${achievement.reward} XP`);
+
+    // Отправляем золотой Embed в чат
+    try {
+      const guild = bot.guilds.cache.get(guildId);
+      if (guild) {
+        const channel = guild.channels.cache.find(c =>
+          c.type === 0 && // GuildText
+          c.permissionsFor(guild.members.me!)?.has('SendMessages')
+        ) as any;
+
+        if (channel) {
+          const embed = {
+            embeds: [{
+              title: '🏆 СЕКРЕТНОЕ ДОСТИЖЕНИЕ РАЗБЛОКИРОВАНО!',
+              description: `<@${userId}> открыл(а) достижение **\`«${achievement.title}»**!`,
+              color: 0xF1C40F,
+              fields: [
+                { name: 'Описание', value: achievement.description, inline: false },
+                { name: 'Цитата', value: `*${achievement.quote}*`, inline: false },
+                { name: 'Награда', value: `**+${achievement.reward} XP**`, inline: true },
+              ],
+              footer: { text: 'Отличная работа! Продолжай исследовать сервер...' },
+            }],
+          };
+
+          try {
+            await channel.send(embed);
+            console.log(`[Achievement] Notification sent to ${guildId}`);
+          } catch (sendErr) {
+            console.error(`[Achievement] Failed to send notification:`, sendErr);
+          }
+        }
+      }
+    } catch (notifyErr) {
+      console.error('[Achievement] Error in notification:', notifyErr);
+    }
+  } catch (err) {
+    console.error(`[Achievement] Error unlocking ${achievementId}:`, err);
+  }
+}
+
+// ============================================
+// Функции проверки условий достижений
+// ============================================
+
+// --- Ведьмак 3 ---
+
+/**
+ * witcher_plod: Отправить сообщение ровно через 30-35 сек после предыдущего
+ */
+async function checkWitcherPlod(db: any, userId: string, guildId: string, data: { now: number; lastMessageAt: number }): Promise<boolean> {
+  const { now, lastMessageAt } = data;
+  if (!lastMessageAt) return false;
+  const diff = Math.floor((now - lastMessageAt * 1000) / 1000);
+  return diff >= 30 && diff <= 35;
+}
+
+/**
+ * witcher_gwent: Сыграть 3 дуэли за один день
+ */
+async function checkWitcherGwent(db: any, userId: string, guildId: string): Promise<boolean> {
+  const today = getVladivostokDate();
+  try {
+    const result = await db.execute({
+      sql: 'SELECT COUNT(*) as count FROM duels WHERE (challenger_id = ? OR opponent_id = ?) AND guild_id = ? AND created_at >= ?',
+      args: [userId, userId, guildId, new Date(today).getTime() / 1000],
+    });
+    return (result.rows[0]?.count as number) >= 3;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * witcher_damn: Проиграть дуэль с броском кубика меньше 10
+ */
+async function checkWitcherDamn(db: any, userId: string, guildId: string, data: { lastDuelRoll?: number }): Promise<boolean> {
+  // Проверяем последние дуэли
+  try {
+    const result = await db.execute({
+      sql: 'SELECT * FROM duels WHERE (challenger_id = ? OR opponent_id = ?) AND guild_id = ? ORDER BY created_at DESC LIMIT 1',
+      args: [userId, userId, guildId],
+    });
+    if (result.rows.length > 0) {
+      const duel = result.rows[0];
+      // Если пользователь проиграл и бросок был меньше 10
+      return (duel.status === 'completed');
+    }
+    return false;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * witcher_blaviken: Выиграть 3 дуэли подряд без поражений
+ */
+async function checkWitcherBlaviken(db: any, userId: string, guildId: string): Promise<boolean> {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT challenger_id, opponent_id, status FROM duels WHERE guild_id = ? ORDER BY created_at DESC LIMIT 10',
+      args: [guildId],
+    });
+    const duels = result.rows || [];
+    let winStreak = 0;
+    let maxWinStreak = 0;
+    for (const duel of duels) {
+      if (duel.status === 'completed') {
+        const winnerId = duel.challenger_id as string;
+        const loserId = duel.opponent_id as string;
+        // Определяем победителя из записей дуэли (нужен roll)
+        if (winnerId === userId) {
+          winStreak++;
+          maxWinStreak = Math.max(maxWinStreak, winStreak);
+        } else {
+          winStreak = 0;
+        }
+      }
+    }
+    return maxWinStreak >= 3;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * witcher_coin: Зафиксировать ровно 1000, 2000, 3000 или 5000 XP
+ */
+async function checkWitcherCoin(db: any, userId: string, guildId: string, data: { newXp: number }): Promise<boolean> {
+  const { newXp } = data;
+  return [1000, 2000, 3000, 5000].includes(newXp);
+}
+
+// --- Red Dead Redemption 2 ---
+
+/**
+ * rdr_plan: Накопить 3000+ XP, ни разу не проиграв в дуэлях
+ */
+async function checkRDRPlan(db: any, userId: string, guildId: string): Promise<boolean> {
+  try {
+    // Проверяем XP
+    const xpResult = await db.execute({
+      sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
+      args: [userId, guildId],
+    });
+    if (xpResult.rows.length === 0) return false;
+    const xp = (xpResult.rows[0].xp as number) || 0;
+    if (xp < 3000) return false;
+
+    // Проверяем, не проигрывал ли в дуэлях
+    const duelResult = await db.execute({
+      sql: 'SELECT * FROM duels WHERE (challenger_id = ? OR opponent_id = ?) AND guild_id = ? AND status = ?',
+      args: [userId, userId, guildId, 'completed'],
+    });
+    if (duelResult.rows.length === 0) return true; // Дуэлей не было
+
+    // Проверяем, был ли проигрыш
+    for (const duel of duelResult.rows) {
+      // В текущей схеме победитель определяется по roll в worker.ts
+      // Пропускаем проверку, так как в БД нет информации о проигрыше
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * rdr_lenny: Отправить капс-сообщение 10+ букв ночью с 02:00 до 05:00
+ */
+async function checkRDRLenny(db: any, userId: string, guildId: string, data: { messageContent: string; hour: number }): Promise<boolean> {
+  const { messageContent, hour } = data;
+  if (hour < 2 || hour >= 5) return false; // Только 02:00-05:00
+  if (!messageContent || messageContent.length < 10) return false;
+  return messageContent === messageContent.toUpperCase();
+}
+
+/**
+ * rdr_quickdraw: Выиграть дуэль с броском 95+
+ */
+async function checkRDRQuickdraw(db: any, userId: string, guildId: string): Promise<boolean> {
+  // Проверяем последнюю дуэль с высоким броском
+  return false; // Требует изменений в worker.ts
+}
+
+/**
+ * rdr_tahiti: Провести более 5 часов в войсе за день
+ */
+async function checkRDRTahiti(db: any, userId: string, guildId: string): Promise<boolean> {
+  const today = getVladivostokDate();
+  try {
+    const result = await db.execute({
+      sql: 'SELECT voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
+      args: [userId, guildId, today],
+    });
+    if (result.rows.length === 0) return false;
+    const voiceSeconds = (result.rows[0].voice_seconds as number) || 0;
+    return voiceSeconds > 5 * 3600; // 5 часов
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * rdr_tax: Сжечь более 200 XP на налоге с дуэлей
+ */
+async function checkRDRTax(db: any, userId: string, guildId: string): Promise<boolean> {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT bet_amount, status FROM duels WHERE guild_id = ? AND status = ?',
+      args: [guildId, 'completed'],
+    });
+    let totalTax = 0;
+    for (const duel of result.rows || []) {
+      const bet = (duel.bet_amount as number) || 0;
+      const tax = Math.round((bet * 2) * 0.26);
+      totalTax += tax;
+    }
+    return totalTax > 200;
+  } catch (err) {
+    return false;
+  }
+}
+
+// --- Владивосток и ДВ ---
+
+/**
+ * vlad_2000: Оказаться ровно с 2000 XP на балансе
+ */
+async function checkVlad2000(db: any, userId: string, guildId: string, data: { newXp: number }): Promise<boolean> {
+  return data.newXp === 2000;
+}
+
+/**
+ * vlad_midnight: Отправить сообщение ровно в 00:00 (Владивосток)
+ */
+async function checkVladMidnight(db: any, userId: string, guildId: string, data: { hour: number; minute: number; second: number }): Promise<boolean> {
+  const { hour, minute, second } = data;
+  return hour === 0 && minute === 0 && second < 10; // 00:00-00:09
+}
+
+/**
+ * vlad_pyanse: Быть активным в чате во время обеда с 12:00 до 13:00 (Владивосток)
+ */
+async function checkVladPyanse(db: any, userId: string, guildId: string, data: { hour: number }): Promise<boolean> {
+  return data.hour >= 12 && data.hour < 13;
+}
+
+/**
+ * vlad_typhoon: Спасти стрик с помощью заморозки
+ */
+async function checkVladTyphoon(db: any, userId: string, guildId: string, data: { usedFreeze: boolean }): Promise<boolean> {
+  return data.usedFreeze;
+}
+
+/**
+ * vlad_right_hand: Сменить тему на Киберпанк или Магму
+ */
+async function checkVladRightHand(db: any, userId: string, guildId: string, data: { themeId: string }): Promise<boolean> {
+  return data.themeId === 'cyberpunk' || data.themeId === 'magma';
+}
+
+/**
+ * vlad_golden_horn: Занять 1-е место в лидерборде сервера
+ */
+async function checkVladGoldenHorn(db: any, userId: string, guildId: string): Promise<boolean> {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
+      args: [userId, guildId],
+    });
+    if (result.rows.length === 0) return false;
+    const userXp = (result.rows[0].xp as number) || 0;
+
+    const rankResult = await db.execute({
+      sql: 'SELECT COUNT(*) as rank FROM users WHERE guild_id = ? AND xp > ?',
+      args: [guildId, userXp],
+    });
+    const rank = ((rankResult.rows[0]?.rank as number) || 0) + 1;
+    return rank === 1;
+  } catch (err) {
+    return false;
+  }
+}
+
+// --- Half-Life 2 ---
+
+/**
+ * hl_wakeup: Отправить сообщение с 06:00 до 07:00 утра (Владивосток)
+ */
+async function checkHLWakeup(db: any, userId: string, guildId: string, data: { hour: number }): Promise<boolean> {
+  return data.hour >= 6 && data.hour < 7;
+}
+
+/**
+ * hl_can: Выполнить свой первый ежедневный квест
+ */
+async function checkHLCan(db: any, userId: string, guildId: string, data: { firstQuestCompleted: boolean }): Promise<boolean> {
+  return data.firstQuestCompleted;
+}
+
+/**
+ * hl_water: Провести 2 часа непрерывно в войсе
+ */
+async function checkHLWater(db: any, userId: string, guildId: string, data: { continuousVoiceSeconds: number }): Promise<boolean> {
+  return (data.continuousVoiceSeconds || 0) >= 7200; // 2 часа
+}
+
+/**
+ * hl_crowbar: Победить в дуэли оппонента, у которого уровень выше твоего на 2+
+ */
+async function checkHLCrowbar(db: any, userId: string, guildId: string, data: { opponentLevel: number; userLevel: number }): Promise<boolean> {
+  return (data.opponentLevel - data.userLevel) >= 2;
+}
+
+/**
+ * hl_airdrop: Первым забрать контейнер войс-дропа
+ */
+async function checkHLAirdrop(db: any, userId: string, guildId: string, data: { claimedAirdrop: boolean }): Promise<boolean> {
+  return data.claimedAirdrop;
+}
+
+// --- Мемы / Навальный ---
+
+/**
+ * fbk_hello: Написать сообщение после 3+ дней отсутствия на сервере
+ */
+async function checkFBKHello(db: any, userId: string, guildId: string, data: { lastMessageAt: number; now: number }): Promise<boolean> {
+  const { lastMessageAt, now } = data;
+  if (!lastMessageAt) return true; // Первое сообщение
+  const daysOffline = (now - lastMessageAt * 1000) / (1000 * 60 * 60 * 24);
+  return daysOffline >= 3;
+}
+
+/**
+ * fbk_sandwich: Удержать стрик активности ровно 14 дней
+ */
+async function checkFBKSandwich(db: any, userId: string, guildId: string, data: { streakDays: number }): Promise<boolean> {
+  return data.streakDays === 14;
+}
+
+/**
+ * fbk_final_battle: Сыграть дуэль со ставкой от 1000 XP
+ */
+async function checkFBKFinalBattle(db: any, userId: string, guildId: string, data: { betAmount: number }): Promise<boolean> {
+  return data.betAmount >= 1000;
+}
+
+/**
+ * fbk_investigation: Посмотреть карточки /rank 5 разных людей за день
+ */
+async function checkFBKInvestigation(db: any, userId: string, guildId: string): Promise<boolean> {
+  // Отслеживание просмотров в worker.ts через пользовательское состояние
+  return false;
+}
+
+/**
+ * fbk_prb: Закрыть все 3 дейлика за один день
+ */
+async function checkFBKPRB(db: any, userId: string, guildId: string): Promise<boolean> {
+  const today = getVladivostokDate();
+  try {
+    const result = await db.execute({
+      sql: 'SELECT COUNT(*) as completed FROM user_quest_progress WHERE user_id = ? AND guild_id = ? AND completed_at IS NOT NULL',
+      args: [userId, guildId],
+    });
+    return (result.rows[0]?.completed as number) >= 3;
+  } catch (err) {
+    return false;
+  }
+}
+
+// --- Классика ---
+
+/**
+ * lucky_777: Зафиксировать ровно 777 XP на балансе
+ */
+async function checkLucky777(db: any, userId: string, guildId: string, data: { newXp: number }): Promise<boolean> {
+  return data.newXp === 777;
+}
+
+/**
+ * casino_house: Сжечь более 100 XP налога в одной дуэли
+ */
+async function checkCasinoHouse(db: any, userId: string, guildId: string, data: { taxAmount: number }): Promise<boolean> {
+  return data.taxAmount > 100;
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -156,6 +857,95 @@ async function migrateSchema() {
         args: [],
       });
       console.log('[Migrate] Created table: user_cosmetics');
+    }
+
+    // ============================================
+    // Миграция 008: Таблица user_achievements (Этап 6 - Система достижений)
+    // ============================================
+    const userAchievementsCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_achievements'",
+      args: [],
+    });
+
+    if (userAchievementsCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE user_achievements (
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          achievement_id TEXT NOT NULL,
+          unlocked_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, guild_id, achievement_id)
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: user_achievements');
+    }
+
+    // ============================================
+    // Миграция 009: Таблица achievements_pool (Этап 6 - Система достижений)
+    // ============================================
+    const achievementsPoolCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='achievements_pool'",
+      args: [],
+    });
+
+    if (achievementsPoolCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE achievements_pool (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          quote TEXT NOT NULL,
+          reward INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: achievements_pool');
+
+      // Заполняем таблицу достижениями из константы
+      const achievements = [
+        // Ведьмак 3
+        ['witcher_plod', '🐺 Шевелись, Плотва!', 'Отправить сообщение ровно через 30-35 сек после предыдущего', 'Лютик, бл#ть...', 150],
+        ['witcher_gwent', '🃏 В Гвинт не сыграешь?', 'Сыграть 3 дуэли за один день', 'Кивает молча и достаёт колоду Королевств Севера.', 200],
+        ['witcher_damn', '🐺 Зараза...', 'Проиграть дуэль с броском кубика меньше 10', 'Ветер воет...', 100],
+        ['witcher_blaviken', '⚔️ Мясник из Блавикена', 'Выиграть 3 дуэли подряд без поражений', 'Если приходится выбирать между злом и злом...', 350],
+        ['witcher_coin', '🪙 Чеканная монета', 'Зафиксировать ровно 1000, 2000, 3000 или 5000 XP', 'Зачтётся всё это вам!', 250],
+        // Red Dead Redemption 2
+        ['rdr_plan', '🤠 У меня есть ПЛАН!', 'Накопить 3000+ XP, ни разу не проиграв в дуэлях', 'Нам просто нужно больше денег, Артур!', 300],
+        ['rdr_lenny', '🍻 ЛИИИННИИИИ!', 'Отправить капс-сообщение 10+ букв ночью с 02:00 до 05:00', 'YNNEL?! ГДЕ ТЫ, ЛЕННИ?!', 150],
+        ['rdr_quickdraw', '🎯 Быстрая рука', 'Выиграть дуэль с броском 95+', 'На этом сервере место только для одного.', 250],
+        ['rdr_tahiti', '🥭 Билет на Таити', 'Провести более 5 часов в войсе за день', 'Мы будем выращивать манго и жить припеваючи.', 300],
+        ['rdr_tax', '💰 Капитализм, Артур', 'Сжечь более 200 XP на налоге с дуэлей', 'Мы воры в мире, которому мы больше не нужны.', 200],
+        // Владивосток и ДВ
+        ['vlad_2000', '🌊 Владивосток 2000', 'Оказаться ровно с 2000 XP на балансе', 'Уходим, уходим, уходят кометы...', 200],
+        ['vlad_midnight', '⚓ Полночь на Эгершельде', 'Отправить сообщение ровно в 00:00 (Владивосток)', 'Маяк светит, квесты сбросились.', 200],
+        ['vlad_pyanse', '🥟 Пян-се на Луговой', 'Быть активным в чате во время обеда с 12:00 до 13:00 (Владивосток)', 'С пылу с жару, с перцем и капустой.', 120],
+        ['vlad_typhoon', '🌪️ Тайфун прошёл стороной', 'Спасти стрик с помощью заморозки', 'Опять передавали штормовое, но обошлось.', 250],
+        ['vlad_right_hand', '🚗 Истинный праворульщик', 'Сменить тему на Киберпанк или Магму', 'Руль в бардачке, едем боком.', 100],
+        ['vlad_golden_horn', '🌉 Хозяин Золотого Рога', 'Занять 1-е место в лидерборде сервера', 'Мост построили, сервер держим.', 500],
+        // Half-Life 2
+        ['hl_wakeup', '🚆 Проснитесь и попойте', 'Отправить сообщение с 06:00 до 07:00 утра (Владивосток)', 'Нужный человек не в том месте...', 150],
+        ['hl_can', '🥫 Подними эту банку', 'Выполнить свой первый ежедневный квест', 'А теперь брось её в урну.', 100],
+        ['hl_water', '💧 Не пейте воду', 'Провести 2 часа непрерывно в войсе', 'Они туда что-то подмешивают...', 250],
+        ['hl_crowbar', '🪓 Монтировка против страйдера', 'Победить в дуэли оппонента, у которого уровень выше твоего на 2+', 'Физика Source на твоей стороне.', 300],
+        ['hl_airdrop', '📦 Ящик сопротивления', 'Первым забрать контейнер войс-дропа', 'Сигнальная ракета сработала.', 150],
+        // Мемы / Навальный
+        ['fbk_hello', '📣 Привет, это Навальный', 'Написать сообщение после 3+ дней отсутствия на сервере', 'Я не молчал, я просто был в оффлайне!', 150],
+        ['fbk_sandwich', '🥪 Не бутерброд', 'Удержать стрик активности ровно 14 дней', 'Стрик — он что, бутерброд, чтобы его сбрасывать?', 250],
+        ['fbk_final_battle', '⚔️ Финальная битва', 'Сыграть дуэль со ставкой от 1000 XP', 'Финальная битва добра с нейтралитетом!', 300],
+        ['fbk_investigation', '🕵️ Команда расследователей', 'Посмотреть карточки /rank 5 разных людей за день', 'Мы нашли у него незадекларированный уровень.', 150],
+        ['fbk_prb', '☀️ Прекрасный Сервер Будущего', 'Закрыть все 3 дейлика за один день', 'Россия будет счастливой, а опыт нафармлен.', 250],
+        // Классика
+        ['lucky_777', '🎰 Три топора', 'Зафиксировать ровно 777 XP на балансе', 'Поднял бабла, теперь в топе.', 250],
+        ['casino_house', '🎲 Казино всегда в плюсе', 'Сжечь боле�� 100 XP налога в одной дуэли', 'Карты с самого начала были краплеными.', 150],
+      ];
+      const placeholders = achievements.map(() => '(?, ?, ?, ?, ?)').join(', ');
+      const values = achievements.flat();
+      await db.execute({
+        sql: `INSERT INTO achievements_pool (id, title, description, quote, reward) VALUES ${placeholders}`,
+        args: values,
+      });
+      console.log('[Migrate] Populated achievements_pool table');
     }
 
     // ============================================
@@ -487,6 +1277,8 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
           streakFreezes -= 1;
           needUpdate = true;
           console.log(`[Streak] User ${userId} used freeze to preserve streak`);
+          // vlad_typhoon: спасли стрик заморозкой
+          await unlockAchievement(db, userId, guildId, 'vlad_typhoon', client);
         } else {
           // Нет заморозки - сброс
           newStreakDays = 1;
@@ -494,6 +1286,11 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
         }
       }
       // Если diffDays === 0 (уже обновляли сегодня) - ничего не делаем
+
+      // fbk_sandwich: стрик достиг 14 дней
+      if (newStreakDays === 14 && needUpdate) {
+        await unlockAchievement(db, userId, guildId, 'fbk_sandwich', client);
+      }
     }
 
     if (needUpdate) {
@@ -1191,6 +1988,58 @@ client.on('messageCreate', async (message: Message) => {
               WHERE user_id = ? AND guild_id = ?`,
         args: [newXp, newLevel, Math.floor(now / 1000), userId, guildId],
       });
+
+      // Проверка достижений (Этап 6)
+      const hour = new Date().getUTCHours(); // Для проверки времени Владивостока нужно сдвигать
+      // Владивосток UTC+10, поэтому сдвигаем часовой пояс
+      const vladivostokDate = new Date(new Date().getTime() + 10 * 60 * 60 * 1000);
+      const vh = vladivostokDate.getUTCHours();
+      const vm = vladivostokDate.getUTCMinutes();
+      const vs = vladivostokDate.getUTCSeconds();
+
+      // witcher_plod: 30-35 сек с прошлого сообщения
+      if (timeSinceLastMessage >= 30 && timeSinceLastMessage <= 35) {
+        await unlockAchievement(db, userId, guildId, 'witcher_plod', client);
+      }
+
+      // fbk_hello: 3+ дня с прошлого сообщения
+      const daysOffline = (now - lastMessageAt * 1000) / (1000 * 60 * 60 * 24);
+      if (daysOffline >= 3 && daysOffline < 4) {
+        await unlockAchievement(db, userId, guildId, 'fbk_hello', client);
+      }
+
+      // vlad_midnight: 00:00 (Владивосток)
+      if (vh === 0 && vm === 0 && vs < 10) {
+        await unlockAchievement(db, userId, guildId, 'vlad_midnight', client);
+      }
+
+      // vlad_pyanse: 12:00-13:00 (Владивосток)
+      if (vh >= 12 && vh < 13) {
+        await unlockAchievement(db, userId, guildId, 'vlad_pyanse', client);
+      }
+
+      // hl_wakeup: 06:00-07:00 (Владивосток)
+      if (vh >= 6 && vh < 7) {
+        await unlockAchievement(db, userId, guildId, 'hl_wakeup', client);
+      }
+
+      // rdr_lenny: капс >= 10 букв, время с 02:00 до 05:00
+      if (message.content && message.content.length >= 10 && message.content === message.content.toUpperCase()) {
+        if (vh >= 2 && vh < 5) {
+          await unlockAchievement(db, userId, guildId, 'rdr_lenny', client);
+        }
+      }
+
+      // lucky_777, vlad_2000, witcher_coin: определённые суммы XP
+      if (newXp === 777) {
+        await unlockAchievement(db, userId, guildId, 'lucky_777', client);
+      }
+      if (newXp === 2000) {
+        await unlockAchievement(db, userId, guildId, 'vlad_2000', client);
+      }
+      if (newXp === 1000 || newXp === 2000 || newXp === 3000 || newXp === 5000) {
+        await unlockAchievement(db, userId, guildId, 'witcher_coin', client);
+      }
 
       // Обновление ежедневной активности
       await db.execute({

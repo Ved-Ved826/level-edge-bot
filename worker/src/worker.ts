@@ -9,6 +9,224 @@ import resvgWasm from "@resvg/resvg-wasm/index_bg.wasm";
 import fontData from "../assets/Inter-Regular.ttf";
 import { Card, CardProps } from "./Card";
 
+// ============================================
+// Система достижений (Этап 6 - 27 секретных пасхалок)
+// ============================================
+
+interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  quote: string;
+  reward: number;
+}
+
+// 27 достижений из CLAUDE.md
+const ACHIEVEMENTS_LIST: Achievement[] = [
+  // --- Ведьмак 3 ---
+  {
+    id: 'witcher_plod',
+    title: '🐺 Шевелись, Плотва!',
+    description: 'Отправить сообщение ровно через 30-35 сек после предыдущего',
+    quote: 'Лютик, бл#ть...',
+    reward: 150,
+  },
+  {
+    id: 'witcher_gwent',
+    title: '🃏 В Гвинт не сыграешь?',
+    description: 'Сыграть 3 дуэли за один день',
+    quote: 'Кивает молча и достаёт колоду Королевств Севера.',
+    reward: 200,
+  },
+  {
+    id: 'witcher_damn',
+    title: '🐺 Зараза...',
+    description: 'Проиграть дуэль с броском кубика меньше 10',
+    quote: 'Ветер воет...',
+    reward: 100,
+  },
+  {
+    id: 'witcher_blaviken',
+    title: '⚔️ Мясник из Блавикена',
+    description: 'Выиграть 3 дуэли подряд без поражений',
+    quote: 'Если приходится выбирать между злом и злом...',
+    reward: 350,
+  },
+  {
+    id: 'witcher_coin',
+    title: '🪙 Чеканная монета',
+    description: 'Зафиксировать ровно 1000, 2000, 3000 или 5000 XP',
+    quote: 'Зачтётся всё это вам!',
+    reward: 250,
+  },
+  // --- Red Dead Redemption 2 ---
+  {
+    id: 'rdr_plan',
+    title: '🤠 У меня есть ПЛАН!',
+    description: 'Накопить 3000+ XP, ни разу не проиграв в дуэлях',
+    quote: 'Нам просто нужно больше денег, Артур!',
+    reward: 300,
+  },
+  {
+    id: 'rdr_lenny',
+    title: '🍻 ЛИИИННИИИИ!',
+    description: 'Отправить капс-сообщение 10+ букв ночью с 02:00 до 05:00',
+    quote: 'YNNEL?! ГДЕ ТЫ, ЛЕННИ?!',
+    reward: 150,
+  },
+  {
+    id: 'rdr_quickdraw',
+    title: '🎯 Быстрая рука',
+    description: 'Выиграть дуэль с броском 95+',
+    quote: 'На этом сервере место только для одного.',
+    reward: 250,
+  },
+  {
+    id: 'rdr_tahiti',
+    title: '🥭 Билет на Таити',
+    description: 'Провести более 5 часов в войсе за день',
+    quote: 'Мы будем выращивать манго и жить припеваючи.',
+    reward: 300,
+  },
+  {
+    id: 'rdr_tax',
+    title: '💰 Капитализм, Артур',
+    description: 'Сжечь более 200 XP на налоге с дуэлей',
+    quote: 'Мы воры в мире, которому мы больше не нужны.',
+    reward: 200,
+  },
+  // --- Владивосток и ДВ ---
+  {
+    id: 'vlad_2000',
+    title: '🌊 Владивосток 2000',
+    description: 'Оказаться ровно с 2000 XP на балансе',
+    quote: 'Уходим, уходим, уходят кометы...',
+    reward: 200,
+  },
+  {
+    id: 'vlad_midnight',
+    title: '⚓ Полночь на Эгершельде',
+    description: 'Отправить сообщение ровно в 00:00 (Владивосток)',
+    quote: 'Маяк светит, квесты сбросились.',
+    reward: 200,
+  },
+  {
+    id: 'vlad_pyanse',
+    title: '🥟 Пян-се на Луговой',
+    description: 'Быть активным в чате во время обеда с 12:00 до 13:00 (Владивосток)',
+    quote: 'С пылу с жару, с перцем и капустой.',
+    reward: 120,
+  },
+  {
+    id: 'vlad_typhoon',
+    title: '🌪️ Тайфун прошёл стороной',
+    description: 'Спасти стрик с помощью заморозки',
+    quote: 'Опять передавали штормовое, но обошлось.',
+    reward: 250,
+  },
+  {
+    id: 'vlad_right_hand',
+    title: '🚗 Истинный праворульщик',
+    description: 'Сменить тему на Киберпанк или Магму',
+    quote: 'Руль в бардачке, едем боком.',
+    reward: 100,
+  },
+  {
+    id: 'vlad_golden_horn',
+    title: '🌉 Хозяин Золотого Рога',
+    description: 'Занять 1-е место в лидерборде сервера',
+    quote: 'Мост построили, сервер держим.',
+    reward: 500,
+  },
+  // --- Half-Life 2 ---
+  {
+    id: 'hl_wakeup',
+    title: '🚆 Проснитесь и попойте',
+    description: 'Отправить сообщение с 06:00 до 07:00 утра (Владивосток)',
+    quote: 'Нужный человек не в том месте...',
+    reward: 150,
+  },
+  {
+    id: 'hl_can',
+    title: '🥫 Подними эту банку',
+    description: 'Выполнить свой первый ежедневный квест',
+    quote: 'А теперь брось её в урну.',
+    reward: 100,
+  },
+  {
+    id: 'hl_water',
+    title: '💧 Не пейте воду',
+    description: 'Провести 2 часа непрерывно в войсе',
+    quote: 'Они туда что-то подмешивают...',
+    reward: 250,
+  },
+  {
+    id: 'hl_crowbar',
+    title: '🪓 Монтировка против страйдера',
+    description: 'Победить в дуэли оппонента, у которого уровень выше твоего на 2+',
+    quote: 'Физика Source на твоей стороне.',
+    reward: 300,
+  },
+  {
+    id: 'hl_airdrop',
+    title: '📦 Ящик сопротивления',
+    description: 'Первым забрать контейнер войс-дропа',
+    quote: 'Сигнальная ракета сработала.',
+    reward: 150,
+  },
+  // --- Мемы / Навальный ---
+  {
+    id: 'fbk_hello',
+    title: '📣 Привет, это Навальный',
+    description: 'Написать сообщение после 3+ дней отсутствия на сервере',
+    quote: 'Я не молчал, я просто был в оффлайне!',
+    reward: 150,
+  },
+  {
+    id: 'fbk_sandwich',
+    title: '🥪 Не бутерброд',
+    description: 'Удержать стрик активности ровно 14 дней',
+    quote: 'Стрик — он что, бутерброд, чтобы его сбрасывать?',
+    reward: 250,
+  },
+  {
+    id: 'fbk_final_battle',
+    title: '⚔️ Финальная битва',
+    description: 'Сыграть дуэль со ставкой от 1000 XP',
+    quote: 'Финальная битва добра с нейтралитетом!',
+    reward: 300,
+  },
+  {
+    id: 'fbk_investigation',
+    title: '🕵️ Команда расследователей',
+    description: 'Посмотреть карточ��и /rank 5 разных людей за день',
+    quote: 'Мы нашли у него незадекларированный уровень.',
+    reward: 150,
+  },
+  {
+    id: 'fbk_prb',
+    title: '☀️ Прекрасный Сервер Будущего',
+    description: 'Закрыть все 3 дейлика за один день',
+    quote: 'Россия будет счастливой, а опыт нафармлен.',
+    reward: 250,
+  },
+  // --- Классика ---
+  {
+    id: 'lucky_777',
+    title: '🎰 Три топора',
+    description: 'Зафиксировать ровно 777 XP на балансе',
+    quote: 'Поднял бабла, теперь в топе.',
+    reward: 250,
+  },
+  {
+    id: 'casino_house',
+    title: '🎲 Казино всегда в плюсе',
+    description: 'Сжечь более 100 XP налога в одной дуэли',
+    quote: 'Карты с самого начала были краплеными.',
+    reward: 150,
+  },
+];
+
 interface Env {
   DATABASE_URL: string;
   DATABASE_AUTH_TOKEN: string;
@@ -30,6 +248,11 @@ interface DiscordInteraction {
     options?: { name: string; value: any }[];
     custom_id?: string;
     values?: string[];
+  } | {
+    name: string;
+    options?: { name: string; value: any }[];
+    custom_id?: string;
+    values?: string[];
   };
   member?: {
     user: { id: string; username: string; avatar: string | null; discriminator: string };
@@ -43,6 +266,60 @@ interface DiscordInteraction {
 // ============================================
 // Вспомогательные утилиты (WASM, Дата, Бары)
 // ============================================
+
+async function unlockAchievement(
+  db: any,
+  userId: string,
+  guildId: string,
+  achievementId: string,
+  webhookUrl: string,
+  appId: string
+): Promise<void> {
+  try {
+    const achievement = ACHIEVEMENTS_LIST.find((a) => a.id === achievementId);
+    if (!achievement) return;
+
+    // Проверяем, не открыто ли уже достижение
+    const existing = await db.execute({
+      sql: "SELECT 1 FROM user_achievements WHERE user_id = ? AND guild_id = ? AND achievement_id = ?",
+      args: [userId, guildId, achievementId],
+    });
+
+    if (existing.rows.length > 0) return;
+
+    // Вставляем запись о достижении
+    const now = Math.floor(Date.now() / 1000);
+    await db.execute({
+      sql: "INSERT INTO user_achievements (user_id, guild_id, achievement_id, unlocked_at) VALUES (?, ?, ?, ?)",
+      args: [userId, guildId, achievementId, now],
+    });
+
+    // Отправляем уведомление в Discord через webhook
+    const embed = {
+      embeds: [
+        {
+          title: `🎉 Достижение разблокировано!`,
+          description: `<@${userId}> открыл **"${achievement.title}"**!`,
+          color: 0xF1C40F,
+          fields: [
+            { name: "Награда", value: `+${achievement.reward} XP`, inline: true },
+            { name: "Цитата", value: `"${achievement.quote}"`, inline: false },
+          ],
+          footer: { text: achievement.description },
+        },
+      ],
+    };
+
+    // Асинхронная отправка без блокировки
+    fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(embed),
+    }).catch(() => {});
+  } catch (err) {
+    console.error(`[Achievement] Error unlocking ${achievementId}:`, err);
+  }
+}
 
 let wasmInitPromise: Promise<void> | null = null;
 function ensureWasmInitialized(): Promise<void> {
@@ -965,6 +1242,43 @@ export default {
           await updateDuelStatus(db, duelId, "completed");
 
           const result = buildDuelResultEmbed(challengerId, opponentId, winnerId, loserId, roll1, roll2, bet, tax, winnerProfit);
+
+          // Проверка достижений дуэли (Этап 6)
+          const winnerLevel = calculateLevel((await getUserXp(db, winnerId, guildId)));
+          const loserLevel = calculateLevel((await getUserXp(db, loserId, guildId)));
+
+          // Формируем webhook URL для уведомлений
+          const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}`;
+
+          // hl_crowbar: победил оппонента на 2+ уровня выше
+          if (loserLevel - winnerLevel >= 2) {
+            await unlockAchievement(db, winnerId, guildId, 'hl_crowbar', webhookUrl, env.DISCORD_APPLICATION_ID);
+          }
+
+          // fbk_final_battle: ставка >= 1000 XP
+          if (bet >= 1000) {
+            await unlockAchievement(db, challengerId, guildId, 'fbk_final_battle', webhookUrl, env.DISCORD_APPLICATION_ID);
+          }
+
+          // casino_house: налог с дуэли > 100 XP
+          if (tax > 100) {
+            await unlockAchievement(db, loserId, guildId, 'casino_house', webhookUrl, env.DISCORD_APPLICATION_ID);
+          }
+
+          // rdr_quickdraw: победил с roll >= 95
+          if (winnerId === challengerId && roll1 >= 95) {
+            await unlockAchievement(db, challengerId, guildId, 'rdr_quickdraw', webhookUrl, env.DISCORD_APPLICATION_ID);
+          } else if (winnerId === opponentId && roll2 >= 95) {
+            await unlockAchievement(db, opponentId, guildId, 'rdr_quickdraw', webhookUrl, env.DISCORD_APPLICATION_ID);
+          }
+
+          //witcher_damn: проиграл с roll < 10
+          if (loserId === challengerId && roll1 < 10) {
+            await unlockAchievement(db, challengerId, guildId, 'witcher_damn', webhookUrl, env.DISCORD_APPLICATION_ID);
+          } else if (loserId === opponentId && roll2 < 10) {
+            await unlockAchievement(db, opponentId, guildId, 'witcher_damn', webhookUrl, env.DISCORD_APPLICATION_ID);
+          }
+
           return Response.json({ type: 7, data: result });
         }
       }
@@ -1045,6 +1359,12 @@ export default {
             });
           }
           console.log(`[AirDrop] User ${clickedUserId} claimed ${rewardXp} XP from ${dropId}`);
+        }
+
+        // Проверка достижения hl_airdrop - первый кто забрал дроп (проверяем, что claimed_by был null)
+        if (claimedBy === null) {
+          const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}`;
+          await unlockAchievement(db, clickedUserId, guildId, 'hl_airdrop', webhookUrl, env.DISCORD_APPLICATION_ID);
         }
 
         // Ответ обновлением сообщения (Type 7)
@@ -1183,14 +1503,11 @@ export default {
             args: [uid, gid, selectedTheme],
           });
 
-          // Список имён тем
-          const themeNames: Record<string, string> = {
-            default: "Классическая (Discord Blurple)",
-            cyberpunk: "Киберпанк (Неоновый роз / Бирюза)",
-            magma: "Магма (Вулканический огонь)",
-            midnight: "Полночь (Глубокий космос / Индиго)",
-            emerald: "Изумруд (Зелёный нефрит / Золото)",
-          };
+          // Проверка достижения vlad_right_hand - тема cyberpunk или magma
+          if (selectedTheme === 'cyberpunk' || selectedTheme === 'magma') {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}`;
+            await unlockAchievement(db, uid, gid, 'vlad_right_hand', webhookUrl, env.DISCORD_APPLICATION_ID);
+          }
 
           const result = {
             embeds: [{
@@ -1209,6 +1526,87 @@ export default {
             data: { content: "❌ Ошибка при сохранении темы. Попробуйте позже.", flags: 64 },
           });
         }
+      }
+
+      // 12. Слэш-команда /achievements (Этап 6 - Система достижений)
+      if (inter.type === 2 && inter.data?.name === "achievements") {
+        const uidOption = inter.data?.options?.find((o: any) => o.name === "user")?.value as string | undefined;
+        const targetId = uidOption || inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!gid || !targetId) return Response.json({ error: "No guild or user" }, { status: 400 });
+
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Достаём имя пользователя
+              const targetUser = inter.resolved?.users?.[targetId];
+              const username = targetUser ? targetUser.username : inter.member?.user.username || "Unknown";
+
+              // Достаём все открытые ачивки из БД
+              const achievementsRes = await db.execute({
+                sql: 'SELECT achievement_id, unlocked_at FROM user_achievements WHERE user_id = ? AND guild_id = ? ORDER BY unlocked_at DESC',
+                args: [targetId, gid],
+              });
+
+              const unlockedAchievements = achievementsRes.rows || [];
+
+              // Создаём словарь открытых ачивок для быстрого поиска
+              const unlockedMap = new Map<string, number>();
+              unlockedAchievements.forEach((row: any) => {
+                unlockedMap.set(row.achievement_id as string, row.unlocked_at as number);
+              });
+
+              // Получаем полный список достижений из константы
+              const totalAchievements = ACHIEVEMENTS_LIST.length;
+              const unlockedCount = unlockedAchievements.length;
+
+              // Формируем Embed
+              let description = "";
+              if (unlockedAchievements.length === 0) {
+                description = "*Пока нет открытых достижений. Исследуйте сервер, чтобы разгадать секреты!*";
+              } else {
+                // Сортируем открытые ачивки по дате открытия (descending)
+                const sortedUnlocked = unlockedAchievements
+                  .map((row: any) => ({
+                    id: row.achievement_id as string,
+                    unlockedAt: row.unlocked_at as number,
+                  }))
+                  .sort((a: any, b: any) => b.unlockedAt - a.unlockedAt);
+
+                sortedUnlocked.forEach((item: any) => {
+                  const ach = ACHIEVEMENTS_LIST.find(a => a.id === item.id);
+                  if (ach) {
+                    description += `✅ **${ach.title}** — *${ach.description}* • <t:${item.unlockedAt}:d>\n`;
+                  }
+                });
+              }
+
+              description += `\n🔒 Секретных пасхалок осталось найти: **${totalAchievements - unlockedCount}**`;
+
+              const result = {
+                embeds: [{
+                  title: `🏆 Достижения: ${username}`,
+                  description: description,
+                  color: 0xF1C40F,
+                  footer: { text: `Прогресс: ${unlockedCount} / ${totalAchievements} достижений` },
+                }],
+                components: [],
+              };
+
+              const resp = await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+              if (!resp.ok) console.error("Achievements update fail:", await resp.text());
+            } catch (e) {
+              console.error("Achievements error:", e);
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
       }
 
       return Response.json({ error: "Unknown interaction" }, { status: 400 });
