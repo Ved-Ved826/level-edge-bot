@@ -2315,13 +2315,14 @@ async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
 
             const msg = await (channel as any).send(embed);
 
-            // Обновляем message_id в БД
+            // Обновляем message_id строго к последней активной записи
             await db.execute({
-              sql: 'UPDATE world_boss SET message_id = ? WHERE id = ?',
-              args: [msg.id, bossId],
+              sql: 'UPDATE world_boss SET message_id = ? WHERE status = ? AND id = (SELECT MAX(id) FROM world_boss WHERE status = ?)',
+              args: [msg.id, 'active', 'active'],
             });
 
             console.log(`[WorldBoss] Spawned ${preset.boss_name} in channel ${BOSS_CHANNEL_ID}, expires in ${preset.hours}h`);
+            console.log(`[WorldBoss] Successfully linked message_id ${msg.id} to active boss`);
           } catch (err) {
             console.error('[WorldBoss] Failed to send spawn message:', err);
           }
