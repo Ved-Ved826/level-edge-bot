@@ -2029,24 +2029,34 @@ export default {
             ],
           };
 
-          // Редактируем Embed в канале через API бота
+          // Редактируем Embed в канале через API бота (в фоне, не блокирует ответ игроку)
           // Правильный эндпоинт: PATCH /channels/{channel_id}/messages/{message_id}
-          const token = env.DISCORD_BOT_TOKEN;
-          if (token && updatedBoss.message_id) {
-            const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${updatedBoss.message_id}`;
-            try {
-              await fetch(editUrl, {
-                method: 'PATCH',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bot ${token}`,
-                },
-                body: JSON.stringify(updatedEmbed),
-              });
-            } catch (err) {
-              console.error('[WorldBoss] Failed to edit HP message:', err);
-            }
-          }
+          ctx.waitUntil(
+            (async () => {
+              const token = env.DISCORD_BOT_TOKEN;
+              if (!token) {
+                console.warn('[WorldBoss] DISCORD_BOT_TOKEN is not set - cannot update HP embed');
+                return;
+              }
+              if (!updatedBoss.message_id) {
+                console.warn('[WorldBoss] message_id is not set - cannot update HP embed');
+                return;
+              }
+              const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${updatedBoss.message_id}`;
+              try {
+                await fetch(editUrl, {
+                  method: 'PATCH',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bot ${token}`,
+                  },
+                  body: JSON.stringify(updatedEmbed),
+                });
+              } catch (err) {
+                console.error('[WorldBoss] Failed to edit HP message:', err);
+              }
+            })()
+          );
 
           const cdMinutes = Math.ceil(baseCooldown / 60000);
           return Response.json({
@@ -4182,7 +4192,16 @@ export default {
 
               // Отправляем Embed в канал через API бота
               const token = env.DISCORD_BOT_TOKEN;
-              if (token) {
+              if (!token) {
+                console.error('[BossSpawn] DISCORD_BOT_TOKEN is not set in worker env');
+                await fetch(webhookUrl, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    content: '❌ Бот не настроен (отсутствует токен). Обратитесь к разработчику.',
+                  }),
+                });
+              } else {
                 const apiUrl = `https://discord.com/api/v10/channels/1051085743839260694/messages`;
                 const response = await fetch(apiUrl, {
                   method: 'POST',
