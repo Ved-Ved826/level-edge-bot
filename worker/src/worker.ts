@@ -2001,12 +2001,19 @@ export default {
 
           // Формируем обновлённый Embed для босса
           const bossDesc = BOSS_DESCRIPTIONS[boss.boss_type as string] || 'Одолейте босса вместе с друзьями!';
+          const diffMs = Math.max(0, (boss.expires_at as number) - now);
+          const hoursLeft = Math.floor(diffMs / 3600000);
+          const minsLeft = Math.floor((diffMs % 3600000) / 60000);
+          const timeLeftStr = hoursLeft > 24
+            ? `${Math.floor(hoursLeft / 24)} дн. ${hoursLeft % 24} ч.`
+            : `${hoursLeft} ч. ${minsLeft} мин.`;
+
           const updatedEmbed = {
             embeds: [{
               title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
               description: `${bossDesc}\n\n` +
                 `❤️ **HP:** \`${hpBar}\` **${newCurrentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
-                `⏳ **Исчезнет через:** ${Math.ceil((boss.expires_at as number - now) / 3600000)} ч.\n\n` +
+                `⏳ **Исчезнет через:** ${timeLeftStr}\n\n` +
                 `💥 **Топ охотников:**\n${topText}`,
               color: 0xE74C3C,
             }],
@@ -2025,8 +2032,8 @@ export default {
           // Редактируем Embed в канале через API бота
           // Правильный эндпоинт: PATCH /channels/{channel_id}/messages/{message_id}
           const token = env.DISCORD_BOT_TOKEN;
-          if (token) {
-            const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${updatedBoss.message_id as string}`;
+          if (token && updatedBoss.message_id) {
+            const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${updatedBoss.message_id}`;
             try {
               await fetch(editUrl, {
                 method: 'PATCH',
@@ -4094,7 +4101,142 @@ export default {
         return Response.json({ type: 5 });
       }
 
-      // 16. Слэш-команда /prestige (Этап 9 - Система престижа)
+      // 17. Слэш-команда /boss-spawn (только для администраторов)
+      if (inter.type === 2 && inter.data?.name === "boss-spawn") {
+        const gid = inter.guild_id;
+        const uid = inter.member?.user.id;
+        if (!gid || !uid) return Response.json({ error: "No guild or user" }, { status: 400 });
+
+        // Проверка прав администратора (флаг ADMINISTRATOR = 8)
+        const permissions = inter.member?.permissions;
+        if (!permissions || !(BigInt(permissions) & 8n)) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Эта команда доступна только администраторам сервера!", flags: 64 },
+          });
+        }
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // 4 пресета боссов
+              const bossPresets = [
+                { boss_id: 'dragon', boss_name: '🔥 Пепельный Дракон Золотого Рога', max_hp: 7500, hours: 24 },
+                { boss_id: 'mimic', boss_name: '💰 Жадный Мимик с Шаморы', max_hp: 4200, hours: 12 },
+                { boss_id: 'leviathan', boss_name: '🌊 Кибер-Левиафан Японского Моря', max_hp: 6000, hours: 24 },
+                { boss_id: 'phantom', boss_name: '👁️ Фантомный Архитектор Бездны', max_hp: 5500, hours: 24 },
+              ];
+
+              // Завершаем старого босса (если есть)
+              await db.execute({
+                sql: "UPDATE world_boss SET status = ? WHERE status = ?",
+                args: ['escaped', 'active'],
+              });
+
+              // Выбираем случайного босса
+              const preset = bossPresets[Math.floor(Math.random() * bossPresets.length)];
+              const spawnedAt = Date.now();
+              const expiresAt = spawnedAt + preset.hours * 60 * 60 * 1000;
+
+              // Вставляем нового босса
+              const insertResult = await db.execute({
+                sql: `INSERT INTO world_boss (guild_id, channel_id, boss_id, boss_name, boss_type, max_hp, current_hp, status, spawned_at, expires_at)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+                args: [gid, '1051085743839260694', preset.boss_id, preset.boss_name, preset.boss_id, preset.max_hp, preset.max_hp, spawnedAt, expiresAt],
+              });
+
+              // Получаем ID вставленной записи
+              const idResult = await db.execute({ sql: 'SELECT last_insert_rowid() as id', args: [] });
+              const bossId = (idResult.rows[0]?.id as number) || 1;
+
+              // Сбрасываем кулдаун атак
+              await db.execute({
+                sql: 'UPDATE users SET last_boss_attack_at = 0',
+                args: [],
+              });
+
+              // Формируем Embed для спавна босса
+              const embed = {
+                embeds: [{
+                  title: `⚔️ МИРОВОЙ БОСС: ${preset.boss_name}`,
+                  description: `**Босс призван администратором!**\n\n` +
+                    `❤️ **HP:** \`--------------------\` **${preset.max_hp.toLocaleString()} / ${preset.max_hp.toLocaleString()}**\n` +
+                    `⏳ **Исчезнет через:** ${preset.hours} ч.\n\n` +
+                    `💥 **Топ охотников:**\n*Ударов пока не нанесено*`,
+                  color: 0xE74C3C,
+                }],
+                components: [
+                  {
+                    type: 1,
+                    components: [
+                      { type: 2, custom_id: 'boss_atk_basic', style: 4, label: '⚔️ Обычный удар' },
+                      { type: 2, custom_id: 'boss_atk_skill', style: 1, label: '✨ Спец-скилл' },
+                      { type: 2, custom_id: 'boss_atk_ult', style: 3, label: '👑 Ульта' },
+                    ],
+                  },
+                ],
+              };
+
+              // Отправляем Embed в канал через API бота
+              const token = env.DISCORD_BOT_TOKEN;
+              if (token) {
+                const apiUrl = `https://discord.com/api/v10/channels/1051085743839260694/messages`;
+                const response = await fetch(apiUrl, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bot ${token}`,
+                  },
+                  body: JSON.stringify(embed),
+                });
+
+                if (response.ok) {
+                  const msgData = await response.json() as { id: string };
+                  const messageId = msgData.id;
+
+                  // Обновляем message_id в БД
+                  await db.execute({
+                    sql: 'UPDATE world_boss SET message_id = ? WHERE id = ?',
+                    args: [messageId, bossId],
+                  });
+
+                  await fetch(webhookUrl, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      content: `✅ Новый Мировой Босс успешно призван в канал рейда!`,
+                    }),
+                  });
+                } else {
+                  console.error('[BossSpawn] Failed to send message:', await response.text());
+                  await fetch(webhookUrl, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      content: '❌ Ошибка при отправке сообщения в канал.',
+                    }),
+                  });
+                }
+              }
+            } catch (err) {
+              console.error('[BossSpawn] Error:', err);
+              await fetch(webhookUrl, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  content: '❌ Ошибка при спавне босса.',
+                }),
+              });
+            }
+          })()
+        );
+
+        return Response.json({ type: 5 });
+      }
+
       // 16. Слэш-команда /prestige (Этап 9 - Система престижа)
       if (inter.type === 2 && inter.data?.name === "prestige") {
         const uid = inter.member?.user.id;
