@@ -867,6 +867,17 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 013: Колонка prestige_count для системы престижа (Этап 9)
+    // ============================================
+    if (!columns.includes('prestige_count')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN prestige_count INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: prestige_count');
+    }
+
+    // ============================================
     // Миграция 007: Таблица user_cosmetics (Этап 5 - Кастомизация карточки)
     // ============================================
     const userCosmeticsCheck = await db.execute({

@@ -408,8 +408,8 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
   try {
     const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
 
-    // Достаём xp, messages_count, voice_seconds, streak_days
-    const ures = await db.execute({ sql: "SELECT xp, messages_count, voice_seconds, streak_days FROM users WHERE user_id = ? AND guild_id = ?", args: [uid, gid] });
+    // Достаём xp, messages_count, voice_seconds, streak_days, prestige_count
+    const ures = await db.execute({ sql: "SELECT xp, messages_count, voice_seconds, streak_days, prestige_count FROM users WHERE user_id = ? AND guild_id = ?", args: [uid, gid] });
     if (ures.rows.length === 0) return { error: "User not found" };
     const udata = ures.rows[0];
     const xp = (udata.xp as number) || 0;
@@ -417,6 +417,7 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
     const voicesec = (udata.voice_seconds as number) || 0;
     const vh = Math.floor(voicesec / 3600);
     const streakDays = (udata.streak_days as number) || 0;
+    const prestigeCount = (udata.prestige_count as number) || 0;
 
     // Достаём тему и титул из user_cosmetics
     const cosmetRes = await db.execute({
@@ -433,7 +434,7 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
     const lvl = calculateLevel(xp);
     const prog = getXpProgress(xp);
     const avatar = await fetchAvatarAsBase64(user);
-    const png = await renderCardToPng({ username: user.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, streakDays, statusColor: "#23a55a", themeId, customTitle });
+    const png = await renderCardToPng({ username: user.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, streakDays, prestigeCount, statusColor: "#23a55a", themeId, customTitle });
     return { png, username: user.username };
   } catch (err) {
     console.error("[Error] rank cmd:", err);
@@ -1359,7 +1360,84 @@ export default {
         }
       }
 
-      // 9. Обработка кнопок Войс-дропов (Type 3)
+      // 10. Обработка кнопок сброса престижа (Type 3 - Этап 9)
+      if (inter.type === 3 && (inter.data?.custom_id?.startsWith("prestige_confirm_") || inter.data?.custom_id?.startsWith("prestige_cancel_"))) {
+        const customId = inter.data.custom_id;
+        const uid = customId.startsWith("prestige_confirm_") ? customId.substring(19) : customId.substring(18);
+        if (!inter.guild_id) return Response.json({ error: "No guild" }, { status: 400 });
+
+        const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+        // Проверка: только автор может нажимать кнопки
+        const clickedUserId = inter.member?.user.id;
+        if (!clickedUserId || clickedUserId !== uid) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Вы не можете управлять чужим сбросом престижа!", flags: 64 },
+          });
+        }
+
+        // Достаём актуальные данные пользователя
+        const userRes = await db.execute({
+          sql: 'SELECT xp, level, prestige_count FROM users WHERE user_id = ? AND guild_id = ?',
+          args: [uid, inter.guild_id as string],
+        });
+
+        if (userRes.rows.length === 0) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Данные пользователя не найдены.", flags: 64 },
+          });
+        }
+
+        const userData = userRes.rows[0];
+        const level = userData.level as number || 0;
+
+        // Перепроверка: уровень должен быть >= 100
+        if (level < 100) {
+          return Response.json({
+            type: 4,
+            data: { content: "⚠️ Ваш уровень изменился. Сброс престижа недоступен.", flags: 64 },
+          });
+        }
+
+        const prestigeCount = (userData.prestige_count as number) || 0;
+
+        if (customId.startsWith("prestige_cancel_")) {
+          // Сброс отменён
+          const result = {
+            embeds: [{
+              title: 'Сброс престижа отменён',
+              description: 'Ваш 100 уровень в безопасности.',
+              color: 0x747f8d,
+            }],
+            components: [],
+          };
+          return Response.json({ type: 7, data: result });
+        }
+
+        if (customId.startsWith("prestige_confirm_")) {
+          // Подтверждение сброса
+          const guildId = inter.guild_id as string;
+          await db.execute({
+            sql: 'UPDATE users SET prestige_count = prestige_count + 1, xp = 0, level = 0 WHERE user_id = ? AND guild_id = ?',
+            args: [uid, guildId],
+          });
+
+          const result = {
+            embeds: [{
+              title: '🎉 ПОЗДРАВЛЯЕМ СО СБРОСОМ ПРЕСТИЖА!',
+              description: `**<@${uid}>** успешно сбросил уровень и получил **Престиж ★ ${prestigeCount + 1}**!\n\n` +
+                'Золотая звезда престижа теперь сияет на вашей карточке **/rank**!',
+              color: 0xFFD700,
+            }],
+            components: [],
+          };
+          return Response.json({ type: 7, data: result });
+        }
+      }
+
+      // 11. Обработка кнопок Войс-дропов (Type 3)
       if (inter.type === 3 && inter.data?.custom_id?.startsWith("airdrop_claim_")) {
         const customId = inter.data.custom_id;
         const dropId = customId.substring(14); // remove "airdrop_claim_"
@@ -1865,6 +1943,92 @@ export default {
               if (!resp.ok) console.error('Recap update fail:', await resp.text());
             } catch (e) {
               console.error('Recap error:', e);
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
+      }
+
+      // 15. Слэш-команда /prestige (Этап 9 - Система престижа)
+      if (inter.type === 2 && inter.data?.name === "prestige") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Достаём данные пользователя
+              const userRes = await db.execute({
+                sql: 'SELECT xp, level, prestige_count FROM users WHERE user_id = ? AND guild_id = ?',
+                args: [uid, gid],
+              });
+
+              if (userRes.rows.length === 0) {
+                return Response.json({
+                  type: 4,
+                  data: { content: '❌ Данные пользователя не найдены. Напишите первое сообщение, чтобы зарегистрироваться!', flags: 64 },
+                });
+              }
+
+              const userData = userRes.rows[0];
+              const level = userData.level as number || 0;
+              const xp = userData.xp as number || 0;
+              const prestigeCount = (userData.prestige_count as number) || 0;
+
+              // Если уровень меньше 100
+              if (level < 100) {
+                const result = {
+                  embeds: [{
+                    title: '🔒 Сброс престижа недоступен',
+                    description: `Для совершения сброса престижа требуется **100 уровень**.\n` +
+                      `Ваш текущий уровень: **${level} / 100** (${xp.toLocaleString()} XP).\n\n` +
+                      `*Продолжайте проявлять активность в чате и войсе, чтобы достичь вершины!*`,
+                    color: 0x747f8d,
+                  }],
+                  components: [],
+                };
+                return Response.json({ type: 4, data: result });
+              }
+
+              // Если уровень >= 100
+              const result = {
+                embeds: [{
+                  title: '⭐ Доступен сброс престижа!',
+                  description: `Вы достигли максимального 100 уровня! Вы можете сбросить опыт до 0 и получить постоянную **Звезду Престижа**.\n\n` +
+                    `• Текущий престиж: **★ ${prestigeCount}** ➔ станет: **★ ${prestigeCount + 1}**\n` +
+                    `• Ваш уровень вернётся на 0, но звезда останется на вашей карточке навсегда!\n\n` +
+                    `Вы уверены, что хотите совершить сброс?`,
+                  color: 0xFFD700,
+                }],
+                components: [{
+                  type: 1,
+                  components: [
+                    {
+                      type: 2,
+                      custom_id: `prestige_confirm_${uid}`,
+                      style: 3, // Success
+                      label: '⭐ Подтвердить сброс',
+                    },
+                    {
+                      type: 2,
+                      custom_id: `prestige_cancel_${uid}`,
+                      style: 2, // Secondary
+                      label: '❌ Отмена',
+                    },
+                  ],
+                }],
+              };
+
+              return Response.json({ type: 4, data: result });
+            } catch (e) {
+              console.error('Prestige error:', e);
+              return Response.json({
+                type: 4,
+                data: { content: '❌ Ошибка при обработке команды. Попробуйте позже.', flags: 64 },
+              });
             }
           })()
         );

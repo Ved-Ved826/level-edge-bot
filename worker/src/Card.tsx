@@ -58,6 +58,7 @@ export interface CardProps {
   messagesCount: number;
   voiceHours: number;
   streakDays?: number;
+  prestigeCount?: number;
   statusColor?: string;
   themeId?: string;
   customTitle?: string;
@@ -75,6 +76,7 @@ export const Card = ({
   messagesCount,
   voiceHours,
   streakDays,
+  prestigeCount,
   statusColor = '#23a55a',
   themeId = 'default',
   customTitle,
@@ -241,6 +243,26 @@ export const Card = ({
                 </svg>
                 <span style={{ fontSize: '18px', color: '#ffaa44', fontWeight: 700 }}>{streakDays}</span>
                 <span style={{ fontSize: '12px', color: '#ff9c2e' }}>дн.</span>
+              </div>
+            )}
+
+            {/* Бейдж Престижа (Звёзды ⭐) */}
+            {prestigeCount && prestigeCount > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  backgroundColor: 'rgba(255, 215, 0, 0.15)',
+                  padding: '4px 10px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 215, 0, 0.4)',
+                }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="#ffd700">
+                  <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>
+                </svg>
+                <span style={{ fontSize: '18px', color: '#ffd700', fontWeight: 700 }}>★ {prestigeCount}</span>
               </div>
             )}
           </div>
