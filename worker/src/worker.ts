@@ -199,7 +199,7 @@ const ACHIEVEMENTS_LIST: Achievement[] = [
   {
     id: 'fbk_investigation',
     title: '🕵️ Команда расследователей',
-    description: 'Посмотреть карточ��и /rank 5 разных людей за день',
+    description: 'Посмотреть карточ  и /rank 5 разных людей за день',
     quote: 'Мы нашли у него незадекларированный уровень.',
     reward: 150,
   },
@@ -257,6 +257,7 @@ interface DiscordInteraction {
   member?: {
     user: { id: string; username: string; avatar: string | null; discriminator: string };
     id: string;
+    permissions?: string;
   };
   guild_id?: string;
   message?: { components?: any[]; embeds?: any[] };
@@ -1949,7 +1950,97 @@ export default {
         return Response.json({ type: 5 });
       }
 
-      // 15. Слэш-команда /prestige (Этап 9 - Система престижа)
+      // 15. Слэш-команда /export (Этап 10 - CSV-экспорт аналитики)
+      if (inter.type === 2 && inter.data?.name === "export") {
+        const gid = inter.guild_id;
+        const uid = inter.member?.user.id;
+        if (!gid || !uid) return Response.json({ error: "No guild or user" }, { status: 400 });
+
+        // Проверка прав администратора (флаг ADMINISTRATOR = 8)
+        const permissions = inter.member?.permissions;
+        if (!permissions || !(BigInt(permissions) & 8n)) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Эта команда доступна только администраторам сервера!", flags: 64 },
+          });
+        }
+
+        // Немедленно ответим DEFERRED, чтобы избежать таймаута
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Выбираем всех участников гильдии
+              const usersRes = await db.execute({
+                sql: "SELECT user_id, xp, level, season_xp, messages_count, voice_seconds, online_seconds, streak_days, max_streak, prestige_count FROM users WHERE guild_id = ? ORDER BY xp DESC",
+                args: [gid],
+              });
+
+              const rows = usersRes.rows;
+              if (rows.length === 0) {
+                const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ На сервере нет участников с данными.",
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              // Формируем CSV-строку
+              let csvString = "User ID,Total XP,Level,Season XP,Messages,Voice Hours,Online Hours,Current Streak,Max Streak,Prestige Stars\n";
+              for (const r of rows) {
+                const userId = r.user_id as string;
+                const xp = (r.xp as number) || 0;
+                const level = (r.level as number) || 0;
+                const seasonXp = (r.season_xp as number) || 0;
+                const msgCount = (r.messages_count as number) || 0;
+                const voiceHours = ((r.voice_seconds as number) || 0) / 3600;
+                const onlineHours = ((r.online_seconds as number) || 0) / 3600;
+                const streakDays = (r.streak_days as number) || 0;
+                const maxStreak = (r.max_streak as number) || 0;
+                const prestigeStars = (r.prestige_count as number) || 0;
+
+                csvString += `"${userId}",${xp},${level},${seasonXp},${msgCount},${voiceHours.toFixed(1)},${onlineHours.toFixed(1)},${streakDays},${maxStreak},${prestigeStars}\n`;
+              }
+
+              const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+
+              // Собираем FormData
+              const payload = JSON.stringify({
+                embeds: [{
+                  title: "📊 Аналитика сервера выгружена",
+                  description: `Успешно экспортировано участников: **${rows.length}**.\nФайл прикреплён ниже.`,
+                  color: 0x5865F2,
+                  footer: { text: "LevelEdge Analytics" },
+                }],
+                attachments: [{ id: 0, filename: "server-analytics.csv" }],
+              });
+
+              const formData = new FormData();
+              formData.append("payload_json", payload);
+              formData.append("files[0]", new Blob([csvString], { type: "text/csv;charset=utf-8;" }), "server-analytics.csv");
+
+              // Отправляем через PATCH webhook
+              const resp = await fetch(webhookUrl, { method: "PATCH", body: formData });
+              if (!resp.ok) {
+                console.error("Export error:", await resp.text());
+              }
+            } catch (err) {
+              console.error("[Export] Error:", err);
+            }
+          })()
+        );
+
+        return Response.json({ type: 5 });
+      }
+
+      // 16. Слэш-команда /prestige (Этап 9 - Система престижа)
+      // 16. Слэш-команда /prestige (Этап 9 - Система престижа)
       if (inter.type === 2 && inter.data?.name === "prestige") {
         const uid = inter.member?.user.id;
         const gid = inter.guild_id;
@@ -1957,81 +2048,104 @@ export default {
 
         ctx.waitUntil(
           (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
             try {
               const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
 
               // Достаём данные пользователя
               const userRes = await db.execute({
-                sql: 'SELECT xp, level, prestige_count FROM users WHERE user_id = ? AND guild_id = ?',
+                sql: "SELECT xp, level, prestige_count FROM users WHERE user_id = ? AND guild_id = ?",
                 args: [uid, gid],
               });
 
               if (userRes.rows.length === 0) {
-                return Response.json({
-                  type: 4,
-                  data: { content: '❌ Данные пользователя не найдены. Напишите первое сообщение, чтобы зарегистрироваться!', flags: 64 },
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ Данные пользователя не найдены. Напишите первое сообщение, чтобы зарегистрироваться!",
+                  }),
                 });
+                return;
               }
 
               const userData = userRes.rows[0];
-              const level = userData.level as number || 0;
-              const xp = userData.xp as number || 0;
+              const level = (userData.level as number) || 0;
+              const xp = (userData.xp as number) || 0;
               const prestigeCount = (userData.prestige_count as number) || 0;
+
+              let result: any;
 
               // Если уровень меньше 100
               if (level < 100) {
-                const result = {
-                  embeds: [{
-                    title: '🔒 Сброс престижа недоступен',
-                    description: `Для совершения сброса престижа требуется **100 уровень**.\n` +
-                      `Ваш текущий уровень: **${level} / 100** (${xp.toLocaleString()} XP).\n\n` +
-                      `*Продолжайте проявлять активность в чате и войсе, чтобы достичь вершины!*`,
-                    color: 0x747f8d,
-                  }],
-                  components: [],
-                };
-                return Response.json({ type: 4, data: result });
-              }
-
-              // Если уровень >= 100
-              const result = {
-                embeds: [{
-                  title: '⭐ Доступен сброс престижа!',
-                  description: `Вы достигли максимального 100 уровня! Вы можете сбросить опыт до 0 и получить постоянную **Звезду Престижа**.\n\n` +
-                    `• Текущий престиж: **★ ${prestigeCount}** ➔ станет: **★ ${prestigeCount + 1}**\n` +
-                    `• Ваш уровень вернётся на 0, но звезда останется на вашей карточке навсегда!\n\n` +
-                    `Вы уверены, что хотите совершить сброс?`,
-                  color: 0xFFD700,
-                }],
-                components: [{
-                  type: 1,
-                  components: [
+                result = {
+                  embeds: [
                     {
-                      type: 2,
-                      custom_id: `prestige_confirm_${uid}`,
-                      style: 3, // Success
-                      label: '⭐ Подтвердить сброс',
-                    },
-                    {
-                      type: 2,
-                      custom_id: `prestige_cancel_${uid}`,
-                      style: 2, // Secondary
-                      label: '❌ Отмена',
+                      title: "🔒 Сброс престижа недоступен",
+                      description:
+                        `Для совершения сброса престижа требуется **100 уровень**.\n` +
+                        `Ваш текущий уровень: **${level} / 100** (${xp.toLocaleString()} XP).\n\n` +
+                        `*Продолжайте проявлять активность в чате и войсе, чтобы достичь вершины!*`,
+                      color: 0x747f8d,
                     },
                   ],
-                }],
-              };
+                  components: [],
+                };
+              } else {
+                // Если уровень >= 100
+                result = {
+                  embeds: [
+                    {
+                      title: "⭐ Доступен сброс престижа!",
+                      description:
+                        `Вы достигли максимального 100 уровня! Вы можете сбросить опыт до 0 и получить постоянную **Звезду Престижа**.\n\n` +
+                        `• Текущий престиж: **★ ${prestigeCount}** ➔ станет: **★ ${prestigeCount + 1}**\n` +
+                        `• Ваш уровень вернётся на 0, но звезда останется на вашей карточке навсегда!\n\n` +
+                        `Вы уверены, что хотите совершить сброс?`,
+                      color: 0xffd700,
+                    },
+                  ],
+                  components: [
+                    {
+                      type: 1,
+                      components: [
+                        {
+                          type: 2,
+                          custom_id: `prestige_confirm_${uid}`,
+                          style: 3,
+                          label: "⭐ Подтвердить сброс",
+                        },
+                        {
+                          type: 2,
+                          custom_id: `prestige_cancel_${uid}`,
+                          style: 2,
+                          label: "❌ Отмена",
+                        },
+                      ],
+                    },
+                  ],
+                };
+              }
 
-              return Response.json({ type: 4, data: result });
+              // Отправляем готовый ответ в Discord через webhook
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
             } catch (e) {
-              console.error('Prestige error:', e);
-              return Response.json({
-                type: 4,
-                data: { content: '❌ Ошибка при обработке команды. Попробуйте позже.', flags: 64 },
+              console.error("Prestige error:", e);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при обработке команды. Попробуйте позже.",
+                }),
               });
             }
           })()
         );
+
         return Response.json({ type: 5 });
       }
 
