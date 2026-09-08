@@ -1,5 +1,51 @@
 import React from 'react';
 
+// ============================================
+// Палитра тем оформления (Этап 5 - Кастомизация)
+// ============================================
+export const THEMES = {
+  default: {
+    name: 'Классическая (Discord Blurple)',
+    bg: '#18191c',
+    accent: '#5865f2',
+    barGradient: 'linear-gradient(90deg, #5865f2 0%, #23a55a 100%)',
+    barGlow: 'rgba(35, 165, 90, 0.5)',
+    borderColor: '#2b2d31',
+  },
+  cyberpunk: {
+    name: 'Киберпанк (Неоновый роз / Бирюза)',
+    bg: '#120d18',
+    accent: '#ff007f',
+    barGradient: 'linear-gradient(90deg, #ff007f 0%, #00f0ff 100%)',
+    barGlow: 'rgba(0, 240, 255, 0.6)',
+    borderColor: '#ff007f',
+  },
+  magma: {
+    name: 'Магма (Вулканический огонь)',
+    bg: '#180e0c',
+    accent: '#ff3300',
+    barGradient: 'linear-gradient(90deg, #ff3300 0%, #ff9900 100%)',
+    barGlow: 'rgba(255, 153, 0, 0.6)',
+    borderColor: '#ff3300',
+  },
+  midnight: {
+    name: 'Полночь (Глубокий космос / Индиго)',
+    bg: '#0b0c16',
+    accent: '#9b59b6',
+    barGradient: 'linear-gradient(90deg, #8e44ad 0%, #3498db 100%)',
+    barGlow: 'rgba(155, 89, 182, 0.6)',
+    borderColor: '#8e44ad',
+  },
+  emerald: {
+    name: 'Изумруд (Зелёный нефрит / Золото)',
+    bg: '#0b1610',
+    accent: '#2ecc71',
+    barGradient: 'linear-gradient(90deg, #27ae60 0%, #f1c40f 100%)',
+    barGlow: 'rgba(241, 196, 15, 0.6)',
+    borderColor: '#27ae60',
+  },
+};
+
 export interface CardProps {
   username: string;
   avatarBase64: string;
@@ -13,6 +59,8 @@ export interface CardProps {
   voiceHours: number;
   streakDays?: number;
   statusColor?: string;
+  themeId?: string;
+  customTitle?: string;
 }
 
 export const Card = ({
@@ -28,7 +76,10 @@ export const Card = ({
   voiceHours,
   streakDays,
   statusColor = '#23a55a',
+  themeId = 'default',
+  customTitle,
 }: CardProps) => {
+  const theme = THEMES[themeId as keyof typeof THEMES] || THEMES.default;
   const boundedProgress = Math.min(Math.max(progress, 0), 100);
   const remainingXp = Math.max(0, nextLevelXp - xp);
   const percent = Math.round(boundedProgress);
@@ -40,14 +91,14 @@ export const Card = ({
         flexDirection: 'row',
         width: '800px',
         height: '260px',
-        backgroundColor: '#18191c',
+        backgroundColor: theme.bg,
         borderRadius: '24px',
         padding: '28px',
         boxSizing: 'border-box',
         color: '#ffffff',
         fontFamily: 'Inter',
         alignItems: 'center',
-        border: '1px solid #2b2d31',
+        border: `1px solid ${theme.borderColor}`,
       }}
     >
       {/* Левая колонка: Аватарка (140px + отступ 25px) */}
@@ -83,7 +134,7 @@ export const Card = ({
             height: '28px',
             borderRadius: '14px',
             backgroundColor: statusColor,
-            border: '4px solid #18191c',
+            border: '4px solid ' + theme.bg,
           }}
         />
       </div>
@@ -121,6 +172,20 @@ export const Card = ({
             }}
           >
             {username}
+            {/* Титул пользователя (если задан) */}
+            {customTitle && customTitle !== 'Новичок' && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  marginLeft: '8px',
+                  fontSize: '13px',
+                  color: theme.accent,
+                  fontWeight: 600,
+                }}
+              >
+                [{customTitle}]
+              </span>
+            )}
           </span>
 
           {/* Плашки Ранг, Уровень и Стрик */}
@@ -231,8 +296,8 @@ export const Card = ({
                 width: `${boundedProgress}%`,
                 height: '100%',
                 borderRadius: '5px',
-                background: 'linear-gradient(90deg, #5865f2 0%, #23a55a 100%)',
-                boxShadow: '0 0 12px rgba(35, 165, 90, 0.5)',
+                background: theme.barGradient,
+                boxShadow: `0 0 12px ${theme.barGlow}`,
               }}
             />
           </div>

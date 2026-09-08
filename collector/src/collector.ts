@@ -136,6 +136,29 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 007: Таблица user_cosmetics (Этап 5 - Кастомизация карточки)
+    // ============================================
+    const userCosmeticsCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_cosmetics'",
+      args: [],
+    });
+
+    if (userCosmeticsCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE user_cosmetics (
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          theme_id TEXT DEFAULT 'default',
+          title_id TEXT DEFAULT 'Новичок',
+          badges TEXT DEFAULT '[]',
+          PRIMARY KEY (user_id, guild_id)
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: user_cosmetics');
+    }
+
+    // ============================================
     // Миграция 004: Таблица duels (Этап 3)
     // ============================================
     const duelsCheck = await db.execute({

@@ -29,6 +29,7 @@ interface DiscordInteraction {
     name?: string;
     options?: { name: string; value: any }[];
     custom_id?: string;
+    values?: string[];
   };
   member?: {
     user: { id: string; username: string; avatar: string | null; discriminator: string };
@@ -129,6 +130,7 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
   if (!uid || !gid || !user) return { error: "No user or guild" };
   try {
     const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
     // Достаём xp, messages_count, voice_seconds, streak_days
     const ures = await db.execute({ sql: "SELECT xp, messages_count, voice_seconds, streak_days FROM users WHERE user_id = ? AND guild_id = ?", args: [uid, gid] });
     if (ures.rows.length === 0) return { error: "User not found" };
@@ -138,6 +140,15 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
     const voicesec = (udata.voice_seconds as number) || 0;
     const vh = Math.floor(voicesec / 3600);
     const streakDays = (udata.streak_days as number) || 0;
+
+    // Достаём тему и титул из user_cosmetics
+    const cosmetRes = await db.execute({
+      sql: "SELECT theme_id, title_id FROM user_cosmetics WHERE user_id = ? AND guild_id = ?",
+      args: [uid, gid],
+    });
+    const themeId = cosmetRes.rows.length > 0 ? (cosmetRes.rows[0].theme_id as string) : "default";
+    const customTitle = cosmetRes.rows.length > 0 ? (cosmetRes.rows[0].title_id as string) : "Новичок";
+
     const rres = await db.execute({ sql: "SELECT COUNT(*) as rank FROM users WHERE guild_id = ? AND xp > ?", args: [gid, xp] });
     const rank = ((rres.rows[0]?.rank as number) || 0) + 1;
     const tres = await db.execute({ sql: "SELECT COUNT(*) as total FROM users WHERE guild_id = ?", args: [gid] });
@@ -145,7 +156,7 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
     const lvl = calculateLevel(xp);
     const prog = getXpProgress(xp);
     const avatar = await fetchAvatarAsBase64(user);
-    const png = await renderCardToPng({ username: user.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, streakDays, statusColor: "#23a55a" });
+    const png = await renderCardToPng({ username: user.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, streakDays, statusColor: "#23a55a", themeId, customTitle });
     return { png, username: user.username };
   } catch (err) {
     console.error("[Error] rank cmd:", err);
@@ -1052,6 +1063,152 @@ export default {
         };
 
         return Response.json({ type: 7, data: result });
+      }
+
+      // 10. Слэш-команда /card-customize (Этап 5 - Кастомизация карточки)
+      if (inter.type === 2 && inter.data?.name === "card-customize") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        try {
+          const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+          // Создаём таблицу user_cosmetics если её нет (на всякий случай)
+          await db.execute({
+            sql: `CREATE TABLE IF NOT EXISTS user_cosmetics (
+              user_id TEXT NOT NULL,
+              guild_id TEXT NOT NULL,
+              theme_id TEXT DEFAULT 'default',
+              title_id TEXT DEFAULT 'Новичок',
+              badges TEXT DEFAULT '[]',
+              PRIMARY KEY (user_id, guild_id)
+            )`,
+            args: [],
+          });
+
+          // Достаём текущие настройки пользователя
+          const cosmetRes = await db.execute({
+            sql: "SELECT theme_id, title_id FROM user_cosmetics WHERE user_id = ? AND guild_id = ?",
+            args: [uid, gid],
+          });
+
+          let currentTheme = "default";
+          let currentTitle = "Новичок";
+
+          if (cosmetRes.rows.length > 0) {
+            currentTheme = cosmetRes.rows[0].theme_id as string;
+            currentTitle = cosmetRes.rows[0].title_id as string;
+          }
+
+          // Список тем
+          const themeOptions = [
+            { label: "🟣 Классическая (Discord Blurple)", value: "default" },
+            { label: "🌸 Киберпанк (Неоновый роз / Бирюза)", value: "cyberpunk" },
+            { label: "🔥 Магма (Вулканический огонь)", value: "magma" },
+            { label: "🌌 Полночь (Глубокий космос / Индиго)", value: "midnight" },
+            { label: "🍃 Изумруд (Зелёный нефрит / Золото)", value: "emerald" },
+          ];
+
+          const themeLabels: Record<string, string> = {
+            default: "Классическая (Discord Blurple)",
+            cyberpunk: "Киберпанк (Неоновый роз / Бирюза)",
+            magma: "Магма (Вулканический огонь)",
+            midnight: "Полночь (Глубокий космос / Индиго)",
+            emerald: "Изумруд (Зелёный нефрит / Золото)",
+          };
+
+          const result = {
+            embeds: [{
+              title: "🎨 Кастомизация карточки ранга",
+              description: `Текущая тема: **${themeLabels[currentTheme] || currentTheme}** • Текущий титул: **${currentTitle}**\n` +
+                "Выберите тему оформления из списка ниже:",
+              color: 0x5865f2,
+            }],
+            components: [{
+              type: 1,
+              components: [{
+                type: 3,
+                custom_id: "card_select_theme",
+                placeholder: "Выберите тему оформления...",
+                options: themeOptions,
+              }],
+            }],
+          };
+
+          return Response.json({ type: 4, data: result });
+        } catch (err) {
+          console.error("[CardCustomize] Error:", err);
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Ошибка при загрузке настроек карточки. Попробуйте позже.", flags: 64 },
+          });
+        }
+      }
+
+      // 11. Обработка Select Menu для смены темы (Type 3)
+      if (inter.type === 3 && inter.data?.custom_id === "card_select_theme") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        const selectedTheme = (inter.data.values as string[])?.[0];
+
+        if (!selectedTheme || !["default", "cyberpunk", "magma", "midnight", "emerald"].includes(selectedTheme)) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Неверная тема выбора.", flags: 64 },
+          });
+        }
+
+        try {
+          const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+          // Создаём таблицу user_cosmetics если её нет
+          await db.execute({
+            sql: `CREATE TABLE IF NOT EXISTS user_cosmetics (
+              user_id TEXT NOT NULL,
+              guild_id TEXT NOT NULL,
+              theme_id TEXT DEFAULT 'default',
+              title_id TEXT DEFAULT 'Новичок',
+              badges TEXT DEFAULT '[]',
+              PRIMARY KEY (user_id, guild_id)
+            )`,
+            args: [],
+          });
+
+          // Сохраняем выбранную тему (INSERT OR REPLACE)
+          await db.execute({
+            sql: "INSERT OR REPLACE INTO user_cosmetics (user_id, guild_id, theme_id, title_id) VALUES (?, ?, ?, 'Новичок')",
+            args: [uid, gid, selectedTheme],
+          });
+
+          // Список имён тем
+          const themeNames: Record<string, string> = {
+            default: "Классическая (Discord Blurple)",
+            cyberpunk: "Киберпанк (Неоновый роз / Бирюза)",
+            magma: "Магма (Вулканический огонь)",
+            midnight: "Полночь (Глубокий космос / Индиго)",
+            emerald: "Изумруд (Зелёный нефрит / Золото)",
+          };
+
+          const result = {
+            embeds: [{
+              title: "✅ Тема успешно изменена!",
+              description: `Напишите **/rank**, чтобы увидеть обновлённую карточку!`,
+              color: 0x2ecc71,
+            }],
+            components: [],
+          };
+
+          return Response.json({ type: 7, data: result });
+        } catch (err) {
+          console.error("[CardSelectTheme] Error:", err);
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Ошибка при сохранении темы. Попробуйте позже.", flags: 64 },
+          });
+        }
       }
 
       return Response.json({ error: "Unknown interaction" }, { status: 400 });
