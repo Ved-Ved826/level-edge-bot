@@ -10,6 +10,11 @@ import fontData from "../assets/Inter-Regular.ttf";
 import { Card, CardProps } from "./Card";
 
 // ============================================
+// Каталог уникальных реликвий (Этап 14)
+// ============================================
+import { UNIQUE_ITEMS, getRarityColor, getRarityEmoji, findItemById } from "./itemsCatalog";
+
+// ============================================
 // Система достижений (Этап 6 - 27 секретных пасхалок)
 // ============================================
 
@@ -368,6 +373,136 @@ function renderProgressBar(current: number, target: number, length: number = 10)
 }
 
 // ============================================
+// Система реликвий и экипировки (Этап 14)
+// ============================================
+
+// Формат строки предмета в инвентаре
+function formatInventoryItem(item: any, itemId: number): string {
+  const atk = (item.atk_bonus as number) || 0;
+  const def = (item.def_bonus as number) || 0;
+  const crit = (item.crit_bonus as number) || 0;
+  const coin = (item.coin_bonus as number) || 0;
+  const isEquipped = (item.is_equipped as number) || 0;
+  const rarityEmoji = getRarityEmoji(item.rarity as string);
+  return `[ID #${itemId}] ${rarityEmoji} **${item.item_name}** (${item.rarity}) ${isEquipped ? '⭐ [НАДЕТО]' : ''}\n` +
+    `└ ⚔️ +${atk} | 🛡️ +${def} | 🎯 +${crit}% | 🪙 +${coin}%\n`;
+}
+
+// Достать предмет по ID
+async function getInventoryItem(db: any, itemId: number, userId: string, guildId: string): Promise<any | null> {
+  const res = await db.execute({
+    sql: 'SELECT * FROM user_inventory WHERE id = ? AND user_id = ? AND guild_id = ?',
+    args: [itemId, userId, guildId],
+  });
+  return res.rows.length > 0 ? res.rows[0] : null;
+}
+
+// Достать предмет по item_id (для проверки уникальности)
+async function getInventoryItemByItemId(db: any, itemId: string, guildId: string): Promise<any | null> {
+  const res = await db.execute({
+    sql: 'SELECT * FROM user_inventory WHERE item_id = ? AND guild_id = ?',
+    args: [itemId, guildId],
+  });
+  return res.rows.length > 0 ? res.rows[0] : null;
+}
+
+// Достать все предметы пользователя
+async function getUserInventory(db: any, userId: string, guildId: string, page: number = 1, pageSize: number = 6): Promise<{ items: any[]; total: number; page: number; maxPages: number }> {
+  const totalRes = await db.execute({
+    sql: 'SELECT COUNT(*) as total FROM user_inventory WHERE user_id = ? AND guild_id = ?',
+    args: [userId, guildId],
+  });
+  const total = (totalRes.rows[0]?.total as number) || 0;
+  const maxPages = Math.ceil(total / pageSize) || 1;
+  const safePage = Math.max(1, Math.min(page, maxPages));
+  const offset = (safePage - 1) * pageSize;
+
+  const itemsRes = await db.execute({
+    sql: 'SELECT * FROM user_inventory WHERE user_id = ? AND guild_id = ? ORDER BY rarity DESC, atk_bonus + def_bonus + crit_bonus + coin_bonus DESC LIMIT ? OFFSET ?',
+    args: [userId, guildId, pageSize, offset],
+  });
+
+  return { items: itemsRes.rows, total, page: safePage, maxPages };
+}
+
+// Достать все надетые предметы пользователя
+async function getUserGear(db: any, userId: string, guildId: string): Promise<{
+  weapon: any;
+  armor: any;
+  ring: any;
+  amulet: any;
+  totalAtk: number;
+  totalDef: number;
+  totalCrit: number;
+  totalCoin: number;
+}> {
+  const gear: any = { weapon: null, armor: null, ring: null, amulet: null };
+  let totalAtk = 0;
+  let totalDef = 0;
+  let totalCrit = 0;
+  let totalCoin = 0;
+
+  const slots = ['weapon', 'armor', 'ring', 'amulet'] as const;
+  for (const slot of slots) {
+    const res = await db.execute({
+      sql: 'SELECT * FROM user_inventory WHERE user_id = ? AND guild_id = ? AND slot = ? AND is_equipped = 1',
+      args: [userId, guildId, slot],
+    });
+    if (res.rows.length > 0) {
+      const item = res.rows[0];
+      gear[slot] = item;
+      totalAtk += (item.atk_bonus as number) || 0;
+      totalDef += (item.def_bonus as number) || 0;
+      totalCrit += (item.crit_bonus as number) || 0;
+      totalCoin += (item.coin_bonus as number) || 0;
+    }
+  }
+
+  return { ...gear, totalAtk, totalDef, totalCrit, totalCoin };
+}
+
+// Достать лоты рынка
+async function getMarketListings(db: any, guildId: string, page: number = 1, pageSize: number = 10): Promise<{ listings: any[]; total: number; page: number; maxPages: number }> {
+  const totalRes = await db.execute({
+    sql: 'SELECT COUNT(*) as total FROM market_listings WHERE guild_id = ?',
+    args: [guildId],
+  });
+  const total = (totalRes.rows[0]?.total as number) || 0;
+  const maxPages = Math.ceil(total / pageSize) || 1;
+  const safePage = Math.max(1, Math.min(page, maxPages));
+  const offset = (safePage - 1) * pageSize;
+
+  const listingsRes = await db.execute({
+    sql: 'SELECT ml.*, ui.item_name, ui.rarity, ui.slot, ui.atk_bonus, ui.def_bonus, ui.crit_bonus, ui.coin_bonus FROM market_listings ml JOIN user_inventory ui ON ml.inventory_id = ui.id WHERE ml.guild_id = ? ORDER BY ml.created_at DESC LIMIT ? OFFSET ?',
+    args: [guildId, pageSize, offset],
+  });
+
+  return { listings: listingsRes.rows, total, page: safePage, maxPages };
+}
+
+// Добавить лот на рынок
+async function addMarketListing(db: any, guildId: string, sellerId: string, inventoryId: number, price: number): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.execute({
+    sql: 'INSERT INTO market_listings (guild_id, seller_id, inventory_id, price, created_at) VALUES (?, ?, ?, ?, ?)',
+    args: [guildId, sellerId, inventoryId, price, now],
+  });
+  // Get last inserted row id using SELECT
+  const res = await db.execute({ sql: 'SELECT last_insert_rowid() as id' });
+  return (res.rows[0]?.id as number) || 0;
+}
+
+// Проверка уникальности предмета на сервере
+async function isItemUniqueOnServer(db: any, itemId: string, guildId: string): Promise<boolean> {
+  const res = await db.execute({
+    sql: 'SELECT COUNT(*) as count FROM user_inventory WHERE item_id = ? AND guild_id = ? AND item_id != \'junk\'',
+    args: [itemId, guildId],
+  });
+  const count = (res.rows[0]?.count as number) || 0;
+  return count === 0;
+}
+
+// ============================================
 // Система RPG-классов (Этап 12)
 // ============================================
 
@@ -444,7 +579,7 @@ function getClassSkills(classId: string): { skill1Name: string; skill2Name: stri
 // Генерация карточки ранга (/rank)
 // ============================================
 
-async function fetchAvatarAsBase64(user: { id: string; avatar: string | null; discriminator: string }): Promise<string> {
+async function fetchAvatarAsBase64(user: { id: string; avatar: string | null; discriminator?: string }): Promise<string> {
   let url = "";
   if (user.avatar) {
     url = "https://cdn.discordapp.com/avatars/" + user.id + "/" + user.avatar + ".png?size=256";
@@ -475,16 +610,39 @@ async function renderCardToPng(props: CardProps): Promise<Uint8Array> {
 }
 
 async function handleRankCommand(interaction: DiscordInteraction, env: Env): Promise<{ png: Uint8Array; username: string } | { error: string }> {
-  const uid = interaction.member?.user.id;
   const gid = interaction.guild_id;
-  const user = interaction.member?.user;
-  if (!uid || !gid || !user) return { error: "No user or guild" };
+  if (!gid) return { error: "No guild" };
+
+  // Получаем ID целевого пользователя из опции 'user' или используем ID автора команды
+  const targetId = (interaction.data?.options?.find((o: any) => o.name === 'user')?.value as string) || interaction.member?.user.id;
+  if (!targetId) return { error: "No target user" };
+
+  // Получаем объект пользователя для корректного отображения ника и аватарки
+  const memberUser = interaction.member?.user;
+  const resolvedUser = interaction.resolved?.users?.[targetId];
+
+  // Если пользователь сам себя смотрит — используем member.user
+  // Если смотрит другого — берем из resolved.users, но там нет id/avatar, поэтому берем их из member.user и id
+  const targetUser = resolvedUser
+    ? {
+        id: targetId,
+        avatar: memberUser?.avatar ?? null,
+        discriminator: resolvedUser.discriminator || memberUser?.discriminator || "0",
+        username: resolvedUser.username || memberUser?.username || "Unknown"
+      }
+    : {
+        id: targetId,
+        avatar: memberUser?.avatar ?? null,
+        discriminator: memberUser?.discriminator || "0",
+        username: memberUser?.username || "Unknown"
+      };
+
   try {
     const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
 
-    // Достаём xp, messages_count, voice_seconds, streak_days, prestige_count
-    const ures = await db.execute({ sql: "SELECT xp, messages_count, voice_seconds, streak_days, prestige_count FROM users WHERE user_id = ? AND guild_id = ?", args: [uid, gid] });
-    if (ures.rows.length === 0) return { error: "User not found" };
+    // Ищем данные по user_id = targetId в текущей гильдии
+    const ures = await db.execute({ sql: "SELECT xp, messages_count, voice_seconds, streak_days, prestige_count FROM users WHERE user_id = ? AND guild_id = ?", args: [targetId, gid] });
+    if (ures.rows.length === 0) return { error: "User not found in database" };
     const udata = ures.rows[0];
     const xp = (udata.xp as number) || 0;
     const msgc = (udata.messages_count as number) || 0;
@@ -496,7 +654,7 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
     // Достаём тему и титул из user_cosmetics
     const cosmetRes = await db.execute({
       sql: "SELECT theme_id, title_id FROM user_cosmetics WHERE user_id = ? AND guild_id = ?",
-      args: [uid, gid],
+      args: [targetId, gid],
     });
     const themeId = cosmetRes.rows.length > 0 ? (cosmetRes.rows[0].theme_id as string) : "default";
     const customTitle = cosmetRes.rows.length > 0 ? (cosmetRes.rows[0].title_id as string) : "Новичок";
@@ -507,9 +665,9 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
     const total = (tres.rows[0]?.total as number) || 1;
     const lvl = calculateLevel(xp);
     const prog = getXpProgress(xp);
-    const avatar = await fetchAvatarAsBase64(user);
-    const png = await renderCardToPng({ username: user.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, streakDays, prestigeCount, statusColor: "#23a55a", themeId, customTitle });
-    return { png, username: user.username };
+    const avatar = await fetchAvatarAsBase64(targetUser);
+    const png = await renderCardToPng({ username: targetUser.username, avatarBase64: avatar, level: lvl, rank, totalUsers: total, xp, nextLevelXp: prog.nextLevelXp, progress: prog.progress, messagesCount: msgc, voiceHours: vh, streakDays, prestigeCount, statusColor: "#23a55a", themeId, customTitle });
+    return { png, username: targetUser.username };
   } catch (err) {
     console.error("[Error] rank cmd:", err);
     return { error: "DB error" };
@@ -1095,6 +1253,18 @@ export default {
           (async () => {
             try {
               const res = await handleRankCommand(inter, env);
+
+              // Если пользователь не найден в БД - отправляем ephemeral-сообщение
+              if ("error" in res && res.error === "User not found in database") {
+                const resp = await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ content: "❌ Этот пользователь ещё не проявлял активность на сервере!", flags: 64 }),
+                });
+                if (!resp.ok) console.error("Rank not found response fail:", await resp.text());
+                return;
+              }
+
               const r = await sendFollowUp(inter.token, env.DISCORD_APPLICATION_ID, res);
               if (!r.ok) console.error("Follow up fail:", await r.text());
             } catch (e) {
@@ -2587,6 +2757,833 @@ export default {
           })()
         );
 
+        return Response.json({ type: 5 });
+      }
+
+      // 17. Слэш-команда /inventory [page]
+      if (inter.type === 2 && inter.data?.name === "inventory") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        const pageOption = inter.data?.options?.find((o) => o.name === "page")?.value as number;
+        const page = pageOption || 1;
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              const inventoryData = await getUserInventory(db, uid, gid, page);
+
+              if (inventoryData.items.length === 0) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "🎒 Ваш инвентарь пуст! Купите предметы на рынке или найдите дроп.",
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              let description = "";
+              for (const item of inventoryData.items) {
+                description += formatInventoryItem(item, item.id as number);
+              }
+
+              const result = {
+                embeds: [{
+                  title: `🎒 Инвентарь пользователя`,
+                  description: description,
+                  color: 0x5865f2,
+                  footer: { text: `Страница ${inventoryData.page} из ${inventoryData.maxPages} • Всего предметов: ${inventoryData.total}` },
+                }],
+                components: inventoryData.maxPages > 1 ? [
+                  {
+                    type: 1,
+                    components: [
+                      { type: 2, custom_id: `inventory_page_prev_${page}`, style: 2, label: "◀ Назад", disabled: page <= 1 },
+                      { type: 2, custom_id: `inventory_page_next_${page}`, style: 2, label: "Вперед ▶", disabled: page >= inventoryData.maxPages },
+                    ],
+                  },
+                ] : [],
+              };
+
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+            } catch (err) {
+              console.error("[Inventory] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при загрузке инвентаря. Попробуйте позже.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
+      }
+
+      // 18. Слэш-команда /gear [user]
+      if (inter.type === 2 && inter.data?.name === "gear") {
+        const uidOption = inter.data?.options?.find((o) => o.name === "user")?.value as string | undefined;
+        const uid = uidOption || inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!gid || !uid) return Response.json({ error: "No guild or user" }, { status: 400 });
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              const gear = await getUserGear(db, uid, gid);
+
+              let description = "";
+              const slotIcons: Record<string, string> = {
+                weapon: '🗡️',
+                armor: '🛡️',
+                ring: '💍',
+                amulet: '📿',
+              };
+              const slotNames: Record<string, string> = {
+                weapon: 'Оружие',
+                armor: 'Броня',
+                ring: 'Кольцо',
+                amulet: 'Амулет',
+              };
+
+              for (const slot of ['weapon', 'armor', 'ring', 'amulet'] as const) {
+                const item = gear[slot];
+                if (item) {
+                  description += `${slotIcons[slot]} **${slotNames[slot]}:** ${getRarityEmoji(item.rarity as string)} **${item.item_name}**\n`;
+                } else {
+                  description += `${slotIcons[slot]} **${slotNames[slot]}:** Нет\n`;
+                }
+              }
+
+              const result = {
+                embeds: [{
+                  title: `🛡️ Снаряжение пользователя`,
+                  description: description,
+                  color: 0x2ecc71,
+                  fields: [{
+                    name: "Характеристики",
+                    value: `⚔️ Атака: **+${gear.totalAtk}** | 🛡️ Защита: **+${gear.totalDef}** | 🎯 Крит: **+${gear.totalCrit}%** | 🪙 Монеты: **+${gear.totalCoin}%**`,
+                    inline: false,
+                  }],
+                }],
+              };
+
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+            } catch (err) {
+              console.error("[Gear] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при загрузке снаряжения. Попробуйте позже.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
+      }
+
+      // 19. Слэш-команда /equip [id]
+      if (inter.type === 2 && inter.data?.name === "equip") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        const idOption = inter.data?.options?.find((o) => o.name === "id")?.value as number;
+        if (!idOption) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Укажите ID предмета для экипировки!", flags: 64 },
+          });
+        }
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              const item = await getInventoryItem(db, idOption, uid, gid);
+              if (!item) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ Предмет не найден в вашем инвентаре!",
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              const slot = item.slot as string;
+              if (!['weapon', 'armor', 'ring', 'amulet'].includes(slot)) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: `❌ Нельзя экипировать этот предмет в слот ${slot}!`,
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              // Снять старую вещь из этого слота
+              await db.execute({
+                sql: 'UPDATE user_inventory SET is_equipped = 0 WHERE user_id = ? AND guild_id = ? AND slot = ?',
+                args: [uid, gid, slot],
+              });
+
+              // Надеть новую вещь
+              await db.execute({
+                sql: 'UPDATE user_inventory SET is_equipped = 1 WHERE id = ?',
+                args: [idOption],
+              });
+
+              const result = {
+                embeds: [{
+                  title: "✅ Предмет экипирован!",
+                  description: `Вы успешно экипировали **${item.item_name}** в слот **${slot}**!`,
+                  color: 0x2ecc71,
+                }],
+              };
+
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+            } catch (err) {
+              console.error("[Equip] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при экипировке предмета. Попробуйте позже.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
+      }
+
+      // 20. Слэш-команда /unequip [slot]
+      if (inter.type === 2 && inter.data?.name === "unequip") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        const slotOption = inter.data?.options?.find((o) => o.name === "slot")?.value as string;
+        if (!slotOption || !['weapon', 'armor', 'ring', 'amulet'].includes(slotOption)) {
+          return Response.json({
+            type: 4,
+            data: {
+              content: "❌ Укажите правильный слот: weapon, armor, ring или amulet!",
+              flags: 64,
+            },
+          });
+        }
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Проверить, есть ли вещь в этом слоте
+              const itemRes = await db.execute({
+                sql: 'SELECT item_name FROM user_inventory WHERE user_id = ? AND guild_id = ? AND slot = ? AND is_equipped = 1',
+                args: [uid, gid, slotOption],
+              });
+
+              if (itemRes.rows.length === 0) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: `❌ В слоте **${slotOption}** нет надетого предмета!`,
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              // Снять вещь
+              await db.execute({
+                sql: 'UPDATE user_inventory SET is_equipped = 0 WHERE user_id = ? AND guild_id = ? AND slot = ?',
+                args: [uid, gid, slotOption],
+              });
+
+              const result = {
+                embeds: [{
+                  title: "❌ Предмет снят",
+                  description: `Снаряжение из слота **${slotOption}** снято.`,
+                  color: 0xe74c3c,
+                }],
+              };
+
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+            } catch (err) {
+              console.error("[Unequip] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при снятии предмета. Попробуйте позже.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
+      }
+
+      // 21. Слэш-команда /trade user:@User item_id:number price:number
+      if (inter.type === 2 && inter.data?.name === "trade") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        const targetOption = inter.data?.options?.find((o) => o.name === "user")?.value as string;
+        const itemIdOption = inter.data?.options?.find((o) => o.name === "item_id")?.value as number;
+        const priceOption = inter.data?.options?.find((o) => o.name === "price")?.value as number;
+
+        if (!targetOption) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Укажите пользователя, с которым хотите совершить сделку!", flags: 64 },
+          });
+        }
+        if (!itemIdOption) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Укажите ID предмета для продажи!", flags: 64 },
+          });
+        }
+        if (priceOption === undefined || priceOption === null) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Укажите цену в монетах! (0 для подарка)", flags: 64 },
+          });
+        }
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Проверить, что предмет существует и принад��ежит отправителю
+              const itemRes = await db.execute({
+                sql: 'SELECT * FROM user_inventory WHERE id = ? AND user_id = ? AND guild_id = ?',
+                args: [itemIdOption, uid, gid],
+              });
+
+              if (itemRes.rows.length === 0) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ Предмет не найден в вашем инвентаре!",
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              const item = itemRes.rows[0];
+              if ((item.is_equipped as number) === 1) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ Нельзя продать надетый предмет! Сначала снимите его через /unequip.",
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              // Создать запись сделки
+              const now = Math.floor(Date.now() / 1000);
+              await db.execute({
+                sql: 'INSERT INTO direct_trades (guild_id, sender_id, target_id, inventory_id, price, status, created_at) VALUES (?, ?, ?, ?, ?, \'pending\', ?)',
+                args: [gid, uid, targetOption, itemIdOption, priceOption, now],
+              });
+              // Получить ID вставленной записи
+              const tradeRes = await db.execute({ sql: 'SELECT last_insert_rowid() as id', args: [] });
+              const tradeId = (tradeRes.rows[0]?.id as number) || 0;
+
+              // Создать Embed с предложением
+              const result = {
+                embeds: [{
+                  title: "🤝 Предложение сделки!",
+                  description: `<@${uid}> предлагает <@${targetOption}> приобрести предмет:\n\n` +
+                    `📦 **${item.item_name}** (${getRarityEmoji(item.rarity as string)} ${item.rarity})\n` +
+                    `💰 Цена: **${priceOption.toLocaleString()} 🪙**`,
+                  color: 0x3498db,
+                }],
+                components: [
+                  {
+                    type: 1,
+                    components: [
+                      {
+                        type: 2,
+                        custom_id: `trade_accept_${tradeId}`,
+                        style: 3,
+                        label: "✅ Принять сделку",
+                      },
+                      {
+                        type: 2,
+                        custom_id: `trade_decline_${tradeId}`,
+                        style: 4,
+                        label: "❌ Отклонить",
+                      },
+                    ],
+                  },
+                ],
+              };
+
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+            } catch (err) {
+              console.error("[Trade] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при создании сделки. Попробуйте позже.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
+      }
+
+      // 22. Слэш-команда /market [action] [page] [item_id] [price]
+      if (inter.type === 2 && inter.data?.name === "market") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        const actionOption = inter.data?.options?.find((o) => o.name === "action")?.value as string | undefined;
+        const action = actionOption || "browse";
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              if (action === "browse") {
+                const pageOption = inter.data?.options?.find((o) => o.name === "page")?.value as number;
+                const page = pageOption || 1;
+                const marketData = await getMarketListings(db, gid, page);
+
+                if (marketData.listings.length === 0) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "🛒 Рынок пуст! Начните торговлю с помощью `/market sell`.",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                let description = "";
+                for (const listing of marketData.listings) {
+                  description += `📦 **${listing.item_name}** (${getRarityEmoji(listing.rarity as string)} ${listing.rarity})\n` +
+                    `└ ⚔️ +${listing.atk_bonus} | 🛡️ +${listing.def_bonus} | 🎯 +${listing.crit_bonus}% | 🪙 +${listing.coin_bonus}%\n` +
+                    `└ 🛍️ Продавец: <@${listing.seller_id}> | 💰 Цена: **${listing.price.toLocaleString()} 🪙**\n\n`;
+                }
+
+                const result = {
+                  embeds: [{
+                    title: "🛒 Рынок",
+                    description: description,
+                    color: 0x3498db,
+                    footer: { text: `Страница ${marketData.page} из ${marketData.maxPages} • Всего лотов: ${marketData.total}` },
+                  }],
+                  components: marketData.maxPages > 1 ? [
+                    {
+                      type: 1,
+                      components: [
+                        { type: 2, custom_id: `market_page_prev_${page}`, style: 2, label: "◀ Назад", disabled: page <= 1 },
+                        { type: 2, custom_id: `market_page_next_${page}`, style: 2, label: "Вперед ▶", disabled: page >= marketData.maxPages },
+                      ],
+                    },
+                  ] : [],
+                };
+
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(result),
+                });
+              } else if (action === "sell") {
+                const itemOption = inter.data?.options?.find((o) => o.name === "item_id")?.value as number;
+                const priceOption = inter.data?.options?.find((o) => o.name === "price")?.value as number;
+
+                if (!itemOption || !priceOption) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "❌ Используйте: `/market sell item_id:ID price:ЦЕНА`",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                // Проверить предмет
+                const itemRes = await db.execute({
+                  sql: 'SELECT * FROM user_inventory WHERE id = ? AND user_id = ? AND guild_id = ?',
+                  args: [itemOption, uid, gid],
+                });
+
+                if (itemRes.rows.length === 0) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "❌ Предмет не найден в вашем инвентаре!",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                if ((itemRes.rows[0].is_equipped as number) === 1) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "❌ Нельзя выставить на продажу надетый предмет! Сначала снимите его через /unequip.",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                // Добавить лот
+                const listingId = await addMarketListing(db, gid, uid, itemOption, priceOption);
+                const item = itemRes.rows[0];
+
+                const result = {
+                  embeds: [{
+                    title: "✅ Лот выставлен на рынок!",
+                    description: `Вы выставили на продажу:\n\n` +
+                      `📦 **${item.item_name}** (${getRarityEmoji(item.rarity as string)} ${item.rarity})\n` +
+                      `💰 Цена: **${priceOption.toLocaleString()} 🪙**`,
+                    color: 0x2ecc71,
+                  }],
+                };
+
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(result),
+                });
+              } else if (action === "buy") {
+                const itemOption = inter.data?.options?.find((o) => o.name === "item_id")?.value as number;
+
+                if (!itemOption) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "❌ Используйте: `/market buy item_id:ID`",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                const listingRes = await db.execute({
+                  sql: 'SELECT * FROM market_listings WHERE id = ?',
+                  args: [itemOption],
+                });
+
+                if (listingRes.rows.length === 0) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "❌ Лот не найден!",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                const listing = listingRes.rows[0];
+                const sellerId = listing.seller_id as string;
+                const inventoryId = listing.inventory_id as number;
+                const price = listing.price as number;
+
+                // Проверить баланс покупателя
+                const buyerRes = await db.execute({
+                  sql: 'SELECT coins FROM users WHERE user_id = ? AND guild_id = ?',
+                  args: [uid, gid],
+                });
+
+                if (buyerRes.rows.length === 0) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "❌ У вас нет данных в базе! Напишите сообщение, чтобы зарегистрироваться.",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                const buyerCoins = (buyerRes.rows[0].coins as number) || 0;
+                if (buyerCoins < price) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: `❌ У вас недостаточно монет для этой сделки! Текущий баланс: **${buyerCoins.toLocaleString()} 🪙**`,
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                // Проверить, что предмет всё ещё у продавца
+                const itemRes = await db.execute({
+                  sql: 'SELECT * FROM user_inventory WHERE id = ?',
+                  args: [inventoryId],
+                });
+
+                if (itemRes.rows.length === 0) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "⚠️ Предмет уже продан или удалён!",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                const currentItem = itemRes.rows[0];
+                if (currentItem.user_id as string !== sellerId) {
+                  await fetch(webhookUrl, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      content: "⚠️ Предмет уже продан или удалён!",
+                      flags: 64,
+                    }),
+                  });
+                  return;
+                }
+
+                // Передача монет и предмета
+                await db.execute({
+                  sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ?',
+                  args: [price, uid, gid],
+                });
+                await db.execute({
+                  sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+                  args: [price, sellerId, gid],
+                });
+                await db.execute({
+                  sql: 'UPDATE user_inventory SET user_id = ? WHERE id = ?',
+                  args: [uid, inventoryId],
+                });
+
+                // Удалить лот
+                await db.execute({
+                  sql: 'DELETE FROM market_listings WHERE id = ?',
+                  args: [itemOption],
+                });
+
+                const result = {
+                  embeds: [{
+                    title: "🎉 Сделка успешна!",
+                    description: `Вы купили **${currentItem.item_name}** за **${price.toLocaleString()} 🪙**!\n\n` +
+                      `💰 <@${sellerId}> получил свои монеты.`,
+                    color: 0x2ecc71,
+                  }],
+                };
+
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(result),
+                });
+              } else {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ Используйте: /market browse, /market sell item_id:X price:Y, /market buy item_id:X",
+                    flags: 64,
+                  }),
+                });
+              }
+            } catch (err) {
+              console.error("[Market] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при работе с рынком. Попробуйте позже.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
+        return Response.json({ type: 5 });
+      }
+
+      // 23. Слэш-команда /give-relic (только для администраторов)
+      if (inter.type === 2 && inter.data?.name === "give-relic") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        // Проверка прав администратора
+        const perms = (inter.member as any)?.permissions;
+        const isAdmin = perms ? (BigInt(perms) & 8n) === 8n : false;
+        if (!isAdmin) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Эта команда доступна только администраторам сервера!", flags: 64 },
+          });
+        }
+
+        const itemIdOption = inter.data?.options?.find((o) => o.name === "item_id")?.value as string;
+        const targetOption = inter.data?.options?.find((o) => o.name === "user")?.value as string;
+
+        if (!itemIdOption) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Укажите item_id реликвии!", flags: 64 },
+          });
+        }
+        if (!targetOption) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Укажите пользователя для выдачи реликвии!", flags: 64 },
+          });
+        }
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Проверить, есть ли такая реликвия в каталоге
+              const relic = UNIQUE_ITEMS.find((r) => r.item_id === itemIdOption);
+              if (!relic) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: `❌ Реликвия с item_id **${itemIdOption}** не найдена в каталоге!`,
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              // Проверить уникальность на сервере
+              const existing = await getInventoryItemByItemId(db, itemIdOption, gid);
+              if (existing) {
+                const owner = existing.user_id as string;
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: `❌ Этот артефакт уже существует на сервере у <@${owner}>!`,
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              // Создать предмет
+              const now = Math.floor(Date.now() / 1000);
+              await db.execute({
+                sql: 'INSERT INTO user_inventory (user_id, guild_id, item_name, item_id, item_type, rarity, slot, atk_bonus, def_bonus, crit_bonus, coin_bonus, is_equipped, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
+                args: [targetOption, gid, relic.name, relic.item_id, 'relic', relic.rarity, relic.slot, relic.atk, relic.def, relic.crit, relic.coin, relic.description, now],
+              });
+
+              const result = {
+                embeds: [{
+                  title: "🎁 Реликвия выдана!",
+                  description: `Администратор <@${uid}> выдал <@${targetOption}> реликвию:\n\n` +
+                    `📦 **${relic.name}** (${getRarityEmoji(relic.rarity)} ${relic.rarity})\n` +
+                    `⚔️ +${relic.atk} | 🛡️ +${relic.def} | 🎯 +${relic.crit}% | 🪙 +${relic.coin}%\n` +
+                    `💰 Цена: **${relic.price.toLocaleString()} 🪙**`,
+                  color: 0xf1c40f,
+                }],
+              };
+
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+            } catch (err) {
+              console.error("[GiveRelic] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Ошибка при выдаче реликвии. Попробуйте позже.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
         return Response.json({ type: 5 });
       }
 

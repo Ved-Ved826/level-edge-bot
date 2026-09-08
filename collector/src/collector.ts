@@ -929,6 +929,138 @@ async function migrateSchema() {
       console.log('[Migrate] Filled last_activity_at for existing users');
     }
 
+    // ============================================
+    // Миграция 017: Система реликвий, экипировки и рынка (Этап 14)
+    // ============================================
+
+    // Добавляем колонки в user_inventory (если ещё нет)
+    if (!columns.includes('item_id')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN item_id TEXT NOT NULL DEFAULT \'junk\'',
+        args: [],
+      });
+      console.log('[Migrate] Added column: item_id');
+    }
+
+    if (!columns.includes('slot')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN slot TEXT NOT NULL DEFAULT \'junk\'',
+        args: [],
+      });
+      console.log('[Migrate] Added column: slot');
+    }
+
+    if (!columns.includes('atk_bonus')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN atk_bonus INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: atk_bonus');
+    }
+
+    if (!columns.includes('def_bonus')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN def_bonus INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: def_bonus');
+    }
+
+    if (!columns.includes('crit_bonus')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN crit_bonus INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: crit_bonus');
+    }
+
+    if (!columns.includes('coin_bonus')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN coin_bonus INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: coin_bonus');
+    }
+
+    if (!columns.includes('is_equipped')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN is_equipped INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: is_equipped');
+    }
+
+    if (!columns.includes('description')) {
+      await db.execute({
+        sql: 'ALTER TABLE user_inventory ADD COLUMN description TEXT DEFAULT \'\'',
+        args: [],
+      });
+      console.log('[Migrate] Added column: description');
+    }
+
+    // Создаём уникальный индекс для реликвий (только не-junk предметов)
+    await db.execute({
+      sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_guild_item ON user_inventory(guild_id, item_id) WHERE item_id != \'junk\'',
+      args: [],
+    });
+    console.log('[Migrate] Created unique index: idx_unique_guild_item');
+
+    // Создаём таблицу рынка
+    const marketListingsCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='market_listings'",
+      args: [],
+    });
+
+    if (marketListingsCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE market_listings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          guild_id TEXT NOT NULL,
+          seller_id TEXT NOT NULL,
+          inventory_id INTEGER NOT NULL,
+          price INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_market_listings_guild ON market_listings(guild_id)',
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_market_listings_seller ON market_listings(seller_id)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: market_listings');
+    }
+
+    // Создаём таблицу прямых сделок
+    const directTradesCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='direct_trades'",
+      args: [],
+    });
+
+    if (directTradesCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE direct_trades (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          guild_id TEXT NOT NULL,
+          sender_id TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          inventory_id INTEGER NOT NULL,
+          price INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_direct_trades_guild ON direct_trades(guild_id)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: direct_trades');
+    }
+
     // Таблица user_inventory (Этап 11 - Система инвентаря)
     const userInventoryCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_inventory'",
