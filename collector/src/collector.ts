@@ -911,6 +911,24 @@ async function migrateSchema() {
       console.log('[Migrate] Added column: class_id');
     }
 
+    // ============================================
+    // Миграция 016: Колонка last_activity_at для проклятия дезертира (Этап 12+)
+    // ============================================
+    if (!columns.includes('last_activity_at')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN last_activity_at INTEGER DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: last_activity_at');
+
+      // Заполняем существующие записи текущим временем
+      await db.execute({
+        sql: 'UPDATE users SET last_activity_at = ? WHERE last_activity_at = 0 OR last_activity_at IS NULL',
+        args: [Date.now()],
+      });
+      console.log('[Migrate] Filled last_activity_at for existing users');
+    }
+
     // Таблица user_inventory (Этап 11 - Система инвентаря)
     const userInventoryCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_inventory'",
@@ -1716,6 +1734,112 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
+// Функция проверки дезертиров (Этап 12+)
+// ============================================
+
+const DESERTER_CHANNEL_ID = '1051085743839260694'; // Канал Мирового Босса
+
+/**
+ * Проверяет пользователей на дезертирство (7 дней неактивности)
+ * Вызывается каждые 6 часов
+ */
+async function checkDeserters(db: any, bot: Client): Promise<void> {
+  const now = Date.now();
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000; // 7 дней в мс
+
+  try {
+    // Получаем все гильдии
+    const guildsResult = await db.execute({
+      sql: 'SELECT DISTINCT guild_id FROM users',
+      args: [],
+    });
+    const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
+
+    console.log(`[DeserterCheck] Checking ${guildIds.length} guilds for deserters...`);
+
+    for (const guildId of guildIds) {
+      // Находим всех пользователей с классом, которые не проявляли активность 7+ дней
+      const desertersResult = await db.execute({
+        sql: `SELECT user_id, class_id, last_activity_at
+              FROM users
+              WHERE guild_id = ?
+                AND class_id IS NOT NULL
+                AND class_id != 'stripped'
+                AND (? - last_activity_at) > ?`,
+        args: [guildId, now, sevenDaysMs],
+      });
+
+      const deserters = desertersResult.rows || [];
+      if (deserters.length === 0) continue;
+
+      console.log(`[DeserterCheck] Found ${deserters.length} deserters in guild ${guildId}`);
+
+      const guild = bot.guilds.cache.get(guildId);
+      let systemChannel: any = null;
+
+      if (guild) {
+        // Пытаемся найти системный канал через логику
+        systemChannel = guild.channels.cache.get(DESERTER_CHANNEL_ID);
+        if (!systemChannel) {
+          systemChannel = guild.channels.cache.find(c =>
+            c.type === 0 && // GuildText
+            c.permissionsFor(guild.members.me!)?.has('SendMessages')
+          );
+        }
+      }
+
+      for (const deseter of deserters) {
+        const userId = deseter.user_id as string;
+        const classId = deseter.class_id as string;
+        const classDisplayName = getClassDisplayNameForDeserter(classId);
+
+        // 1. Аннулировать класс
+        await db.execute({
+          sql: 'UPDATE users SET class_id = ? WHERE user_id = ? AND guild_id = ?',
+          args: ['stripped', userId, guildId],
+        });
+        console.log(`[DeserterCheck] User ${userId} stripped of class ${classId} in guild ${guildId}`);
+
+        // 2. Отправить позорный анонс
+        if (systemChannel) {
+          try {
+            const embed = {
+              embeds: [{
+                title: '🥀 Классовые навыки атрофировались!',
+                description: `<@${userId}> отсутствовал на сервере 7 дней подряд! За дезертирство его классовые регалии обратились в прах.\n\n*Восстановить право на выбор боевого пути можно только доказав верность — совершив сброс Престижа на 100 уровне!*`,
+                color: 0x747f8d,
+                footer: { text: 'Учтите: при сбросе Престижа на 100 уровне проклятие снимется автоматически' },
+              }],
+            };
+            await systemChannel.send(embed);
+            console.log(`[DeserterCheck] Notification sent for ${userId} in guild ${guildId}`);
+          } catch (sendErr) {
+            console.error(`[DeserterCheck] Failed to send notification for ${userId}:`, sendErr);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[DeserterCheck] Error during check:', err);
+  }
+}
+
+// Вспомогательная функция для отображения класса (без префиксов)
+function getClassDisplayNameForDeserter(classId: string): string {
+  const classes: Record<string, string> = {
+    warrior: 'Паладин',
+    berserker: 'Берсерк',
+    mage: 'Архимаг',
+    necromancer: 'Некромант',
+    ranger: 'Следопыт',
+    assassin: 'Ассасин',
+    artificer: 'Техномаг',
+    bard: 'Бард',
+  };
+  return classes[classId] || classId;
+}
+
+// ============================================
 // Функции для начисления онлайн-секунд (Этап 8 - Server King)
 // ============================================
 
@@ -1743,11 +1867,11 @@ async function awardOnlineSeconds(db: any, bot: Client): Promise<void> {
         const status = member.presence?.status;
         if (!status || status === 'offline') continue;
 
-        // Начисляем +300 секунд онлайн-времени
+        // Начисляем +300 секунд онлайн-времени и обновляем last_activity_at
         try {
           await db.execute({
-            sql: 'UPDATE users SET online_seconds = online_seconds + ? WHERE user_id = ? AND guild_id = ?',
-            args: [onlineSeconds, memberId, guildId],
+            sql: 'UPDATE users SET online_seconds = online_seconds + ?, last_activity_at = ? WHERE user_id = ? AND guild_id = ?',
+            args: [onlineSeconds, Date.now(), memberId, guildId],
           });
         } catch (err) {
           // Если пользователя нет в базе - пропускаем
@@ -2362,6 +2486,14 @@ client.on('ready', async () => {
   setInterval(async () => {
     await awardOnlineSeconds(db, client);
   }, 5 * 60 * 1000); // Каждые 5 минут (300 секунд)
+
+  // Таймер проверки дезертов (каждые 6 часов)
+  console.log('[DeserterCheck] Starting deseter checker...');
+  await checkDeserters(db, client); // Проверка сразу при старте
+  setInterval(async () => {
+    console.log('[DeserterCheck] Checking for deserters...');
+    await checkDeserters(db, client);
+  }, 6 * 60 * 60 * 1000); // Каждые 6 часов
 });
 
 client.on('messageCreate', async (message: Message) => {
@@ -2438,9 +2570,10 @@ client.on('messageCreate', async (message: Message) => {
 
       await db.execute({
         sql: `UPDATE users
-              SET xp = ?, level = ?, messages_count = messages_count + 1, last_message_at = ?
+              SET xp = ?, level = ?, messages_count = messages_count + 1,
+                  last_message_at = ?, last_activity_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [newXp, newLevel, Math.floor(now / 1000), userId, guildId],
+        args: [newXp, newLevel, Math.floor(now / 1000), Math.floor(now / 1000), userId, guildId],
       });
 
       // Проверка достижений (Этап 6)
@@ -2561,9 +2694,9 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
       const isMuted = newState.selfDeaf && newState.selfMute;
       await db.execute({
         sql: `UPDATE users
-              SET voice_joined_at = ?, voice_segment_muted = ?
+              SET voice_joined_at = ?, voice_segment_muted = ?, last_activity_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [Math.floor(now / 1000), isMuted ? 1 : 0, userId, guild.id],
+        args: [Math.floor(now / 1000), isMuted ? 1 : 0, Math.floor(now / 1000), userId, guild.id],
       });
       console.log(`[Voice] ${newState.member?.displayName} joined voice - muted: ${isMuted}`);
       return;
@@ -2601,9 +2734,9 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
           // Exiting voice completely
           await db.execute({
             sql: `UPDATE users
-                  SET voice_seconds = voice_seconds + ?, voice_joined_at = NULL, voice_segment_muted = 0
+                  SET voice_seconds = voice_seconds + ?, voice_joined_at = NULL, voice_segment_muted = 0, last_activity_at = ?
                   WHERE user_id = ? AND guild_id = ?`,
-            args: [voiceSecondsToAdd, userId, guild.id],
+            args: [voiceSecondsToAdd, Math.floor(now / 1000), userId, guild.id],
           });
 
           // Начисление XP за войс через awardXpWithAllMultipliers (Season + Week учёт)
@@ -2635,9 +2768,9 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
           const newMuteState = (newState.selfDeaf && newState.selfMute) ? 1 : 0;
           await db.execute({
             sql: `UPDATE users
-                  SET voice_seconds = voice_seconds + ?, voice_joined_at = ?, voice_segment_muted = ?
+                  SET voice_seconds = voice_seconds + ?, voice_joined_at = ?, voice_segment_muted = ?, last_activity_at = ?
                   WHERE user_id = ? AND guild_id = ?`,
-            args: [voiceSecondsToAdd, Math.floor(now / 1000), newMuteState, userId, guild.id],
+            args: [voiceSecondsToAdd, Math.floor(now / 1000), newMuteState, Math.floor(now / 1000), userId, guild.id],
           });
           console.log(`[Voice] ${newState.member?.displayName} mute changed - added ${voiceSecondsToAdd}s, new state: ${newMuteState}`);
 

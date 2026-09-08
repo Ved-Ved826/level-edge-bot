@@ -379,9 +379,13 @@ interface ClassInfo {
 
 function getClassDisplayName(classId: string): string {
   const classes: Record<string, string> = {
-    warrior: "🛡️ Воин",
-    mage: "🔮 Маг",
-    ranger: "🏹 Охотник",
+    warrior: "🛡️ Паладин",
+    berserker: "🪓 Берсерк",
+    mage: "🔮 Архимаг",
+    necromancer: "💀 Некромант",
+    ranger: "🏹 Следопыт",
+    assassin: "🗡️ Ассасин",
+    artificer: "⚡ Техномаг",
     bard: "🎵 Бард",
   };
   return classes[classId] || classId;
@@ -390,19 +394,39 @@ function getClassDisplayName(classId: string): string {
 function getClassSkills(classId: string): { skill1Name: string; skill2Name: string } {
   const skills: Record<string, ClassInfo> = {
     warrior: {
-      displayName: "🛡️ Воин",
+      displayName: "🛡️ Паладин",
       skill1Name: "Удар щитом",
-      skill2Name: "Вихрь клинков",
+      skill2Name: "Божественный бастион",
+    },
+    berserker: {
+      displayName: "🪓 Берсерк",
+      skill1Name: "Рассекающий взмах",
+      skill2Name: "Казнь",
     },
     mage: {
-      displayName: "🔮 Маг",
+      displayName: "🔮 Архимаг",
       skill1Name: "Огненная стрела",
-      skill2Name: "Комета",
+      skill2Name: "Звёздный метеор",
+    },
+    necromancer: {
+      displayName: "💀 Некромант",
+      skill1Name: "Костяное копьё",
+      skill2Name: "Призыв орды",
     },
     ranger: {
-      displayName: "🏹 Охотник",
+      displayName: "🏹 Следопыт",
       skill1Name: "Прицельный выстрел",
-      skill2Name: "Град стрел",
+      skill2Name: "Охотничий капкан",
+    },
+    assassin: {
+      displayName: "🗡️ Ассасин",
+      skill1Name: "Ядовитый клинок",
+      skill2Name: "Танец теней",
+    },
+    artificer: {
+      displayName: "⚡ Техномаг",
+      skill1Name: "Шоковая турель",
+      skill2Name: "Орбитальный лазер",
     },
     bard: {
       displayName: "🎵 Бард",
@@ -1850,7 +1874,7 @@ export default {
         if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
 
         // Валидация выбранного класса
-        const validClasses = ["warrior", "mage", "ranger", "bard"];
+        const validClasses = ["warrior", "berserker", "mage", "necromancer", "ranger", "assassin", "artificer", "bard"];
         if (!validClasses.includes(classKey)) {
           return Response.json({
             type: 4,
@@ -1876,6 +1900,18 @@ export default {
 
           const userData = userRes.rows[0];
           const level = (userData.level as number) || 0;
+          const classId = userData.class_id as string | null;
+
+          // ПРОВЕРКА СТАТУСА 'stripped' — проклятие дезертира
+          if (classId === 'stripped') {
+            return Response.json({
+              type: 4,
+              data: {
+                content: '❌ Ваши навыки атрофированы за неактивность! Вы не можете выбрать класс до сброса Престижа.',
+                flags: 64,
+              },
+            });
+          }
 
           // Проверка: уровень >= 5 и class_id еще НЕ выбран
           if (level < 5) {
@@ -2328,12 +2364,25 @@ export default {
                 return;
               }
 
+              // Достаём class_id для проверки бонуса техномага
+              const classRes = await db.execute({
+                sql: "SELECT class_id FROM users WHERE user_id = ? AND guild_id = ?",
+                args: [uid, gid],
+              });
+              const classId = classRes.rows.length > 0 ? (classRes.rows[0].class_id as string | null) : null;
+              const isArtificer = classId === 'artificer';
+
               // Считаем сумму и количество
               let totalCoins = 0;
               const itemIds: number[] = [];
               for (const item of junkItems) {
                 totalCoins += (item.sell_price as number) || 10;
                 itemIds.push(item.id as number);
+              }
+
+              // Бонус Техномага (+25% монет)
+              if (isArtificer) {
+                totalCoins = Math.round(totalCoins * 1.25);
               }
 
               // Атомарно начисляем монеты
@@ -2349,16 +2398,16 @@ export default {
                 args: [uid, gid, ...itemIds],
               });
 
-              // От��равляем красивый Embed
+              // Отправляем красивый Embed
               await fetch(webhookUrl, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                   embeds: [{
                     title: "💰 Хлам успешно продан Скупщику!",
-                    description: `Продано предметов: **${junkItems.length} шт.**\nПолучено: **+${totalCoins.toLocaleString()} 🪙**`,
+                    description: `Продано предметов: **${junkItems.length} шт.**\nПолучено: **+${totalCoins.toLocaleString()} 🪙**${isArtificer ? '\n\n⚡ Бонус Техномага (+25%): активирован!' : ''}`,
                     color: 0xF1C40F,
-                    footer: { text: "LevelEdge Marketplace" },
+                    footer: { text: isArtificer ? "LevelEdge Marketplace (Техномаг)" : "LevelEdge Marketplace" },
                   }],
                   components: [],
                 }),
@@ -2414,6 +2463,27 @@ export default {
               const classId = userData.class_id as string | null;
               const prestigeCount = (userData.prestige_count as number) || 0;
 
+              // ПРОВЕРКА СТАТУСА 'stripped' — проклятие дезертира
+              if (classId === 'stripped') {
+                const result = {
+                  embeds: [{
+                    title: '🥀 Вы лишены классового звания!',
+                    description: 'Ваши навыки атрофировались из-за недели неактивности на сервере!\n\n' +
+                      '❌ Вы не можете использовать классовые скиллы и ульту.\n' +
+                      '🔒 Выбрать новый класс можно **только после сброса Престижа** на 100 уровне!\n\n' +
+                      '*Продолжайте общаться и проявлять активность, чтобы вернуть былую славу!*',
+                    color: 0x747f8d,
+                  }],
+                  components: [],
+                };
+                await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(result),
+                });
+                return;
+              }
+
               // А) Если уровень < 5
               if (level < 5) {
                 const result = {
@@ -2438,9 +2508,13 @@ export default {
                   embeds: [{
                     title: "⚔️ Выберите свой боевой класс",
                     description: `Выберите свой путь! **Внимание:** сменить класс можно будет только после сброса Престижа на 100 уровне!\n\n` +
-                      "🛡️ **Воин** — Танк и мощь. Урон масштабируется от защиты.\n" +
-                      "🔮 **Маг** — Стихийный DoT. Поджигает босса автономным ожогом.\n" +
-                      "🏹 **Охотник** — Криты и скорость.\n" +
+                      "🛡️ **Паладин** — Танк и мощь. Урон масштабируется от защиты.\n" +
+                      "🪓 **Берсерк** — Массовый урон по области.\n" +
+                      "🔮 **Архимаг** — Стихийный DoT. Поджигает босса автономным ожогом.\n" +
+                      "💀 **Некромант** — Призыв орды из костей.\n" +
+                      "🏹 **Следопыт** — Криты и скорость.\n" +
+                      "🗡️ **Ассасин** — Мгновенный ядовитый урон.\n" +
+                      "⚡ **Техномаг** — Сетевые турели и лазеры.\n" +
                       "🎵 **Бард** — Душа войса. Баффает друзей в комнате.\n\n" +
                       "*Нажмите кнопку ниже, чтобы сделать окончательный выбор:*",
                     color: 0x5865f2,
@@ -2449,9 +2523,18 @@ export default {
                     {
                       type: 1,
                       components: [
-                        { type: 2, custom_id: "class_pick_warrior", style: 1, label: "🛡️ Воин" },
-                        { type: 2, custom_id: "class_pick_mage", style: 1, label: "🔮 Маг" },
-                        { type: 2, custom_id: "class_pick_ranger", style: 1, label: "🏹 Охотник" },
+                        { type: 2, custom_id: "class_pick_warrior", style: 1, label: "🛡️ Паладин" },
+                        { type: 2, custom_id: "class_pick_berserker", style: 1, label: "🪓 Берсерк" },
+                        { type: 2, custom_id: "class_pick_mage", style: 1, label: "🔮 Архимаг" },
+                        { type: 2, custom_id: "class_pick_necromancer", style: 1, label: "💀 Некромант" },
+                      ],
+                    },
+                    {
+                      type: 1,
+                      components: [
+                        { type: 2, custom_id: "class_pick_ranger", style: 1, label: "🏹 Следопыт" },
+                        { type: 2, custom_id: "class_pick_assassin", style: 1, label: "🗡️ Ассасин" },
+                        { type: 2, custom_id: "class_pick_artificer", style: 1, label: "⚡ Техномаг" },
                         { type: 2, custom_id: "class_pick_bard", style: 1, label: "🎵 Бард" },
                       ],
                     },
@@ -2473,8 +2556,12 @@ export default {
 
               const colorMap: Record<string, number> = {
                 warrior: 0xe74c3c,
+                berserker: 0xc0392b,
                 mage: 0x3498db,
+                necromancer: 0x2c3e50,
                 ranger: 0x2ecc71,
+                assassin: 0x1abc9c,
+                artificer: 0xf39c12,
                 bard: 0x9b59b6,
               };
 
