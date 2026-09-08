@@ -2996,66 +2996,71 @@ client.on('messageCreate', async (message: Message) => {
         args: [userId, guildId, today],
       });
     } else {
+      // ============================================
+      // 1. Расчёт кулдауна и опыта
+      // ============================================
       const row = userResult.rows[0];
       let lastMessageAt = Number(row.last_message_at || 0);
-
-      // Защита от старых записей в секундах: если число 10-значное (< 100 млрд), переводим в миллисекунды
       if (lastMessageAt > 0 && lastMessageAt < 100000000000) {
         lastMessageAt = lastMessageAt * 1000;
       }
 
       const elapsedMs = now - lastMessageAt;
-      const COOLDOWN_MS = cooldown * 1000; // Переводим кулдаун из секунд в миллисекунды
-
-      // XP начисляется если прошёл кулдаун ИЛИ если прошло отрицательное время (сбой)
+      const COOLDOWN_MS = cooldown * 1000;
       const canEarnXp = lastMessageAt === 0 || elapsedMs >= COOLDOWN_MS || elapsedMs < 0;
+
+      // Если кулдаун прошёл — начисляем базовый XP, иначе 0 XP
       const xpToAdd = canEarnXp ? xpPerMessage : 0;
+      const currentXp = Number(row.xp || 0);
+      const finalXp = currentXp + xpToAdd; // СТРОГО СУММИРУЕМ!
+      const finalLevel = calculateLevel(finalXp);
+      const lastMsgToSave = canEarnXp ? now : lastMessageAt;
 
-      // ВСЕГДА обновляем messages_count и last_activity_at для любого сообщения
-      // last_message_at обновляем ТОЛЬКО если XP начислен (чтобы кулдаун не сбрасывался спамом)
-      const newXp = (row.xp as number) || 0 + xpToAdd;
-      const newLevel = calculateLevel(newXp);
-      const lastMessageAtToSave = canEarnXp ? now : lastMessageAt;
-
+      // ============================================
+      // 2. Запрос в БД - обновляем уровень и базовый XP
+      // ============================================
       await db.execute({
         sql: `UPDATE users
               SET xp = ?, level = ?, messages_count = messages_count + 1,
                   last_message_at = ?, last_activity_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [newXp, newLevel, lastMessageAtToSave, now, userId, guildId],
+        args: [finalXp, finalLevel, lastMsgToSave, now, userId, guildId],
       });
 
-      // Начисляем XP через awardXpWithAllMultipliers (Season + Week учёт) только если кулдаун прошёл
+      // ============================================
+      // 3. Начисляем XP с множителями (Season + Week + HH)
+      // ============================================
       let xpToAddFinal = xpToAdd;
       if (xpToAdd > 0) {
-        // Получаем множитель Happy Hours
         const happyHourMultiplier = await isHappyHourActive(db, guildId);
-        // Применяем множитель Happy Hours к базовому XP
         const xpWithHH = xpToAdd * happyHourMultiplier;
 
-        // Используем awardXpWithAllMultipliers для сезонного/недельного учёта
-        const { finalXp } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
-        xpToAddFinal = finalXp;
+        // Эта функция сама обновляет xp через UPDATE users SET xp = xp + ?
+        const { finalXp: finalXpWithMultipliers } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
+        xpToAddFinal = finalXpWithMultipliers;
 
-        // Обновляем xp с учётом множителей (пересчитываем total XP)
-        const newXpWithMultiplier = (row.xp as number) || 0 + xpToAdd;
-        await db.execute({
-          sql: `UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?`,
-          args: [newXpWithMultiplier, calculateLevel(newXpWithMultiplier), userId, guildId],
+        // Обновляем уровень после применения множителей
+        const updatedUserResult = await db.execute({
+          sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
+          args: [userId, guildId],
         });
+        const newXpTotal = (updatedUserResult.rows[0]?.xp as number) || 0;
+        const newLevelFinal = calculateLevel(newXpTotal);
 
-        console.log(`[XP] ${author.username}: base=${xpToAdd}, happyHour=${happyHourMultiplier}x, season/week recorded`);
+        console.log(`[XP] ${author.username}: base=${xpToAdd}, HH=${happyHourMultiplier}x, total=${newXpTotal} XP, level=${newLevelFinal}`);
       } else {
         console.log(`[Message] ${author.username} - Cooldown (${elapsedMs}ms elapsed, need ${COOLDOWN_MS}ms)`);
       }
 
-      // Проверка достижений (Этап 6)
+      // ============================================
+      // 4. Проверка достижений (Этап 6)
+      // ============================================
       const vladivostokDate = new Date(new Date().getTime() + 10 * 60 * 60 * 1000);
       const vh = vladivostokDate.getUTCHours();
       const vm = vladivostokDate.getUTCMinutes();
       const vs = vladivostokDate.getUTCSeconds();
 
-      // witcher_plod: 30-35 сек с прошлого сообщения (elapsedMs в мс)
+      // witcher_plod: 30-35 сек с прошлого сообщения
       const elapsedSeconds = elapsedMs / 1000;
       if (elapsedSeconds >= 30 && elapsedSeconds <= 35) {
         await unlockAchievement(db, userId, guildId, 'witcher_plod', client, message.channel);
@@ -3089,18 +3094,26 @@ client.on('messageCreate', async (message: Message) => {
         }
       }
 
-      // lucky_777, vlad_2000, witcher_coin: определённые суммы XP
-      if (newXp === 777) {
+      // lucky_777, vlad_2000, witcher_coin: определённые суммы XP (проверяем ТЕКУЩИЙ XP из БД)
+      const checkUserResult = await db.execute({
+        sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
+        args: [userId, guildId],
+      });
+      const currentXpInDb = (checkUserResult.rows[0]?.xp as number) || 0;
+
+      if (currentXpInDb === 777) {
         await unlockAchievement(db, userId, guildId, 'lucky_777', client, message.channel);
       }
-      if (newXp === 2000) {
+      if (currentXpInDb === 2000) {
         await unlockAchievement(db, userId, guildId, 'vlad_2000', client, message.channel);
       }
-      if (newXp === 1000 || newXp === 2000 || newXp === 3000 || newXp === 5000) {
+      if (currentXpInDb === 1000 || currentXpInDb === 2000 || currentXpInDb === 3000 || currentXpInDb === 5000) {
         await unlockAchievement(db, userId, guildId, 'witcher_coin', client, message.channel);
       }
 
-      // Обновление ежедневной активности - ВСЕГДА
+      // ============================================
+      // 5. Обновление ежедневной активности - ВСЕГДА
+      // ============================================
       await db.execute({
         sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count)
               VALUES (?, ?, ?, 1)
@@ -3110,12 +3123,14 @@ client.on('messageCreate', async (message: Message) => {
       });
 
       if (xpToAddFinal > 0) {
-        console.log(`[Message] ${author.username} - ${xpToAddFinal} XP (total: ${newXp}, level: ${newLevel})`);
+        console.log(`[Message] ${author.username} - ${xpToAddFinal} XP (total: ${currentXpInDb}, level: ${finalLevel})`);
       } else {
         console.log(`[Message] ${author.username} - Cooldown (total messages: ${(row.messages_count as number) + 1})`);
       }
 
-      // Проверка квестов типа messages - ВСЕГДА
+      // ============================================
+      // 6. Проверка квестов типа messages - ВСЕГДА
+      // ============================================
       await checkQuestsForMessage(db, userId, guildId, message);
     }
 
