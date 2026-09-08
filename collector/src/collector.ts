@@ -2997,29 +2997,36 @@ client.on('messageCreate', async (message: Message) => {
       });
     } else {
       const row = userResult.rows[0];
-      const lastMessageAt = (row.last_message_at as number) || 0;
-      // lastMessageAt теперь в миллисекундах, timeSinceLastMessage в секундах
-      const timeSinceLastMessage = (now - lastMessageAt) / 1000;
+      let lastMessageAt = Number(row.last_message_at || 0);
 
-      // XP начисляется ТОЛЬКО если прошёл кулдаун
-      let xpToAdd = 0;
-      if (timeSinceLastMessage >= cooldown) {
-        xpToAdd = xpPerMessage;
+      // Защита от старых записей в секундах: если число 10-значное (< 100 млрд), переводим в миллисекунды
+      if (lastMessageAt > 0 && lastMessageAt < 100000000000) {
+        lastMessageAt = lastMessageAt * 1000;
       }
 
+      const elapsedMs = now - lastMessageAt;
+      const COOLDOWN_MS = cooldown * 1000; // Переводим кулдаун из секунд в миллисекунды
+
+      // XP начисляется если прошёл кулдаун ИЛИ если прошло отрицательное время (сбой)
+      const canEarnXp = lastMessageAt === 0 || elapsedMs >= COOLDOWN_MS || elapsedMs < 0;
+      const xpToAdd = canEarnXp ? xpPerMessage : 0;
+
       // ВСЕГДА обновляем messages_count и last_activity_at для любого сообщения
+      // last_message_at обновляем ТОЛЬКО если XP начислен (чтобы кулдаун не сбрасывался спамом)
       const newXp = (row.xp as number) || 0 + xpToAdd;
       const newLevel = calculateLevel(newXp);
+      const lastMessageAtToSave = canEarnXp ? now : lastMessageAt;
 
       await db.execute({
         sql: `UPDATE users
               SET xp = ?, level = ?, messages_count = messages_count + 1,
                   last_message_at = ?, last_activity_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [newXp, newLevel, now, now, userId, guildId],
+        args: [newXp, newLevel, lastMessageAtToSave, now, userId, guildId],
       });
 
       // Начисляем XP через awardXpWithAllMultipliers (Season + Week учёт) только если кулдаун прошёл
+      let xpToAddFinal = xpToAdd;
       if (xpToAdd > 0) {
         // Получаем множитель Happy Hours
         const happyHourMultiplier = await isHappyHourActive(db, guildId);
@@ -3028,7 +3035,7 @@ client.on('messageCreate', async (message: Message) => {
 
         // Используем awardXpWithAllMultipliers для сезонного/недельного учёта
         const { finalXp } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
-        xpToAdd = finalXp;
+        xpToAddFinal = finalXp;
 
         // Обновляем xp с учётом множителей (пересчитываем total XP)
         const newXpWithMultiplier = (row.xp as number) || 0 + xpToAdd;
@@ -3038,6 +3045,8 @@ client.on('messageCreate', async (message: Message) => {
         });
 
         console.log(`[XP] ${author.username}: base=${xpToAdd}, happyHour=${happyHourMultiplier}x, season/week recorded`);
+      } else {
+        console.log(`[Message] ${author.username} - Cooldown (${elapsedMs}ms elapsed, need ${COOLDOWN_MS}ms)`);
       }
 
       // Проверка достижений (Этап 6)
@@ -3046,13 +3055,14 @@ client.on('messageCreate', async (message: Message) => {
       const vm = vladivostokDate.getUTCMinutes();
       const vs = vladivostokDate.getUTCSeconds();
 
-      // witcher_plod: 30-35 сек с прошлого сообщения
-      if (timeSinceLastMessage >= 30 && timeSinceLastMessage <= 35) {
+      // witcher_plod: 30-35 сек с прошлого сообщения (elapsedMs в мс)
+      const elapsedSeconds = elapsedMs / 1000;
+      if (elapsedSeconds >= 30 && elapsedSeconds <= 35) {
         await unlockAchievement(db, userId, guildId, 'witcher_plod', client, message.channel);
       }
 
       // fbk_hello: 3+ дня с прошлого сообщения
-      const daysOffline = (now - lastMessageAt) / (1000 * 60 * 60 * 24);
+      const daysOffline = elapsedMs / (1000 * 60 * 60 * 24);
       if (daysOffline >= 3 && daysOffline < 4) {
         await unlockAchievement(db, userId, guildId, 'fbk_hello', client, message.channel);
       }
@@ -3099,8 +3109,8 @@ client.on('messageCreate', async (message: Message) => {
         args: [userId, guildId, today],
       });
 
-      if (xpToAdd > 0) {
-        console.log(`[Message] ${author.username} - ${xpToAdd} XP (total: ${newXp}, level: ${newLevel})`);
+      if (xpToAddFinal > 0) {
+        console.log(`[Message] ${author.username} - ${xpToAddFinal} XP (total: ${newXp}, level: ${newLevel})`);
       } else {
         console.log(`[Message] ${author.username} - Cooldown (total messages: ${(row.messages_count as number) + 1})`);
       }
@@ -3172,13 +3182,20 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
 
     if (oldChannelId && (!newChannelId || muteChanged)) {
       if (joinedAtRow.rows[0]?.voice_joined_at) {
-        const joinedAt = joinedAtRow.rows[0].voice_joined_at as number;
-        const elapsed = Math.floor((now / 1000) - joinedAt);
+        let joinedAt = joinedAtRow.rows[0].voice_joined_at as number;
+
+        // Защита от старых записей в секундах: если число 10-значное (< 100 млрд), переводим в миллисекунды
+        if (joinedAt > 0 && joinedAt < 100000000000) {
+          joinedAt = joinedAt * 1000;
+        }
+
+        const elapsedMs = now - joinedAt;
+        const elapsedSeconds = Math.floor(elapsedMs / 1000);
         const wasMuted = joinedAtRow.rows[0].voice_segment_muted as number;
 
         let voiceSecondsToAdd = 0;
         if (wasMuted === 0) {
-          voiceSecondsToAdd = elapsed;
+          voiceSecondsToAdd = elapsedSeconds;
         }
 
         // Обновление ежедневной активности
