@@ -2224,17 +2224,17 @@ function renderVictoryEmbed(boss: any, topDamageers: Array<{ user_id: string; to
 }
 
 /**
- * Проверяет и спавнит Мирового Босса
+ * Проверяет и спавнит Мирового Босса для одной гильдии
  */
-async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
+async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: string): Promise<void> {
   try {
-    // Ищем активного босса
-    const activeBossResult = await db.execute({
-      sql: 'SELECT * FROM world_boss WHERE status = ? LIMIT 1',
-      args: ['active'],
-    });
-
     const now = Date.now();
+
+    // Ищем активного босса для конкретной гильдии
+    const activeBossResult = await db.execute({
+      sql: 'SELECT * FROM world_boss WHERE guild_id = ? AND status = ? LIMIT 1',
+      args: [guildId, 'active'],
+    });
 
     if (activeBossResult.rows.length > 0) {
       const boss = activeBossResult.rows[0];
@@ -2244,8 +2244,8 @@ async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
       if (now > expiresAt) {
         // Босс сбежал
         await db.execute({
-          sql: "UPDATE world_boss SET status = ? WHERE id = ?",
-          args: ['escaped', boss.id],
+          sql: "UPDATE world_boss SET status = ? WHERE guild_id = ? AND id = ?",
+          args: ['escaped', guildId, boss.id],
         });
 
         // Редактируем сообщение в канале
@@ -2254,7 +2254,7 @@ async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
 
         if (channelId && messageId) {
           try {
-            const guild = bot.guilds.cache.get(boss.guild_id as string);
+            const guild = bot.guilds.cache.get(guildId);
             if (guild) {
               const channel = guild.channels.cache.get(channelId);
               if (channel) {
@@ -2271,7 +2271,7 @@ async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
               }
             }
           } catch (err) {
-            console.error('[WorldBoss] Failed to edit escaped boss message:', err);
+            console.error(`[WorldBoss] Guild ${guildId}: Failed to edit escaped boss message:`, err);
           }
         }
       }
@@ -2281,56 +2281,70 @@ async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
       const spawnedAt = now;
       const expiresAt = now + preset.hours * 3600 * 1000;
 
-      // Получаем guild_id из канала
-      const guild = bot.guilds.cache.get('1051085743231094795') || bot.guilds.cache.first();
-      if (!guild) {
-        console.error('[WorldBoss] Guild not found in cache');
-        return;
-      }
-      const guildId = guild.id;
-
-      // Вставляем запись босса с реальным guild_id
+      // Вставляем запись босса с guild_id
       const insertResult = await db.execute({
         sql: `INSERT INTO world_boss (guild_id, channel_id, boss_id, boss_name, boss_type, max_hp, current_hp, status, spawned_at, expires_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
         args: [guildId, BOSS_CHANNEL_ID, preset.boss_id, preset.boss_name, preset.boss_type, preset.max_hp, preset.max_hp, spawnedAt, expiresAt],
       });
 
-      const bossId = (insertResult.lastRowId as number) || 1;
+      // Обновляем message_id строго к последней активной записи для этой гильдии
+      const lastBossResult = await db.execute({
+        sql: 'SELECT * FROM world_boss WHERE guild_id = ? AND status = ? ORDER BY id DESC LIMIT 1',
+        args: [guildId, 'active'],
+      });
+      const boss = lastBossResult.rows[0];
 
       // Отправляем Embed в канал
-      if (guild) {
-        const channel = guild.channels.cache.get(BOSS_CHANNEL_ID);
-        if (channel) {
-          try {
-            const embed = renderBossEmbed({
-              boss_id: preset.boss_id,
-              boss_name: preset.boss_name,
-              boss_type: preset.boss_type,
-              max_hp: preset.max_hp,
-              current_hp: preset.max_hp,
-              desc: preset.desc,
-              expires_at: expiresAt,
-            });
+      if (boss) {
+        const guild = bot.guilds.cache.get(guildId);
+        if (guild) {
+          const channel = guild.channels.cache.get(BOSS_CHANNEL_ID);
+          if (channel) {
+            try {
+              const embed = renderBossEmbed({
+                boss_id: preset.boss_id,
+                boss_name: preset.boss_name,
+                boss_type: preset.boss_type,
+                max_hp: preset.max_hp,
+                current_hp: preset.max_hp,
+                desc: preset.desc,
+                expires_at: expiresAt,
+              });
 
-            const msg = await (channel as any).send(embed);
+              const msg = await (channel as any).send(embed);
 
-            // Обновляем message_id строго к последней активной записи
-            await db.execute({
-              sql: 'UPDATE world_boss SET message_id = ? WHERE status = ? AND id = (SELECT MAX(id) FROM world_boss WHERE status = ?)',
-              args: [msg.id, 'active', 'active'],
-            });
+              await db.execute({
+                sql: 'UPDATE world_boss SET message_id = ? WHERE guild_id = ? AND id = ?',
+                args: [msg.id, guildId, boss.id],
+              });
 
-            console.log(`[WorldBoss] Spawned ${preset.boss_name} in channel ${BOSS_CHANNEL_ID}, expires in ${preset.hours}h`);
-            console.log(`[WorldBoss] Successfully linked message_id ${msg.id} to active boss`);
-          } catch (err) {
-            console.error('[WorldBoss] Failed to send spawn message:', err);
+              console.log(`[WorldBoss] Guild ${guildId}: Spawned ${preset.boss_name} in channel ${BOSS_CHANNEL_ID}, expires in ${preset.hours}h`);
+              console.log(`[WorldBoss] Guild ${guildId}: Successfully linked message_id ${msg.id} to active boss`);
+            } catch (err) {
+              console.error(`[WorldBoss] Guild ${guildId}: Failed to send spawn message:`, err);
+            }
           }
         }
       }
     }
   } catch (err) {
-    console.error('[WorldBoss] Error in checkAndSpawnWorldBoss:', err);
+    console.error(`[WorldBoss] Guild ${guildId}: Error in checkAndSpawnWorldBoss:`, err);
+  }
+}
+
+/**
+ * Проверяет и спавнит Мирового Босса для всех гильдий
+ */
+async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
+  try {
+    // Перебираем все гильдии, в которых состоит бот
+    for (const [guildId, guild] of bot.guilds.cache) {
+      console.log(`[WorldBoss] Checking world boss for guild: ${guild.name} (${guildId})`);
+      await checkAndSpawnWorldBossForGuild(db, bot, guildId);
+    }
+  } catch (err) {
+    console.error('[WorldBoss] Error in checkAndSpawnWorldBoss loop:', err);
   }
 }
 

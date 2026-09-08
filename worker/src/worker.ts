@@ -1881,8 +1881,8 @@ export default {
         // Атомарный урон в БД
         const bossId = boss.id as number;
         await db.execute({
-          sql: 'UPDATE world_boss SET current_hp = MAX(0, current_hp - ?) WHERE id = ? AND status = ?',
-          args: [finalDamage, bossId, 'active'],
+          sql: 'UPDATE world_boss SET current_hp = MAX(0, current_hp - ?) WHERE id = ? AND guild_id = ? AND status = ?',
+          args: [finalDamage, bossId, gid, 'active'],
         });
 
         await db.execute({
@@ -1897,8 +1897,8 @@ export default {
 
         // Проверяем, повержен ли босс
         const updatedBossResult = await db.execute({
-          sql: 'SELECT current_hp, max_hp, message_id FROM world_boss WHERE id = ?',
-          args: [bossId],
+          sql: 'SELECT current_hp, max_hp, message_id FROM world_boss WHERE id = ? AND guild_id = ?',
+          args: [bossId, gid],
         });
         const updatedBoss = updatedBossResult.rows[0];
         const newCurrentHp = updatedBoss.current_hp as number;
@@ -1909,8 +1909,8 @@ export default {
         if (newCurrentHp <= 0) {
           // БОСС ПОВЕРЖЕН!
           await db.execute({
-            sql: 'UPDATE world_boss SET status = ? WHERE id = ?',
-            args: ['defeated', bossId],
+            sql: 'UPDATE world_boss SET status = ? WHERE id = ? AND guild_id = ?',
+            args: ['defeated', bossId, gid],
           });
 
           // Начисляем награду всем участникам
@@ -4132,8 +4132,8 @@ export default {
 
               // Завершаем старого босса (если есть)
               await db.execute({
-                sql: "UPDATE world_boss SET status = ? WHERE status = ?",
-                args: ['escaped', 'active'],
+                sql: "UPDATE world_boss SET status = ? WHERE status = ? AND guild_id = ?",
+                args: ['escaped', 'active', gid],
               });
 
               // Выбираем случайного босса
@@ -4197,10 +4197,10 @@ export default {
                   const msgData = await response.json() as { id: string };
                   const messageId = msgData.id;
 
-                  // Обновляем message_id в БД
+                  // Обновляем message_id в БД (с фильтром по guild_id для безопасности)
                   await db.execute({
-                    sql: 'UPDATE world_boss SET message_id = ? WHERE id = ?',
-                    args: [messageId, bossId],
+                    sql: 'UPDATE world_boss SET message_id = ? WHERE id = ? AND guild_id = ?',
+                    args: [messageId, bossId, gid],
                   });
 
                   await fetch(webhookUrl, {
