@@ -349,6 +349,12 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
       args: [achievement.reward, userId, guildId],
     });
 
+    // Начисляем монеты за достижение (+300 🪙)
+    await db.execute({
+      sql: 'UPDATE users SET coins = coins + 300 WHERE user_id = ? AND guild_id = ?',
+      args: [userId, guildId],
+    });
+
     // Обновляем уровень
     const userResult = await db.execute({
       sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
@@ -881,6 +887,44 @@ async function migrateSchema() {
         args: [],
       });
       console.log('[Migrate] Added column: prestige_count');
+    }
+
+    // ============================================
+    // Миграция 014: Колонка coins и таблица user_inventory (Этап 11 - Экономика Монет)
+    // ============================================
+    if (!columns.includes('coins')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN coins INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: coins');
+    }
+
+    // Таблица user_inventory (Этап 11 - Система инвентаря)
+    const userInventoryCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_inventory'",
+      args: [],
+    });
+
+    if (userInventoryCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE user_inventory (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          item_name TEXT NOT NULL,
+          item_type TEXT NOT NULL,
+          rarity TEXT NOT NULL,
+          sell_price INTEGER NOT NULL DEFAULT 10,
+          created_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_user_inventory_user ON user_inventory(user_id, guild_id)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: user_inventory');
     }
 
     // ============================================
@@ -2123,13 +2167,19 @@ async function updateQuestProgress(db: any, userId: string, guildId: string, que
         args: [rewardXp, userId, guildId],
       });
 
+      // Начисляем монеты за выполнение квеста (+100 🪙)
+      await db.execute({
+        sql: `UPDATE users SET coins = coins + 100 WHERE user_id = ? AND guild_id = ?`,
+        args: [userId, guildId],
+      });
+
       // Помечаем как выполненный
       await db.execute({
         sql: `UPDATE user_quest_progress SET completed_at = ? WHERE user_id = ? AND guild_id = ? AND quest_daily_id = ?`,
         args: [Date.now(), userId, guildId, questDailyId],
       });
 
-      console.log(`[Quest] User ${userId} completed quest ${questDailyId} - +${rewardXp} XP`);
+      console.log(`[Quest] User ${userId} completed quest ${questDailyId} - +${rewardXp} XP, +100 🪙`);
     }
   } catch (err) {
     console.error('[Quest] Error updating progress:', err);

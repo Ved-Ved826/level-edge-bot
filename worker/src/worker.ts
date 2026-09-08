@@ -715,7 +715,7 @@ async function getUserQuestProgress(db: any, userId: string, guildId: string): P
   }
 }
 
-function buildRankTodayEmbed(userId: string, username: string, activity: any, questProgress: any, today: string, streakData: { streakDays: number; streakFreezes: number }) {
+function buildRankTodayEmbed(userId: string, username: string, activity: any, questProgress: any, today: string, streakData: { streakDays: number; streakFreezes: number }, coins: number) {
   const msgc = activity.messages_count;
   const voicesec = activity.voice_seconds;
   const vh = Math.floor(voicesec / 3600);
@@ -741,6 +741,7 @@ function buildRankTodayEmbed(userId: string, username: string, activity: any, qu
           { name: "🎙 В голосовом канале", value: `**${vm} мин.** (${vh} ч. ${vm % 60} мин.)`, inline: true },
           { name: "🎯 Выполнено квестов", value: `**${questProgress.completed} / ${questProgress.total}**`, inline: true },
           { name: "🔥 Стрик активности", value: `**${streakDays} дн.** (${multiplierText}) | 🧊 Заморозок: **${streakFreezes}**`, inline: true },
+          { name: "🪙 Баланс монет", value: `**${(coins || 0).toLocaleString()}**`, inline: true },
         ],
         footer: { text: `Дата: ${today} • Сброс в 00:00 (Владивосток, UTC+10)` },
       },
@@ -816,6 +817,41 @@ async function getUserXp(db: any, userId: string, guildId: string): Promise<numb
   }
 }
 
+async function getUserCoins(db: any, userId: string, guildId: string): Promise<number> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT coins FROM users WHERE user_id = ? AND guild_id = ?",
+      args: [userId, guildId],
+    });
+    if (res.rows.length === 0) return 0;
+    return (res.rows[0].coins as number) || 0;
+  } catch (err) {
+    console.error("[Duel] Error getting coins:", err);
+    return 0;
+  }
+}
+
+async function updateCoins(db: any, userId: string, guildId: string, coinChange: number): Promise<number> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT coins FROM users WHERE user_id = ? AND guild_id = ?",
+      args: [userId, guildId],
+    });
+    if (res.rows.length === 0) return 0;
+    const currentCoins = (res.rows[0].coins as number) || 0;
+    const newCoins = currentCoins + coinChange;
+    const finalCoins = Math.max(0, newCoins);
+    await db.execute({
+      sql: "UPDATE users SET coins = ? WHERE user_id = ? AND guild_id = ?",
+      args: [finalCoins, userId, guildId],
+    });
+    return finalCoins;
+  } catch (err) {
+    console.error("[Duel] Error updating coins:", err);
+    return 0;
+  }
+}
+
 async function updateXpAndLevel(db: any, userId: string, guildId: string, xpChange: number): Promise<number> {
   try {
     const res = await db.execute({
@@ -877,20 +913,24 @@ async function updateDuelStatus(db: any, duelId: string, status: "accepted" | "d
   }
 }
 
-function buildDuelEmbed(challengerId: string, opponentId: string, bet: number, duelId: string) {
+function buildDuelEmbed(challengerId: string, opponentId: string, bet: number, duelId: string, currency: string = 'xp') {
   const totalPot = bet * 2;
   const tax = Math.round(totalPot * 0.26);
   const winPot = totalPot - tax;
   const winnerProfit = winPot - bet;
 
+  const isCoins = currency === 'coins';
+  const currencyLabel = isCoins ? '🪙' : 'XP';
+  const title = isCoins ? "⚔️ Дуэль на монеты!" : "⚔️ Дуэль на опыт!";
+
   return {
     embeds: [
       {
-        title: "⚔️ Дуэль на опыт!",
+        title: title,
         description: `**<@${challengerId}>** бросает вызов **<@${opponentId}>**!\n\n` +
-          `💰 Ставка: **${bet.toLocaleString()} XP**\n` +
-          `🏆 Чистый выигрыш победителя: **+${winnerProfit.toLocaleString()} XP**\n` +
-          `🔥 Сгораемый налог сервера (26%): **${tax.toLocaleString()} XP**\n\n` +
+          `💰 Ставка: **${bet.toLocaleString()} ${currencyLabel}**\n` +
+          `🏆 Чистый выигрыш победителя: **+${winnerProfit.toLocaleString()} ${currencyLabel}**\n` +
+          `🔥 Сгораемый налог сервера (26%): **${tax.toLocaleString()} ${currencyLabel}**\n\n` +
           `*У оппонента есть 60 секунд, чтобы принять вызов.*`,
         color: 0xFF8800,
         footer: { text: "Дуэль отменится автоматически через 60 секунд" },
@@ -902,7 +942,7 @@ function buildDuelEmbed(challengerId: string, opponentId: string, bet: number, d
         components: [
           {
             type: 2,
-            custom_id: `duel_accept_${duelId}`,
+            custom_id: `duel_accept_${duelId}_${currency}`,
             style: 3,
             label: "⚔️ Принять вызов",
           },
@@ -931,7 +971,10 @@ function buildDuelDeclineEmbed(challengerId: string, opponentId: string) {
   };
 }
 
-function buildDuelResultEmbed(challengerId: string, opponentId: string, winnerId: string, loserId: string, roll1: number, roll2: number, bet: number, tax: number, winnerProfit: number) {
+function buildDuelResultEmbed(challengerId: string, opponentId: string, winnerId: string, loserId: string, roll1: number, roll2: number, bet: number, tax: number, winnerProfit: number, currency: string = 'xp') {
+  const isCoins = currency === 'coins';
+  const currencyLabel = isCoins ? '🪙' : 'XP';
+
   return {
     embeds: [
       {
@@ -941,9 +984,9 @@ function buildDuelResultEmbed(challengerId: string, opponentId: string, winnerId
           `• <@${challengerId}>: выбросил **${roll1}** 🎲\n` +
           `• <@${opponentId}>: выбросил **${roll2}** 🎲\n\n` +
           `💰 Результат:\n` +
-          `• <@${winnerId}> получает: **+${winnerProfit.toLocaleString()} XP**\n` +
-          `• <@${loserId}> теряет: **-${bet.toLocaleString()} XP**\n` +
-          `• Сервер сжёг налог 26%: **${tax.toLocaleString()} XP**`,
+          `• <@${winnerId}> получает: **+${winnerProfit.toLocaleString()} ${currencyLabel}**\n` +
+          `• <@${loserId}> теряет: **-${bet.toLocaleString()} ${currencyLabel}**\n` +
+          `• Сервер сжёг налог 26%: **${tax.toLocaleString()} ${currencyLabel}**`,
         color: 0xFEE75C,
       },
     ],
@@ -1078,18 +1121,19 @@ export default {
               const activity = await getUserDailyActivity(db, uid, gid);
               const questProgress = await getUserQuestProgress(db, uid, gid);
 
-              // Достаём данные о стрике
+              // Достаём данные о стрике и монетах
               const streakRes = await db.execute({
-                sql: "SELECT streak_days, streak_freezes FROM users WHERE user_id = ? AND guild_id = ?",
+                sql: "SELECT streak_days, streak_freezes, coins FROM users WHERE user_id = ? AND guild_id = ?",
                 args: [uid, gid],
               });
               const streakData = {
                 streakDays: (streakRes.rows[0]?.streak_days as number) || 0,
                 streakFreezes: (streakRes.rows[0]?.streak_freezes as number) || 0,
               };
+              const coins = (streakRes.rows[0]?.coins as number) || 0;
 
               const today = getVladivostokDate();
-              const result = buildRankTodayEmbed(uid, user.username, activity, questProgress, today, streakData);
+              const result = buildRankTodayEmbed(uid, user.username, activity, questProgress, today, streakData, coins);
 
               const resp = await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
                 method: "PATCH",
@@ -1144,6 +1188,10 @@ export default {
         // Извлекаем опции команды
         const opponentOption = inter.data?.options?.find((o) => o.name === "opponent")?.value as string;
         const betOption = inter.data?.options?.find((o) => o.name === "bet")?.value as number;
+        const currencyOption = inter.data?.options?.find((o) => o.name === "currency")?.value as string;
+
+        // По умолчанию валюта - XP, можно выбрать 'coins' для дуэлей на монеты
+        const currency = currencyOption || 'xp';
 
         if (!opponentOption) {
           return Response.json({
@@ -1152,11 +1200,30 @@ export default {
           });
         }
 
-        if (!betOption || betOption < 50 || betOption > 2000) {
+        // Валидация ставки в зависимости от валюты
+        if (!betOption) {
           return Response.json({
             type: 4,
-            data: { content: "❌ Ставка должна быть от 50 до 2000 XP!", flags: 64 },
+            data: { content: "❌ Укажите размер ставки!", flags: 64 },
           });
+        }
+
+        if (currency === 'coins') {
+          // Для монет ставка от 100 до 5000
+          if (betOption < 100 || betOption > 5000) {
+            return Response.json({
+              type: 4,
+              data: { content: "❌ Ставка монетами должна быть от 100 до 5000 🪙!", flags: 64 },
+            });
+          }
+        } else {
+          // Для XP ставка от 50 до 2000
+          if (betOption < 50 || betOption > 2000) {
+            return Response.json({
+              type: 4,
+              data: { content: "❌ Ставка должна быть от 50 до 2000 XP!", flags: 64 },
+            });
+          }
         }
 
         // Проверка: оппонент не должен быть ботом или самим собой
@@ -1194,21 +1261,33 @@ export default {
           });
         }
 
-        // Проверка баланса
-        const challengerXp = await getUserXp(db, challengerId, gid);
-        const opponentXp = await getUserXp(db, opponentOption, gid);
+        // Проверка баланса (зависит от валюты)
+        let challengerBalance, opponentBalance;
+        if (currency === 'coins') {
+          challengerBalance = await getUserCoins(db, challengerId, gid);
+          opponentBalance = await getUserCoins(db, opponentOption, gid);
+        } else {
+          challengerBalance = await getUserXp(db, challengerId, gid);
+          opponentBalance = await getUserXp(db, opponentOption, gid);
+        }
 
-        if (challengerXp < betOption) {
+        if (challengerBalance < betOption) {
+          const balanceText = currency === 'coins'
+            ? `❌ У вас недостаточно монет для этой ставки! Текущий баланс: **${challengerBalance.toLocaleString()} 🪙**`
+            : `❌ У вас недостаточно XP для этой ставки! Текущий баланс: **${challengerBalance.toLocaleString()} XP**`;
           return Response.json({
             type: 4,
-            data: { content: `❌ У вас недостаточно XP для этой ставки! Текущий баланс: **${challengerXp.toLocaleString()} XP**`, flags: 64 },
+            data: { content: balanceText, flags: 64 },
           });
         }
 
-        if (opponentXp < betOption) {
+        if (opponentBalance < betOption) {
+          const balanceText = currency === 'coins'
+            ? `❌ У оппонента недостаточно монет для этой ставки! Текущий баланс: **${opponentBalance.toLocaleString()} 🪙**`
+            : `❌ У оппонента недостаточно XP для этой ставки! Текущий баланс: **${opponentBalance.toLocaleString()} XP**`;
           return Response.json({
             type: 4,
-            data: { content: `❌ У оппонента недостаточно XP для этой ставки! Текущий баланс: **${opponentXp.toLocaleString()} XP**`, flags: 64 },
+            data: { content: balanceText, flags: 64 },
           });
         }
 
@@ -1223,8 +1302,8 @@ export default {
           });
         }
 
-        // Отправляем Embed с кнопками
-        const result = buildDuelEmbed(challengerId, opponentOption, betOption, duelId);
+        // Отправляем Embed с кнопками (с учётом валюты)
+        const result = buildDuelEmbed(challengerId, opponentOption, betOption, duelId, currency);
 
         return Response.json({ type: 4, data: result });
       }
@@ -1232,7 +1311,21 @@ export default {
       // 8. Обработка кнопок дуэли (Type 3)
       if (inter.type === 3 && inter.data?.custom_id?.startsWith("duel_accept_") || inter.data?.custom_id?.startsWith("duel_decline_")) {
         const customId = inter.data.custom_id;
-        const duelId = customId.startsWith("duel_accept_") ? customId.substring(14) : customId.substring(16);
+        // Парсим custom_id: duel_accept_{duelId}_{currency} или duel_decline_{duelId}
+        let duelId: string;
+        let currency: string = 'xp'; // по умолчанию XP
+
+        if (customId.startsWith("duel_accept_")) {
+          // Формат: duel_accept_{duelId}_{currency}
+          const parts = customId.substring(14).split('_');
+          duelId = parts.slice(0, -1).join('_'); // всё кроме последнего - duelId
+          const lastPart = parts[parts.length - 1];
+          if (lastPart === 'coins' || lastPart === 'xp') {
+            currency = lastPart;
+          }
+        } else {
+          duelId = customId.substring(16);
+        }
 
         const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
         const duel = await getDuelById(db, duelId);
@@ -1300,26 +1393,40 @@ export default {
           const tax = Math.round(totalPot * 0.26);
           const winnerProfit = (totalPot - tax) - bet;
 
-          // Повторная проверка баланса перед начислением
-          const currentChallengerXp = await getUserXp(db, challengerId, guildId);
-          const currentOpponentXp = await getUserXp(db, opponentId, guildId);
+          // Повторная проверка баланса перед начислением (в зависимости от валюты)
+          let currentChallengerBalance, currentOpponentBalance;
+          if (currency === 'coins') {
+            currentChallengerBalance = await getUserCoins(db, challengerId, guildId);
+            currentOpponentBalance = await getUserCoins(db, opponentId, guildId);
+          } else {
+            currentChallengerBalance = await getUserXp(db, challengerId, guildId);
+            currentOpponentBalance = await getUserXp(db, opponentId, guildId);
+          }
 
-          if (currentChallengerXp < bet || currentOpponentXp < bet) {
+          if (currentChallengerBalance < bet || currentOpponentBalance < bet) {
             await updateDuelStatus(db, duelId, "declined");
+            const currencyLabel = currency === 'coins' ? '🪙' : 'XP';
             return Response.json({
               type: 4,
-              data: { content: "⚠️ У одного из участников больше недостаточно XP для дуэли. Дуэль отменена.", flags: 64 },
+              data: { content: `⚠️ У одного из участников больше недостаточно ${currencyLabel} для дуэли. Дуэль отменена.`, flags: 64 },
             });
           }
 
-          // Начисление/списание XP
-          await updateXpAndLevel(db, winnerId, guildId, winnerProfit);
-          await updateXpAndLevel(db, loserId, guildId, -bet);
+          // Начисление/списание средств (в зависимости от валюты)
+          if (currency === 'coins') {
+            // Монеты: списываем у проигравшего, начисляем победителю
+            await updateCoins(db, loserId, guildId, -bet);  // списываем полную ставку
+            await updateCoins(db, winnerId, guildId, winnerProfit);  // начисляем чистый выигрыш
+          } else {
+            // XP: списываем у проигравшего, начисляем победителю
+            await updateXpAndLevel(db, winnerId, guildId, winnerProfit);
+            await updateXpAndLevel(db, loserId, guildId, -bet);
+          }
 
           // Обновляем статус дуэли
           await updateDuelStatus(db, duelId, "completed");
 
-          const result = buildDuelResultEmbed(challengerId, opponentId, winnerId, loserId, roll1, roll2, bet, tax, winnerProfit);
+          const result = buildDuelResultEmbed(challengerId, opponentId, winnerId, loserId, roll1, roll2, bet, tax, winnerProfit, currency);
 
           // Проверка достижений дуэли (Этап 6)
           const winnerLevel = calculateLevel((await getUserXp(db, winnerId, guildId)));
@@ -1947,6 +2054,196 @@ export default {
             }
           })()
         );
+        return Response.json({ type: 5 });
+      }
+// 16. Слэш-команда /export (Этап 10 - CSV-экспорт аналитики)
+      if (inter.type === 2 && inter.data?.name === "export") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        // Проверка прав администратора (флаг ADMINISTRATOR = 0x8)
+        const perms = (inter.member as any)?.permissions;
+        const isAdmin = perms ? (BigInt(perms) & 8n) === 8n : false;
+
+        // Если прав нет — вежливо сообщаем об этом
+        if (!isAdmin) {
+          return Response.json({
+            type: 4,
+            data: {
+              content: "❌ Эта команда доступна только администраторам сервера!",
+              flags: 64, // Скрытое сообщение (видно только вызвавшему)
+            },
+          });
+        }
+
+        // Немедленно отвечаем type: 5 (думает...), чтобы избежать таймаута при генерации файла
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Выбираем всех участников сервера
+              const usersRes = await db.execute({
+                sql: "SELECT user_id, xp, level, season_xp, messages_count, voice_seconds, online_seconds, streak_days, max_streak, prestige_count FROM users WHERE guild_id = ? ORDER BY xp DESC",
+                args: [gid],
+              });
+
+              const rows = usersRes.rows;
+              if (!rows || rows.length === 0) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ В базе данных пока нет участников для экспорта.",
+                  }),
+                });
+                return;
+              }
+
+              // Формируем аккуратную CSV-таблицу
+              let csvString = "User ID,Total XP,Level,Season XP,Messages,Voice Hours,Online Hours,Current Streak,Max Streak,Prestige Stars\n";
+              for (const r of rows) {
+                const uId = r.user_id as string;
+                const xp = (r.xp as number) || 0;
+                const lvl = (r.level as number) || 0;
+                const sXp = (r.season_xp as number) || 0;
+                const msgCount = (r.messages_count as number) || 0;
+                const voiceHours = (((r.voice_seconds as number) || 0) / 3600).toFixed(1);
+                const onlineHours = (((r.online_seconds as number) || 0) / 3600).toFixed(1);
+                const streakDays = (r.streak_days as number) || 0;
+                const maxStreak = (r.max_streak as number) || 0;
+                const prestigeStars = (r.prestige_count as number) || 0;
+
+                csvString += `"${uId}",${xp},${lvl},${sXp},${msgCount},${voiceHours},${onlineHours},${streakDays},${maxStreak},${prestigeStars}\n`;
+              }
+
+              // Собираем FormData для отправки бинарного файла
+              const formData = new FormData();
+              const payload = JSON.stringify({
+                embeds: [
+                  {
+                    title: "📊 Аналитика сервера выгружена",
+                    description: `Успешно экспортировано участников: **${rows.length}**.\nФайл аналитики прикреплён ниже.`,
+                    color: 0x5865f2,
+                    footer: { text: "LevelEdge Analytics • Полная выгрузка" },
+                  },
+                ],
+                attachments: [{ id: 0, filename: "server-analytics.csv" }],
+              });
+
+              formData.append("payload_json", payload);
+              formData.append(
+                "files[0]",
+                new Blob([csvString], { type: "text/csv;charset=utf-8;" }),
+                "server-analytics.csv"
+              );
+
+              // Отправляем файл в чат
+              const resp = await fetch(webhookUrl, {
+                method: "PATCH",
+                body: formData,
+              });
+
+              if (!resp.ok) {
+                console.error("Export webhook error:", await resp.text());
+              }
+            } catch (err) {
+              console.error("[Export] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Произошла ошибка при формировании аналитики.",
+                }),
+              });
+            }
+          })()
+        );
+
+        return Response.json({ type: 5 });
+      }
+// 16. Слэш-команда /sell-junk (Этап 11 - Быстрый автобай хлама)
+      if (inter.type === 2 && inter.data?.name === "sell-junk") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Выбираем все предметы типа 'junk' пользователя
+              const junkRes = await db.execute({
+                sql: "SELECT id, item_name, sell_price FROM user_inventory WHERE user_id = ? AND guild_id = ? AND item_type = 'junk'",
+                args: [uid, gid],
+              });
+
+              const junkItems = junkRes.rows;
+              if (junkItems.length === 0) {
+                await fetch(webhookUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ У вас нет хлама для быстрой продажи!",
+                    flags: 64, // Скрытое сообщение
+                  }),
+                });
+                return;
+              }
+
+              // Считаем сумму и количество
+              let totalCoins = 0;
+              const itemIds: number[] = [];
+              for (const item of junkItems) {
+                totalCoins += (item.sell_price as number) || 10;
+                itemIds.push(item.id as number);
+              }
+
+              // Атомарно начисляем монеты
+              await db.execute({
+                sql: "UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?",
+                args: [totalCoins, uid, gid],
+              });
+
+              // Удаляем проданные предметы
+              const placeholders = itemIds.map(() => '?').join(', ');
+              await db.execute({
+                sql: `DELETE FROM user_inventory WHERE user_id = ? AND guild_id = ? AND item_type = 'junk' AND id IN (${placeholders})`,
+                args: [uid, gid, ...itemIds],
+              });
+
+              // От��равляем красивый Embed
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  embeds: [{
+                    title: "💰 Хлам успешно продан Скупщику!",
+                    description: `Продано предметов: **${junkItems.length} шт.**\nПолучено: **+${totalCoins.toLocaleString()} 🪙**`,
+                    color: 0xF1C40F,
+                    footer: { text: "LevelEdge Marketplace" },
+                  }],
+                  components: [],
+                }),
+              });
+            } catch (err) {
+              console.error("[SellJunk] Error:", err);
+              await fetch(webhookUrl, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  content: "❌ Произошла ошибка при продаже хлама.",
+                  flags: 64,
+                }),
+              });
+            }
+          })()
+        );
+
         return Response.json({ type: 5 });
       }
 
