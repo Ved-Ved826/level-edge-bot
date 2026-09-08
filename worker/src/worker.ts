@@ -25,10 +25,18 @@ interface DiscordInteraction {
   id: string;
   token: string;
   type: number;
-  data?: { name?: string; options?: { name: string; value: any }[]; custom_id?: string };
-  member?: { user: { id: string; username: string; avatar: string | null; discriminator: string } };
+  data?: {
+    name?: string;
+    options?: { name: string; value: any }[];
+    custom_id?: string;
+  };
+  member?: {
+    user: { id: string; username: string; avatar: string | null; discriminator: string };
+    id: string;
+  };
   guild_id?: string;
   message?: { components?: any[]; embeds?: any[] };
+  resolved?: { users?: { [id: string]: { username: string; discriminator: string } }; members?: { [id: string]: any } };
 }
 
 // ============================================
@@ -443,6 +451,172 @@ function buildQuestsEmbed(questProgress: any, today: string) {
 }
 
 // ============================================
+// Система дуэлей (/duel) - Этап 3
+// ============================================
+
+async function checkUserExists(db: any, userId: string, guildId: string): Promise<boolean> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT 1 FROM users WHERE user_id = ? AND guild_id = ?",
+      args: [userId, guildId],
+    });
+    return res.rows.length > 0;
+  } catch (err) {
+    console.error("[Duel] Error checking user:", err);
+    return false;
+  }
+}
+
+async function getUserXp(db: any, userId: string, guildId: string): Promise<number> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT xp FROM users WHERE user_id = ? AND guild_id = ?",
+      args: [userId, guildId],
+    });
+    if (res.rows.length === 0) return 0;
+    return (res.rows[0].xp as number) || 0;
+  } catch (err) {
+    console.error("[Duel] Error getting XP:", err);
+    return 0;
+  }
+}
+
+async function updateXpAndLevel(db: any, userId: string, guildId: string, xpChange: number): Promise<number> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT xp FROM users WHERE user_id = ? AND guild_id = ?",
+      args: [userId, guildId],
+    });
+    if (res.rows.length === 0) return 0;
+    const currentXp = (res.rows[0].xp as number) || 0;
+    const newXp = currentXp + xpChange;
+    const newLevel = calculateLevel(newXp);
+    await db.execute({
+      sql: "UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?",
+      args: [newXp, newLevel, userId, guildId],
+    });
+    return newXp;
+  } catch (err) {
+    console.error("[Duel] Error updating XP:", err);
+    return 0;
+  }
+}
+
+async function createDuelRecord(db: any, duelId: string, guildId: string, challengerId: string, opponentId: string, betAmount: number): Promise<boolean> {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    await db.execute({
+      sql: "INSERT INTO duels (id, guild_id, challenger_id, opponent_id, bet_amount, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+      args: [duelId, guildId, challengerId, opponentId, betAmount, now],
+    });
+    return true;
+  } catch (err) {
+    console.error("[Duel] Error creating record:", err);
+    return false;
+  }
+}
+
+async function getDuelById(db: any, duelId: string): Promise<any> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT * FROM duels WHERE id = ?",
+      args: [duelId],
+    });
+    return res.rows.length > 0 ? res.rows[0] : null;
+  } catch (err) {
+    console.error("[Duel] Error getting duel:", err);
+    return null;
+  }
+}
+
+async function updateDuelStatus(db: any, duelId: string, status: "accepted" | "declined" | "completed"): Promise<boolean> {
+  try {
+    await db.execute({
+      sql: "UPDATE duels SET status = ? WHERE id = ?",
+      args: [status, duelId],
+    });
+    return true;
+  } catch (err) {
+    console.error("[Duel] Error updating status:", err);
+    return false;
+  }
+}
+
+function buildDuelEmbed(challengerId: string, opponentId: string, bet: number, duelId: string) {
+  const totalPot = bet * 2;
+  const tax = Math.round(totalPot * 0.26);
+  const winPot = totalPot - tax;
+  const winnerProfit = winPot - bet;
+
+  return {
+    embeds: [
+      {
+        title: "⚔️ Дуэль на опыт!",
+        description: `**<@${challengerId}>** бросает вызов **<@${opponentId}>**!\n\n` +
+          `💰 Ставка: **${bet.toLocaleString()} XP**\n` +
+          `🏆 Чистый выигрыш победителя: **+${winnerProfit.toLocaleString()} XP**\n` +
+          `🔥 Сгораемый налог сервера (26%): **${tax.toLocaleString()} XP**\n\n` +
+          `*У оппонента есть 60 секунд, чтобы принять вызов.*`,
+        color: 0xFF8800,
+        footer: { text: "Дуэль отменится автоматически через 60 секунд" },
+      },
+    ],
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 2,
+            custom_id: `duel_accept_${duelId}`,
+            style: 3,
+            label: "⚔️ Принять вызов",
+          },
+          {
+            type: 2,
+            custom_id: `duel_decline_${duelId}`,
+            style: 4,
+            label: "🏳️ Отклонить",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function buildDuelDeclineEmbed(challengerId: string, opponentId: string) {
+  return {
+    embeds: [
+      {
+        title: "🏳️ Дуэль отменена",
+        description: `**<@${opponentId}>** отклонил(а) вызов от **<@${challengerId}>**. Опыт сохранён.`,
+        color: 0x747f8d,
+      },
+    ],
+    components: [],
+  };
+}
+
+function buildDuelResultEmbed(challengerId: string, opponentId: string, winnerId: string, loserId: string, roll1: number, roll2: number, bet: number, tax: number, winnerProfit: number) {
+  return {
+    embeds: [
+      {
+        title: "🏆 Победитель дуэли!",
+        description: `**<@${winnerId}>** победил(а) в дуэли!\n\n` +
+          `🎲 Бросок кубиков:\n` +
+          `• <@${challengerId}>: выбросил **${roll1}** 🎲\n` +
+          `• <@${opponentId}>: выбросил **${roll2}** 🎲\n\n` +
+          `💰 Результат:\n` +
+          `• <@${winnerId}> получает: **+${winnerProfit.toLocaleString()} XP**\n` +
+          `• <@${loserId}> теряет: **-${bet.toLocaleString()} XP**\n` +
+          `• Сервер сжёг налог 26%: **${tax.toLocaleString()} XP**`,
+        color: 0xFEE75C,
+      },
+    ],
+    components: [],
+  };
+}
+
+// ============================================
 // Главный Interaction Handler
 // ============================================
 
@@ -593,6 +767,291 @@ export default {
           })()
         );
         return Response.json({ type: 5 });
+      }
+
+      // 7. Слэш-команда /duel
+      if (inter.type === 2 && inter.data?.name === "duel") {
+        const gid = inter.guild_id;
+        const challengerId = inter.member?.user.id;
+        if (!gid || !challengerId) return Response.json({ error: "No guild or user" }, { status: 400 });
+
+        // Извлекаем опции команды
+        const opponentOption = inter.data?.options?.find((o) => o.name === "opponent")?.value as string;
+        const betOption = inter.data?.options?.find((o) => o.name === "bet")?.value as number;
+
+        if (!opponentOption) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Укажите пользователя, которому хотите бросить вызов!", flags: 64 },
+          });
+        }
+
+        if (!betOption || betOption < 50 || betOption > 2000) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Ставка должна быть от 50 до 2000 XP!", flags: 64 },
+          });
+        }
+
+        // Проверка: оппонент не должен быть ботом или самим собой
+        if (opponentOption === challengerId) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Нельзя дуэлиться с самим собой!", flags: 64 },
+          });
+        }
+
+        if (inter.resolved?.users?.[opponentOption]) {
+          const opponentUser = inter.resolved.users[opponentOption];
+          // Проверка бота по discriminator или флагу (если будет добавлен)
+          // В текущей схеме боты имеют discriminator "0000" - но это не надёжно
+          // Поэтому просто проверяем, что пользователь есть в resolved
+        }
+
+        const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+        // Проверка существования пользователей
+        const challengerExists = await checkUserExists(db, challengerId, gid);
+        const opponentExists = await checkUserExists(db, opponentOption, gid);
+
+        if (!challengerExists) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Вы не найдены в базе данных. Напишите сообщение, чтобы зарегистрироваться!", flags: 64 },
+          });
+        }
+
+        if (!opponentExists) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Оппонент не найден в базе данных. Пользователь должен отправить хотя бы одно сообщение!", flags: 64 },
+          });
+        }
+
+        // Проверка баланса
+        const challengerXp = await getUserXp(db, challengerId, gid);
+        const opponentXp = await getUserXp(db, opponentOption, gid);
+
+        if (challengerXp < betOption) {
+          return Response.json({
+            type: 4,
+            data: { content: `❌ У вас недостаточно XP для этой ставки! Текущий баланс: **${challengerXp.toLocaleString()} XP**`, flags: 64 },
+          });
+        }
+
+        if (opponentXp < betOption) {
+          return Response.json({
+            type: 4,
+            data: { content: `❌ У оппонента недостаточно XP для этой ставки! Текущий баланс: **${opponentXp.toLocaleString()} XP**`, flags: 64 },
+          });
+        }
+
+        // Создаём запись дуэли
+        const duelId = `duel_${Date.now()}_${challengerId.slice(-4)}`;
+        const created = await createDuelRecord(db, duelId, gid, challengerId, opponentOption, betOption);
+
+        if (!created) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Ошибка при создании дуэли. Попробуйте ещё раз.", flags: 64 },
+          });
+        }
+
+        // Отправляем Embed с кнопками
+        const result = buildDuelEmbed(challengerId, opponentOption, betOption, duelId);
+
+        return Response.json({ type: 4, data: result });
+      }
+
+      // 8. Обработка кнопок дуэли (Type 3)
+      if (inter.type === 3 && inter.data?.custom_id?.startsWith("duel_accept_") || inter.data?.custom_id?.startsWith("duel_decline_")) {
+        const customId = inter.data.custom_id;
+        const duelId = customId.startsWith("duel_accept_") ? customId.substring(14) : customId.substring(16);
+
+        const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+        const duel = await getDuelById(db, duelId);
+
+        if (!duel) {
+          return Response.json({
+            type: 4,
+            data: { content: "⚠️ Эта дуэль не найдена или уже завершена.", flags: 64 },
+          });
+        }
+
+        const challengerId = duel.challenger_id as string;
+        const opponentId = duel.opponent_id as string;
+        const guildId = duel.guild_id as string;
+        const bet = duel.bet_amount as number;
+        const status = duel.status as string;
+
+        // Проверка: только оппонент может нажимать кнопки
+        const clickedUserId = inter.member?.user.id;
+        if (!clickedUserId || clickedUserId !== opponentId) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Вы не можете отвечать на чужой вызов дуэли!", flags: 64 },
+          });
+        }
+
+        // Проверка статуса дуэли
+        if (status !== "pending") {
+          return Response.json({
+            type: 4,
+            data: { content: "⚠️ Эта дуэль уже завершена или недействительна.", flags: 64 },
+          });
+        }
+
+        if (customId.startsWith("duel_decline_")) {
+          // Дуэль отклонена
+          await updateDuelStatus(db, duelId, "declined");
+
+          const result = buildDuelDeclineEmbed(challengerId, opponentId);
+          return Response.json({ type: 7, data: result });
+        }
+
+        if (customId.startsWith("duel_accept_")) {
+          // Дуэль принята - проводим бросок кубиков
+          const roll1 = Math.floor(Math.random() * 100) + 1;
+          let roll2 = Math.floor(Math.random() * 100) + 1;
+
+          // Если ничья - перебрасываем для оппонента
+          if (roll1 === roll2) {
+            roll2 = (roll1 % 100) + 1;
+          }
+
+          // Определяем победителя и проигравшего
+          let winnerId: string, loserId: string;
+          if (roll1 > roll2) {
+            winnerId = challengerId;
+            loserId = opponentId;
+          } else {
+            winnerId = opponentId;
+            loserId = challengerId;
+          }
+
+          // Расчёт экономики
+          const totalPot = bet * 2;
+          const tax = Math.round(totalPot * 0.26);
+          const winnerProfit = (totalPot - tax) - bet;
+
+          // Повторная проверка баланса перед начислением
+          const currentChallengerXp = await getUserXp(db, challengerId, guildId);
+          const currentOpponentXp = await getUserXp(db, opponentId, guildId);
+
+          if (currentChallengerXp < bet || currentOpponentXp < bet) {
+            await updateDuelStatus(db, duelId, "declined");
+            return Response.json({
+              type: 4,
+              data: { content: "⚠️ У одного из участников больше недостаточно XP для дуэли. Дуэль отменена.", flags: 64 },
+            });
+          }
+
+          // Начисление/списание XP
+          await updateXpAndLevel(db, winnerId, guildId, winnerProfit);
+          await updateXpAndLevel(db, loserId, guildId, -bet);
+
+          // Обновляем статус дуэли
+          await updateDuelStatus(db, duelId, "completed");
+
+          const result = buildDuelResultEmbed(challengerId, opponentId, winnerId, loserId, roll1, roll2, bet, tax, winnerProfit);
+          return Response.json({ type: 7, data: result });
+        }
+      }
+
+      // 9. Обработка кнопок Войс-дропов (Type 3)
+      if (inter.type === 3 && inter.data?.custom_id?.startsWith("airdrop_claim_")) {
+        const customId = inter.data.custom_id;
+        const dropId = customId.substring(14); // remove "airdrop_claim_"
+
+        const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+        const dropResult = await db.execute({
+          sql: 'SELECT * FROM air_drops WHERE id = ?',
+          args: [dropId],
+        });
+
+        if (dropResult.rows.length === 0) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Дроп не найден или устарел.", flags: 64 },
+          });
+        }
+
+        const drop = dropResult.rows[0];
+        const claimedBy = drop.claimed_by as string | null;
+        const rewardXp = drop.reward_xp as number;
+        const rewardType = drop.reward_type as string;
+
+        // Проверяем, не забрали ли уже дроп
+        if (claimedBy !== null) {
+          return Response.json({
+            type: 4,
+            data: { content: `❌ Этот дроп уже успел забрать <@${claimedBy}>!`, flags: 64 },
+          });
+        }
+
+        const guildId = drop.guild_id as string;
+        const clickedUserId = inter.member?.user.id;
+
+        if (!clickedUserId) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Не удалось определить пользователя.", flags: 64 },
+          });
+        }
+
+        // Помечаем дроп как забранный
+        const now = Math.floor(Date.now() / 1000);
+        await db.execute({
+          sql: 'UPDATE air_drops SET claimed_by = ?, claimed_at = ? WHERE id = ?',
+          args: [clickedUserId, now, dropId],
+        });
+
+        // Выдаём награду
+        if (rewardType === 'freeze') {
+          // Заморозка стрика
+          await db.execute({
+            sql: 'UPDATE users SET streak_freezes = streak_freezes + 1 WHERE user_id = ? AND guild_id = ?',
+            args: [clickedUserId, guildId],
+          });
+          console.log(`[AirDrop] User ${clickedUserId} claimed freeze reward from ${dropId}`);
+        } else if (rewardType === 'xp') {
+          // XP награда
+          await db.execute({
+            sql: 'UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?',
+            args: [rewardXp, clickedUserId, guildId],
+          });
+          // Обновляем уровень
+          const userResult = await db.execute({
+            sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
+            args: [clickedUserId, guildId],
+          });
+          if (userResult.rows.length > 0) {
+            const newXp = userResult.rows[0].xp as number;
+            const newLevel = calculateLevel(newXp);
+            await db.execute({
+              sql: 'UPDATE users SET level = ? WHERE user_id = ? AND guild_id = ?',
+              args: [newLevel, clickedUserId, guildId],
+            });
+          }
+          console.log(`[AirDrop] User ${clickedUserId} claimed ${rewardXp} XP from ${dropId}`);
+        }
+
+        // Ответ обновлением сообщения (Type 7)
+        const result = {
+          embeds: [{
+            title: '🎉 Контейнер вскрыт!',
+            description: `**<@${clickedUserId}>** первым открыл ящик и забрал награду:`,
+            color: 0x2ECC71,
+            fields: rewardType === 'freeze' ? [
+              { name: 'Награда', value: '🧊 **1 Заморозка стрика!**', inline: true },
+            ] : [
+              { name: 'Награда', value: `💰 **+${rewardXp} XP**`, inline: true },
+            ],
+          }],
+          components: [],
+        };
+
+        return Response.json({ type: 7, data: result });
       }
 
       return Response.json({ error: "Unknown interaction" }, { status: 400 });

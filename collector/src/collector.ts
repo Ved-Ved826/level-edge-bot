@@ -136,6 +136,97 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 004: Таблица duels (Этап 3)
+    // ============================================
+    const duelsCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='duels'",
+      args: [],
+    });
+
+    if (duelsCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE duels (
+          id TEXT PRIMARY KEY,
+          guild_id TEXT NOT NULL,
+          challenger_id TEXT NOT NULL,
+          opponent_id TEXT NOT NULL,
+          bet_amount INTEGER NOT NULL,
+          status TEXT DEFAULT 'pending',
+          created_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_duels_guild_status ON duels(guild_id, status)',
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_duels_opponent ON duels(opponent_id)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: duels');
+    }
+
+    // ============================================
+    // Миграция 005: Таблица guild_events (Этап 4 - Happy Hours)
+    // ============================================
+    const guildEventsCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_events'",
+      args: [],
+    });
+
+    if (guildEventsCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE guild_events (
+          guild_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          ends_at INTEGER NOT NULL,
+          multiplier REAL NOT NULL,
+          PRIMARY KEY (guild_id, event_type)
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_guild_events_active ON guild_events(event_type, ends_at)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: guild_events');
+    }
+
+    // ============================================
+    // Миграция 006: Таблица air_drops (Этап 4 - Voice Drops)
+    // ============================================
+    const airDropsCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='air_drops'",
+      args: [],
+    });
+
+    if (airDropsCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE air_drops (
+          id TEXT PRIMARY KEY,
+          guild_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          reward_xp INTEGER NOT NULL,
+          reward_type TEXT NOT NULL,
+          claimed_by TEXT DEFAULT NULL,
+          claimed_at INTEGER DEFAULT NULL,
+          created_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_air_drops_channel ON air_drops(channel_id)',
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_air_drops_claimable ON air_drops(claimed_by, created_at)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: air_drops');
+    }
+
+    // ============================================
     // Миграция 002: Таблицы ежедневной активности и квестов
     // ============================================
     const dailyActivityCheck = await db.execute({
@@ -415,7 +506,242 @@ async function awardXpWithStreak(db: any, userId: string, guildId: string, baseX
   return finalXp;
 }
 
-// Инициализация пула квестов в БД
+// ============================================
+// Функции для Happy Hours (Этап 4 - Счастливые часы)
+// ============================================
+
+/**
+ * Проверяет, активен ли Happy Hour для гильдии
+ * @returns multiplier (2.0) если активен, иначе 1.0
+ */
+async function isHappyHourActive(db: any, guildId: string): Promise<number> {
+  try {
+    const now = Date.now();
+    const result = await db.execute({
+      sql: 'SELECT multiplier FROM guild_events WHERE guild_id = ? AND event_type = ? AND ends_at > ? LIMIT 1',
+      args: [guildId, 'happy_hour', now],
+    });
+
+    if (result.rows.length > 0) {
+      const multiplier = result.rows[0].multiplier as number;
+      console.log(`[HappyHour] Guild ${guildId} has active happy hour with multiplier ${multiplier}`);
+      return multiplier;
+    }
+    return 1.0;
+  } catch (err) {
+    console.error('[HappyHour] Error checking active hour:', err);
+    return 1.0;
+  }
+}
+
+/**
+ * Запускает Happy Hour на 60 минут
+ */
+async function startHappyHour(db: any, guildId: string, bot: Client): Promise<void> {
+  const now = Date.now();
+  const endsAt = now + 60 * 60 * 1000; // 60 минут
+
+  try {
+    await db.execute({
+      sql: 'INSERT OR REPLACE INTO guild_events (guild_id, event_type, ends_at, multiplier) VALUES (?, ?, ?, ?)',
+      args: [guildId, 'happy_hour', endsAt, 2.0],
+    });
+    console.log(`[HappyHour] Started for guild ${guildId}, ends at ${new Date(endsAt).toISOString()}`);
+
+    // Ищем системный или первый доступный текстовый канал для уведомления
+    const guild = bot.guilds.cache.get(guildId);
+    if (guild) {
+      const channel = guild.channels.cache.find(c =>
+        c.type === 0 && // GuildText
+        c.permissionsFor(guild.members.me!)?.has('SendMessages')
+      ) as any;
+
+      if (channel) {
+        const embed = {
+          embeds: [{
+            title: '⚡ СЧАСТЛИВЫЙ ЧАС НАЧАЛСЯ!',
+            description: 'Двойной опыт (2X XP) за все сообщения и войс на ближайшие 60 минут!',
+            color: 0xFFD700,
+            footer: { text: 'Не пропустите этот редкий ивент!' },
+          }],
+        };
+
+        try {
+          await channel.send(embed);
+          console.log(`[HappyHour] Notification sent to guild ${guildId} channel ${channel.id}`);
+        } catch (err) {
+          console.error(`[HappyHour] Failed to send notification to guild ${guildId}:`, err);
+        }
+      } else {
+        console.log(`[HappyHour] No suitable channel found for guild ${guildId}`);
+      }
+    }
+  } catch (err) {
+    console.error('[HappyHour] Error starting happy hour:', err);
+  }
+}
+
+/**
+ * Проверяет и запускает Happy Hour для всех гильдий, где сегодня ещё не было
+ */
+async function checkAndStartHappyHours(db: any, bot: Client): Promise<void> {
+  const today = getVladivostokDate();
+  const now = Date.now();
+
+  try {
+    // Получаем все гильдии (из таблицы users)
+    const guildsResult = await db.execute({
+      sql: 'SELECT DISTINCT guild_id FROM users',
+      args: [],
+    });
+
+    const guildIds = guildsResult.rows.map((r: any) => r.guild_id as string);
+    console.log(`[HappyHour] Checking ${guildIds.length} guilds for happy hour...`);
+
+    for (const guildId of guildIds) {
+      // Проверяем, был ли уже запущен happy hour сегодня
+      const existingResult = await db.execute({
+        sql: 'SELECT COUNT(*) as count FROM guild_events WHERE guild_id = ? AND event_type = ? AND ends_at > ?',
+        args: [guildId, 'happy_hour', now - 24 * 60 * 60 * 1000], // За последние 24 часа
+      });
+
+      const existing = (existingResult.rows[0]?.count as number) || 0;
+
+      if (existing === 0) {
+        // Шанс 30% что Happy Hour запустится (чтобы не спамить каждый час)
+        if (Math.random() < 0.3) {
+          console.log(`[HappyHour] Rolling happy hour for guild ${guildId}...`);
+          await startHappyHour(db, guildId, bot);
+        } else {
+          console.log(`[HappyHour] No roll for guild ${guildId}`);
+        }
+      } else {
+        console.log(`[HappyHour] Already had happy hour today for guild ${guildId}`);
+      }
+    }
+  } catch (err) {
+    console.error('[HappyHour] Error checking starting hours:', err);
+  }
+}
+
+// ============================================
+// Функции для Войс-дропов (Этап 4 - Air Drops)
+// ============================================
+
+// Хранение кулдаунов дропов в памяти (channel_id -> timestamp)
+const airDropCooldowns = new Map<string, number>();
+
+/**
+ * Проверяет, можно ли сделать дроп в канале (учитывает кулдаун)
+ */
+function canSpawnDrop(channelId: string): boolean {
+  const cooldownMs = 30 * 60 * 1000; // 30 минут
+  const lastSpawn = airDropCooldowns.get(channelId) || 0;
+  return Date.now() - lastSpawn > cooldownMs;
+}
+
+/**
+ * Помечает канал как использующий кулдаун дропа
+ */
+function setDropCooldown(channelId: string): void {
+  airDropCooldowns.set(channelId, Date.now());
+}
+
+/**
+ * Создаёт запись дропа в БД
+ */
+async function createAirDrop(db: any, guildId: string, channelId: string, rewardXp: number, rewardType: 'xp' | 'freeze'): Promise<string> {
+  const dropId = `drop_${Date.now()}_${channelId.slice(-4)}`;
+  const now = Math.floor(Date.now() / 1000);
+
+  await db.execute({
+    sql: 'INSERT INTO air_drops (id, guild_id, channel_id, reward_xp, reward_type, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    args: [dropId, guildId, channelId, rewardXp, rewardType, now],
+  });
+
+  return dropId;
+}
+
+/**
+ * Осуществляет спавн войс-дропа в канале
+ */
+async function spawnAirDrop(db: any, channel: any, guildId: string, bot: Client): Promise<void> {
+  const channelId = channel.id;
+
+  if (!canSpawnDrop(channelId)) {
+    return;
+  }
+
+  // Рандомизация награды:
+  // 90% шанс - XP (50-200), 10% шанс - заморозка
+  const isFreeze = Math.random() < 0.10;
+  const rewardXp = isFreeze ? 0 : Math.floor(Math.random() * 151) + 50; // 50-200
+  const rewardType = isFreeze ? 'freeze' : 'xp';
+
+  const dropId = await createAirDrop(db, guildId, channelId, rewardXp, rewardType);
+  setDropCooldown(channelId);
+
+  console.log(`[AirDrop] Spawned ${rewardType === 'freeze' ? 'freeze' : rewardXp + ' XP'} in ${channelId}`);
+
+  // Формируем Embed
+  const embed = {
+    embeds: [{
+      title: '🎁 С неба упал контейнер с припасами!',
+      description: 'Кто первый вскроет ящик, заберёт ценный лут!',
+      color: 0x3498DB,
+      footer: { text: 'Быстрее всех успеешь забрать!' },
+    }],
+    components: [{
+      type: 1,
+      components: [{
+        type: 2,
+        custom_id: `airdrop_claim_${dropId}`,
+        style: 1, // Primary
+        label: '📦 Забрать дроп!',
+      }],
+    }],
+  };
+
+  try {
+    await channel.send(embed);
+    console.log(`[AirDrop] Message sent to channel ${channelId}`);
+  } catch (err) {
+    console.error(`[AirDrop] Failed to send to channel ${channelId}:`, err);
+  }
+}
+
+/**
+ * Проверяет голосовые каналы и спавнит дропы
+ */
+async function checkAndSpawnAirDrops(db: any, bot: Client): Promise<void> {
+  const guilds = bot.guilds.cache;
+
+  for (const guild of guilds.values()) {
+    const voiceChannels = guild.channels.cache.filter(c =>
+      c.type === 2 // GuildVoice
+    ) as any;
+
+    for (const channel of voiceChannels.values()) {
+      const members = channel.members;
+
+      // Фильтруем: >= 3 человек, не боты, не deaf + mute
+      const eligibleMembers = members.filter((m: any) =>
+        !m.user.bot &&
+        !m.voice.selfDeaf &&
+        !m.voice.selfMute
+      );
+
+      if (eligibleMembers.size >= 3) {
+        console.log(`[AirDrop] Checking voice channel ${channel.id} with ${eligibleMembers.size} eligible members`);
+        await spawnAirDrop(db, channel, guild.id, bot);
+      }
+    }
+  }
+}
+
+// ============================================
+// Функции для работы с квестами и ежедневной активностью
+// ============================================
 async function ensureQuestsPool(db: any): Promise<void> {
   try {
     const checkResult = await db.execute({
@@ -743,6 +1069,22 @@ client.on('ready', async () => {
   console.log(`[Collector] Ready as ${client.user?.tag}`);
   const memUsage = Math.round(process.memoryUsage().rss / 1024 / 1024);
   console.log(`[Memory] RSS: ${memUsage}MB`);
+
+  // ============================================
+  // Запуск фоновых таймеров для Этапа 4
+  // ============================================
+
+  // Таймер проверки и запуска Happy Hours (раз в час)
+  setInterval(async () => {
+    console.log('[HappyHour] Checking for happy hours...');
+    await checkAndStartHappyHours(db, client);
+  }, 60 * 60 * 1000); // Каждый час
+
+  // Таймер проверки и спавна Войс-дропов (раз в 7 минут)
+  setInterval(async () => {
+    console.log('[AirDrop] Checking for air drops...');
+    await checkAndSpawnAirDrops(db, client);
+  }, 7 * 60 * 1000); // Каждые 7 минут (сразу запуск)
 });
 
 client.on('messageCreate', async (message: Message) => {
@@ -797,6 +1139,23 @@ client.on('messageCreate', async (message: Message) => {
       let xpToAdd = 0;
       if (timeSinceLastMessage >= cooldown) {
         xpToAdd = xpPerMessage;
+      }
+
+      // Применяем множители: стрик + счастливый час
+      if (xpToAdd > 0) {
+        // Получаем множитель Happy Hours
+        const happyHourMultiplier = await isHappyHourActive(db, guildId);
+        // Получаем множитель стрика
+        const { streakDays } = await updateUserStreak(db, userId, guildId);
+        const streakMultiplier = getXpMultiplier(streakDays);
+
+        // Итоговый XP = base * streak_multiplier * happy_hour_multiplier
+        const totalMultiplier = streakMultiplier * happyHourMultiplier;
+        const finalXp = Math.round(xpToAdd * totalMultiplier);
+
+        console.log(`[XP] ${author.username}: base=${xpToAdd}, streak=${streakMultiplier}x, happyHour=${happyHourMultiplier}x, total=${finalXp} XP`);
+
+        xpToAdd = finalXp;
       }
 
       const oldXp = (row.xp as number) || 0;
@@ -920,6 +1279,31 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
                   WHERE user_id = ? AND guild_id = ?`,
             args: [voiceSecondsToAdd, userId, guild.id],
           });
+
+          // Начисление XP за войс с множителями
+          if (voiceSecondsToAdd > 0) {
+            const xpPerMinute = 5; // Базовый XP за минуту в войсе
+            const xpToAdd = Math.floor(voiceSecondsToAdd / 60) * xpPerMinute;
+
+            if (xpToAdd > 0) {
+              // Получаем множители
+              const happyHourMultiplier = await isHappyHourActive(db, guild.id);
+              const { streakDays } = await updateUserStreak(db, userId, guild.id);
+              const streakMultiplier = getXpMultiplier(streakDays);
+
+              const totalMultiplier = streakMultiplier * happyHourMultiplier;
+              const finalXp = Math.round(xpToAdd * totalMultiplier);
+
+              // Обновляем XP
+              await db.execute({
+                sql: 'UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?',
+                args: [finalXp, userId, guild.id],
+              });
+
+              console.log(`[Voice XP] ${newState.member?.displayName}: ${xpToAdd} base, ${streakMultiplier}x streak, ${happyHourMultiplier}x HH, total +${finalXp} XP`);
+            }
+          }
+
           console.log(`[Voice] ${newState.member?.displayName} exited voice - added ${voiceSecondsToAdd}s (was muted: ${!!wasMuted})`);
 
           // Проверка квестов типа voice
