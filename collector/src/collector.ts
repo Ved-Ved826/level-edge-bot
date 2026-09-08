@@ -429,7 +429,8 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
 async function checkWitcherPlod(db: any, userId: string, guildId: string, data: { now: number; lastMessageAt: number }): Promise<boolean> {
   const { now, lastMessageAt } = data;
   if (!lastMessageAt) return false;
-  const diff = Math.floor((now - lastMessageAt * 1000) / 1000);
+  // lastMessageAt теперь в миллисекундах, diff в секундах
+  const diff = Math.floor((now - lastMessageAt) / 1000);
   return diff >= 30 && diff <= 35;
 }
 
@@ -706,7 +707,8 @@ async function checkHLAirdrop(db: any, userId: string, guildId: string, data: { 
 async function checkFBKHello(db: any, userId: string, guildId: string, data: { lastMessageAt: number; now: number }): Promise<boolean> {
   const { lastMessageAt, now } = data;
   if (!lastMessageAt) return true; // Первое сообщение
-  const daysOffline = (now - lastMessageAt * 1000) / (1000 * 60 * 60 * 24);
+  // lastMessageAt теперь в миллисекундах
+  const daysOffline = (now - lastMessageAt) / (1000 * 60 * 60 * 24);
   return daysOffline >= 3;
 }
 
@@ -927,6 +929,15 @@ async function migrateSchema() {
         args: [Date.now()],
       });
       console.log('[Migrate] Filled last_activity_at for existing users');
+
+      // ИСПРАВЛЕНИЕ: конвертируем старые записи, которые были сохранены в СЕКУНДАХ
+      // Если last_activity_at < 1000000000000, это явно секунды (не миллисекунды)
+      // Такие значения преобразуем в миллисекунды
+      await db.execute({
+        sql: 'UPDATE users SET last_activity_at = last_activity_at * 1000 WHERE last_activity_at > 0 AND last_activity_at < 1000000000000',
+        args: [],
+      });
+      console.log('[Migrate] Converted legacy second-based last_activity_at values to milliseconds');
     }
 
     // ============================================
@@ -1967,12 +1978,14 @@ async function checkDeserters(db: any, bot: Client): Promise<void> {
 
     for (const guildId of guildIds) {
       // Находим всех пользователей с классом, которые не проявляли активность 7+ дней
+      // last_activity_at > 0 - защита от обнуления пользователей с пустым значением
       const desertersResult = await db.execute({
         sql: `SELECT user_id, class_id, last_activity_at
               FROM users
               WHERE guild_id = ?
                 AND class_id IS NOT NULL
                 AND class_id != 'stripped'
+                AND last_activity_at > 0
                 AND (? - last_activity_at) > ?`,
         args: [guildId, now, sevenDaysMs],
       });
@@ -2972,7 +2985,7 @@ client.on('messageCreate', async (message: Message) => {
       await db.execute({
         sql: `INSERT INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at)
               VALUES (?, ?, ?, ?, 1, ?, ?)`,
-        args: [userId, guildId, newXp, newLevel, Math.floor(now / 1000), Math.floor(now / 1000)],
+        args: [userId, guildId, newXp, newLevel, now, now],
       });
       console.log(`[Message] New user: ${author.username} (${userId}) in ${guild.name} - XP: ${newXp}, Level: ${newLevel}`);
 
@@ -2985,7 +2998,8 @@ client.on('messageCreate', async (message: Message) => {
     } else {
       const row = userResult.rows[0];
       const lastMessageAt = (row.last_message_at as number) || 0;
-      const timeSinceLastMessage = (now - lastMessageAt * 1000) / 1000;
+      // lastMessageAt теперь в миллисекундах, timeSinceLastMessage в секундах
+      const timeSinceLastMessage = (now - lastMessageAt) / 1000;
 
       // XP начисляется ТОЛЬКО если прошёл кулдаун
       let xpToAdd = 0;
@@ -3002,7 +3016,7 @@ client.on('messageCreate', async (message: Message) => {
               SET xp = ?, level = ?, messages_count = messages_count + 1,
                   last_message_at = ?, last_activity_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [newXp, newLevel, Math.floor(now / 1000), Math.floor(now / 1000), userId, guildId],
+        args: [newXp, newLevel, now, now, userId, guildId],
       });
 
       // Начисляем XP через awardXpWithAllMultipliers (Season + Week учёт) только если кулдаун прошёл
@@ -3038,7 +3052,7 @@ client.on('messageCreate', async (message: Message) => {
       }
 
       // fbk_hello: 3+ дня с прошлого сообщения
-      const daysOffline = (now - lastMessageAt * 1000) / (1000 * 60 * 60 * 24);
+      const daysOffline = (now - lastMessageAt) / (1000 * 60 * 60 * 24);
       if (daysOffline >= 3 && daysOffline < 4) {
         await unlockAchievement(db, userId, guildId, 'fbk_hello', client, message.channel);
       }
@@ -3144,7 +3158,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
         sql: `UPDATE users
               SET voice_joined_at = ?, voice_segment_muted = ?, last_activity_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [Math.floor(now / 1000), isMuted ? 1 : 0, Math.floor(now / 1000), userId, guild.id],
+        args: [now, isMuted ? 1 : 0, now, userId, guild.id],
       });
       console.log(`[Voice] ${newState.member?.displayName} joined voice - muted: ${isMuted}`);
       return;
@@ -3184,7 +3198,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
             sql: `UPDATE users
                   SET voice_seconds = voice_seconds + ?, voice_joined_at = NULL, voice_segment_muted = 0, last_activity_at = ?
                   WHERE user_id = ? AND guild_id = ?`,
-            args: [voiceSecondsToAdd, Math.floor(now / 1000), userId, guild.id],
+            args: [voiceSecondsToAdd, now, userId, guild.id],
           });
 
           // Начисление XP за войс через awardXpWithAllMultipliers (Season + Week учёт)
@@ -3218,7 +3232,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
             sql: `UPDATE users
                   SET voice_seconds = voice_seconds + ?, voice_joined_at = ?, voice_segment_muted = ?, last_activity_at = ?
                   WHERE user_id = ? AND guild_id = ?`,
-            args: [voiceSecondsToAdd, Math.floor(now / 1000), newMuteState, Math.floor(now / 1000), userId, guild.id],
+            args: [voiceSecondsToAdd, now, newMuteState, now, userId, guild.id],
           });
           console.log(`[Voice] ${newState.member?.displayName} mute changed - added ${voiceSecondsToAdd}s, new state: ${newMuteState}`);
 
