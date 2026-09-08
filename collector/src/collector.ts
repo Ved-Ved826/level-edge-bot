@@ -848,6 +848,25 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 012: Колонки для годовой активности и максимального стрика (Этап 8)
+    // ============================================
+    if (!columns.includes('online_seconds')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN online_seconds INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: online_seconds');
+    }
+
+    if (!columns.includes('max_streak')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN max_streak INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: max_streak');
+    }
+
+    // ============================================
     // Миграция 007: Таблица user_cosmetics (Этап 5 - Кастомизация карточки)
     // ============================================
     const userCosmeticsCheck = await db.execute({
@@ -1417,6 +1436,14 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
       });
     }
 
+    // Обновление максимального стрика
+    if (newStreakDays > (userRow.max_streak as number || 0)) {
+      await db.execute({
+        sql: 'UPDATE users SET max_streak = ? WHERE user_id = ? AND guild_id = ?',
+        args: [newStreakDays, userId, guildId],
+      });
+    }
+
     return { streakDays: newStreakDays, streakFreezes, updated: needUpdate };
   } catch (err) {
     console.error('[Streak] Error updating streak:', err);
@@ -1613,6 +1640,53 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
     }
   } catch (err) {
     console.error('[WeeklyReset] Error during reset:', err);
+  }
+}
+
+// ============================================
+// Функции для начисления онлайн-секунд (Этап 8 - Server King)
+// ============================================
+
+/**
+ * Начисляет +300 секунд онлайн-времени всем активным пользователям
+ * Вызывается раз в 5 минут через setInterval
+ */
+async function awardOnlineSeconds(db: any, bot: Client): Promise<void> {
+  const now = Date.now();
+  const onlineSeconds = 300; // 5 минут
+
+  try {
+    const guilds = bot.guilds.cache;
+
+    for (const guild of guilds.values()) {
+      const guildId = guild.id;
+      const members = guild.members.cache;
+
+      for (const [memberId, member] of members) {
+        // Пропускаем ботов
+        if (member.user.bot) continue;
+
+        // Проверяем статус пользователя (online, idle, dnd)
+        // status === 'offline' означает оффлайн
+        const status = member.presence?.status;
+        if (!status || status === 'offline') continue;
+
+        // Начисляем +300 секунд онлайн-времени
+        try {
+          await db.execute({
+            sql: 'UPDATE users SET online_seconds = online_seconds + ? WHERE user_id = ? AND guild_id = ?',
+            args: [onlineSeconds, memberId, guildId],
+          });
+        } catch (err) {
+          // Если пользователя нет в базе - пропускаем
+          console.debug(`[OnlineSeconds] User ${memberId} not found in DB for guild ${guildId}`);
+        }
+      }
+    }
+
+    console.log(`[OnlineSeconds] Awarded ${onlineSeconds}s to active users across ${guilds.size} guilds`);
+  } catch (err) {
+    console.error('[OnlineSeconds] Error awarding seconds:', err);
   }
 }
 
@@ -2203,6 +2277,13 @@ client.on('ready', async () => {
     console.log('[AirDrop] Checking for air drops...');
     await checkAndSpawnAirDrops(db, client);
   }, 7 * 60 * 1000); // Каждые 7 минут (сразу запуск)
+
+  // Таймер начисления онлайн-секунд (раз в 5 минут для Этапа 8)
+  console.log('[OnlineSeconds] Starting online seconds ticker...');
+  await awardOnlineSeconds(db, client); // Проверка сразу при старте
+  setInterval(async () => {
+    await awardOnlineSeconds(db, client);
+  }, 5 * 60 * 1000); // Каждые 5 минут (300 секунд)
 });
 
 client.on('messageCreate', async (message: Message) => {
