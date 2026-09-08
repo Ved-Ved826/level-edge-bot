@@ -321,7 +321,7 @@ async function checkAchievementUnlocked(db: any, userId: string, guildId: string
 /**
  * Начисляет награду за достижение и отправляет оповещение
  */
-async function unlockAchievement(db: any, userId: string, guildId: string, achievementId: string, bot: Client): Promise<void> {
+async function unlockAchievement(db: any, userId: string, guildId: string, achievementId: string, bot: Client, targetChannel?: any): Promise<void> {
   const achievement = ACHIEVEMENTS_LIST.find(a => a.id === achievementId);
   if (!achievement) {
     console.error(`[Achievement] Achievement not found: ${achievementId}`);
@@ -369,10 +369,16 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
     try {
       const guild = bot.guilds.cache.get(guildId);
       if (guild) {
-        const channel = guild.channels.cache.find(c =>
-          c.type === 0 && // GuildText
-          c.permissionsFor(guild.members.me!)?.has('SendMessages')
-        ) as any;
+        // Если передан целевой канал, используем его (для messageCreate - message.channel, для voice - голосовой канал)
+        let channel: any = targetChannel || null;
+
+        // Если целевой канал не передан или недоступен, ищем любой текстовый канал
+        if (!channel) {
+          channel = guild.channels.cache.find(c =>
+            c.type === 0 && // GuildText
+            c.permissionsFor(guild.members.me!)?.has('SendMessages')
+          );
+        }
 
         if (channel) {
           const embed = {
@@ -391,9 +397,9 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
 
           try {
             await channel.send(embed);
-            console.log(`[Achievement] Notification sent to ${guildId}`);
+            console.log(`[Achievement] Notification sent to ${guildId} channel ${channel.id}`);
           } catch (sendErr) {
-            console.error(`[Achievement] Failed to send notification:`, sendErr);
+            console.error(`[Achievement] Failed to send notification to channel ${channel.id}:`, sendErr);
           }
         }
       }
@@ -1425,7 +1431,7 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
           needUpdate = true;
           console.log(`[Streak] User ${userId} used freeze to preserve streak`);
           // vlad_typhoon: спасли стрик заморозкой
-          await unlockAchievement(db, userId, guildId, 'vlad_typhoon', client);
+          await unlockAchievement(db, userId, guildId, 'vlad_typhoon', client, undefined);
         } else {
           // Нет заморозки - сброс
           newStreakDays = 1;
@@ -1436,7 +1442,7 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
 
       // fbk_sandwich: стрик достиг 14 дней
       if (newStreakDays === 14 && needUpdate) {
-        await unlockAchievement(db, userId, guildId, 'fbk_sandwich', client);
+        await unlockAchievement(db, userId, guildId, 'fbk_sandwich', client, undefined);
       }
     }
 
@@ -2386,46 +2392,46 @@ client.on('messageCreate', async (message: Message) => {
 
       // witcher_plod: 30-35 сек с прошлого сообщения
       if (timeSinceLastMessage >= 30 && timeSinceLastMessage <= 35) {
-        await unlockAchievement(db, userId, guildId, 'witcher_plod', client);
+        await unlockAchievement(db, userId, guildId, 'witcher_plod', client, message.channel);
       }
 
       // fbk_hello: 3+ дня с прошлого сообщения
       const daysOffline = (now - lastMessageAt * 1000) / (1000 * 60 * 60 * 24);
       if (daysOffline >= 3 && daysOffline < 4) {
-        await unlockAchievement(db, userId, guildId, 'fbk_hello', client);
+        await unlockAchievement(db, userId, guildId, 'fbk_hello', client, message.channel);
       }
 
       // vlad_midnight: 00:00 (Владивосток)
       if (vh === 0 && vm === 0 && vs < 10) {
-        await unlockAchievement(db, userId, guildId, 'vlad_midnight', client);
+        await unlockAchievement(db, userId, guildId, 'vlad_midnight', client, message.channel);
       }
 
       // vlad_pyanse: 12:00-13:00 (Владивосток)
       if (vh >= 12 && vh < 13) {
-        await unlockAchievement(db, userId, guildId, 'vlad_pyanse', client);
+        await unlockAchievement(db, userId, guildId, 'vlad_pyanse', client, message.channel);
       }
 
       // hl_wakeup: 06:00-07:00 (Владивосток)
       if (vh >= 6 && vh < 7) {
-        await unlockAchievement(db, userId, guildId, 'hl_wakeup', client);
+        await unlockAchievement(db, userId, guildId, 'hl_wakeup', client, message.channel);
       }
 
       // rdr_lenny: капс >= 10 букв, время с 02:00 до 05:00
       if (message.content && message.content.length >= 10 && message.content === message.content.toUpperCase()) {
         if (vh >= 2 && vh < 5) {
-          await unlockAchievement(db, userId, guildId, 'rdr_lenny', client);
+          await unlockAchievement(db, userId, guildId, 'rdr_lenny', client, message.channel);
         }
       }
 
       // lucky_777, vlad_2000, witcher_coin: определённые суммы XP
       if (newXp === 777) {
-        await unlockAchievement(db, userId, guildId, 'lucky_777', client);
+        await unlockAchievement(db, userId, guildId, 'lucky_777', client, message.channel);
       }
       if (newXp === 2000) {
-        await unlockAchievement(db, userId, guildId, 'vlad_2000', client);
+        await unlockAchievement(db, userId, guildId, 'vlad_2000', client, message.channel);
       }
       if (newXp === 1000 || newXp === 2000 || newXp === 3000 || newXp === 5000) {
-        await unlockAchievement(db, userId, guildId, 'witcher_coin', client);
+        await unlockAchievement(db, userId, guildId, 'witcher_coin', client, message.channel);
       }
 
       // Обновление ежедневной активности
