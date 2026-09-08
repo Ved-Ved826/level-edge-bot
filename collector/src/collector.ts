@@ -837,6 +837,17 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 011: Колонка last_week_reset для еженедельного сброса (Этап 7)
+    // ============================================
+    if (!columns.includes('last_week_reset')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN last_week_reset TEXT DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: last_week_reset');
+    }
+
+    // ============================================
     // Миграция 007: Таблица user_cosmetics (Этап 5 - Кастомизация карточки)
     // ============================================
     const userCosmeticsCheck = await db.execute({
@@ -1123,6 +1134,61 @@ async function migrateSchema() {
       console.log('[Migrate] Created table: user_quest_progress');
     }
 
+    // ============================================
+    // Миграция 010: Таблицы сезонов и недель (Этап 7)
+    // ============================================
+
+    // Добавляем колонку season_xp в users
+    if (!columns.includes('season_xp')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN season_xp INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: season_xp');
+    }
+
+    // Таблица weekly_activity для еженедельной активности
+    const weeklyActivityCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='weekly_activity'",
+      args: [],
+    });
+
+    if (weeklyActivityCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE weekly_activity (
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          week_key TEXT NOT NULL,
+          xp_earned INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (user_id, guild_id, week_key)
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: weekly_activity');
+    }
+
+    // Таблица season_archive для архива сезонов
+    const seasonArchiveCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='season_archive'",
+      args: [],
+    });
+
+    if (seasonArchiveCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE season_archive (
+          id TEXT PRIMARY KEY,
+          guild_id TEXT NOT NULL,
+          season_name TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          rank_pos INTEGER NOT NULL,
+          season_xp INTEGER NOT NULL,
+          ended_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      console.log('[Migrate] Created table: season_archive');
+    }
+
     // Проверка таблицы guild_settings
     const settingsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_settings'",
@@ -1157,6 +1223,57 @@ function getVladivostokDate(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+// ============================================
+// Функции для работы с сезонами и неделями (Этап 7)
+// ============================================
+
+// Получение ключа недели в формате ISO (YYYY-Www) по времени Владивостока
+function getWeekKey(date: Date = new Date()): string {
+  // Сдвигаем дату на UTC+10 (Владивосток)
+  const vladivostokDate = new Date(date.getTime() + 10 * 60 * 60 * 1000);
+
+  // Получаем год и номер недели
+  const year = vladivostokDate.getFullYear();
+  const dayOfYear = getDayOfYear(vladivostokDate);
+
+  // Номер недели по ISO (понедельник - начало недели)
+  const weekNum = Math.ceil(dayOfYear / 7);
+
+  return `Y${year}-W${weekNum.toString().padStart(2, '0')}`;
+}
+
+// Получение номера дня в году
+function getDayOfYear(date: Date): number {
+  const start = new Date(date.getFullYear(), 0, 0);
+  const diff = date.getTime() - start.getTime();
+  const oneDay = 1000 * 60 * 60 * 24;
+  return Math.floor(diff / oneDay);
+}
+
+// Определение текущего сезона по месяцу
+function getCurrentSeason(date: Date = new Date()): string {
+  const month = date.getUTCMonth() + 1; // 1-12
+
+  if (month >= 3 && month <= 5) return '🌸 Весенний кубок';
+  if (month >= 6 && month <= 8) return '☀️ Летний драйв';
+  if (month >= 9 && month <= 11) return '🍂 Осенний марафон';
+  return '❄️ Зимняя битва'; // 12, 1, 2
+}
+
+// Получение ID сезона для архива (например: '2026-spring')
+function getSeasonId(date: Date = new Date()): string {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + 1;
+
+  let seasonName = '';
+  if (month >= 3 && month <= 5) seasonName = 'spring';
+  else if (month >= 6 && month <= 8) seasonName = 'summer';
+  else if (month >= 9 && month <= 11) seasonName = 'autumn';
+  else seasonName = 'winter';
+
+  return `${year}-${seasonName}`;
 }
 
 // ============================================
@@ -1324,6 +1441,179 @@ async function awardXpWithStreak(db: any, userId: string, guildId: string, baseX
   console.log(`[Streak] User ${userId} received ${baseXp} XP x${multiplier} = ${finalXp} XP (streak: ${streakDays} days)`);
 
   return finalXp;
+}
+
+// ============================================
+// Функции для сезонного и недельного начисления XP (Этап 7)
+// ============================================
+
+/**
+ * Начисляет опыт с учётом стрика и сезонного/недельного начисления
+ * @returns {finalXp, seasonXp, weekXp} - итоговый XP, сезонный опыт, недельный опыт
+ */
+async function awardXpWithAllMultipliers(
+  db: any,
+  userId: string,
+  guildId: string,
+  baseXp: number
+): Promise<{ finalXp: number; seasonXp: number; weekXp: number }> {
+  // Сначала обновляем стрик
+  const { streakDays } = await updateUserStreak(db, userId, guildId);
+
+  // Получаем множители
+  const streakMultiplier = getXpMultiplier(streakDays);
+
+  // Получаем текущие сезон и неделю
+  const seasonName = getCurrentSeason();
+  const weekKey = getWeekKey();
+
+  // Начисляем сезонный XP
+  const seasonXp = Math.round(baseXp * streakMultiplier);
+  await db.execute({
+    sql: 'UPDATE users SET season_xp = season_xp + ? WHERE user_id = ? AND guild_id = ?',
+    args: [seasonXp, userId, guildId],
+  });
+
+  // UPSERT в weekly_activity
+  await db.execute({
+    sql: `INSERT INTO weekly_activity (user_id, guild_id, week_key, xp_earned)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(user_id, guild_id, week_key)
+          DO UPDATE SET xp_earned = xp_earned + ?`,
+    args: [userId, guildId, weekKey, seasonXp, seasonXp],
+  });
+
+  // Применяем множитель стрика к итоговому XP
+  const finalXp = seasonXp;
+
+  await db.execute({
+    sql: 'UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?',
+    args: [finalXp, userId, guildId],
+  });
+
+  console.log(
+    `[XP] User ${userId}: base=${baseXp}, streak=${streakMultiplier}x, season=${seasonName}, week=${weekKey}, total=${finalXp} XP`
+  );
+
+  return { finalXp, seasonXp, weekXp: seasonXp };
+}
+
+/**
+ * Проверяет смену недели и проводит еженедельный сброс
+ * Вызывается раз в час
+ */
+async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
+  const currentWeekKey = getWeekKey();
+  const currentSeasonId = getSeasonId();
+
+  // Получаем ID прошлой недели из guild_settings (сохраняем как JSON)
+  let lastWeekKey: string | null = null;
+  try {
+    const settingsResult = await db.execute({
+      sql: 'SELECT weekly_reset_week FROM guild_settings WHERE guild_id = ?', // Проверим все гильдии
+      args: [],
+    });
+
+    // Получаем все guild_id из users
+    const guildsResult = await db.execute({
+      sql: 'SELECT DISTINCT guild_id FROM users',
+      args: [],
+    });
+
+    const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
+
+    for (const guildId of guildIds) {
+      // Получаем дату последнего сброса из пользовательской записи
+      const userResult = await db.execute({
+        sql: 'SELECT last_week_reset FROM users WHERE user_id = ? AND guild_id = ?',
+        args: [guildId, guildId], // Используем guild_id как user_id для хранения метаданных
+      });
+
+      if (userResult.rows.length > 0) {
+        lastWeekKey = userResult.rows[0].last_week_reset as string | null;
+      }
+
+      // Если неделя изменилась
+      if (lastWeekKey !== currentWeekKey) {
+        console.log(`[WeeklyReset] Week changed from ${lastWeekKey} to ${currentWeekKey} for guild ${guildId}`);
+
+        // Находим победителя прошлой недели
+        const winnerResult = await db.execute({
+          sql: `SELECT user_id, xp_earned FROM weekly_activity
+                WHERE guild_id = ? AND week_key = ?
+                ORDER BY xp_earned DESC LIMIT 1`,
+          args: [guildId, lastWeekKey || currentWeekKey],
+        });
+
+        if (winnerResult.rows.length > 0) {
+          const winner = winnerResult.rows[0];
+          const winnerId = winner.user_id as string;
+          const xpEarned = winner.xp_earned as number;
+
+          // Начисляем +500 XP победителю
+          await db.execute({
+            sql: 'UPDATE users SET xp = xp + 500 WHERE user_id = ? AND guild_id = ?',
+            args: [winnerId, guildId],
+          });
+
+          // Обновляем уровень
+          const userXpResult = await db.execute({
+            sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
+            args: [winnerId, guildId],
+          });
+          if (userXpResult.rows.length > 0) {
+            const newXp = userXpResult.rows[0].xp as number;
+            const newLevel = calculateLevel(newXp);
+            await db.execute({
+              sql: 'UPDATE users SET level = ? WHERE user_id = ? AND guild_id = ?',
+              args: [newLevel, winnerId, guildId],
+            });
+          }
+
+          console.log(`[WeeklyReset] User ${winnerId} wins guild ${guildId} week - +500 XP`);
+
+          // Отправляем Embed в канал
+          try {
+            const guild = bot.guilds.cache.get(guildId);
+            if (guild) {
+              const channel = guild.channels.cache.find(c =>
+                c.type === 0 && // GuildText
+                c.permissionsFor(guild.members.me!)?.has('SendMessages')
+              ) as any;
+
+              if (channel) {
+                const embed = {
+                  embeds: [{
+                    title: '👑 ЧЕМПИОН НЕДЕЛИ ОПРЕДЕЛЁН!',
+                    description: `**<@${winnerId}>** набрал больше всех опыта за прошлую неделю (**${xpEarned.toLocaleString()} XP**) и получает звание Чемпиона Недели и +500 XP!`,
+                    color: 0xFFD700,
+                    footer: { text: 'Неделя завершается в 00:00 (Владивосток)' },
+                  }],
+                };
+
+                try {
+                  await channel.send(embed);
+                  console.log(`[WeeklyReset] Notification sent to guild ${guildId}`);
+                } catch (sendErr) {
+                  console.error(`[WeeklyReset] Failed to send notification to guild ${guildId}:`, sendErr);
+                }
+              }
+            }
+          } catch (notifyErr) {
+            console.error('[WeeklyReset] Error in notification:', notifyErr);
+          }
+        }
+
+        // Обновляем дату последнего сброса
+        await db.execute({
+          sql: 'INSERT OR REPLACE INTO users (user_id, guild_id, last_week_reset) VALUES (?, ?, ?)',
+          args: [guildId, guildId, currentWeekKey],
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[WeeklyReset] Error during reset:', err);
+  }
 }
 
 // ============================================
@@ -1891,8 +2181,16 @@ client.on('ready', async () => {
   console.log(`[Memory] RSS: ${memUsage}MB`);
 
   // ============================================
-  // Запуск фоновых таймеров для Этапа 4
+  // Запуск фоновых таймеров для Этапа 4-7
   // ============================================
+
+  // Еженедельный сброс и награждение (раз в час)
+  console.log('[WeeklyReset] Starting weekly reset checker...');
+  await checkWeeklyReset(db, client); // Проверка сразу при старте
+  setInterval(async () => {
+    console.log('[WeeklyReset] Checking for weekly reset...');
+    await checkWeeklyReset(db, client);
+  }, 60 * 60 * 1000); // Каждый час
 
   // Таймер проверки и запуска Happy Hours (раз в час)
   setInterval(async () => {
@@ -1961,21 +2259,18 @@ client.on('messageCreate', async (message: Message) => {
         xpToAdd = xpPerMessage;
       }
 
-      // Применяем множители: стрик + счастливый час
+      // Начисляем XP через awardXpWithAllMultipliers (Season + Week учёт)
       if (xpToAdd > 0) {
         // Получаем множитель Happy Hours
         const happyHourMultiplier = await isHappyHourActive(db, guildId);
-        // Получаем множитель стрика
-        const { streakDays } = await updateUserStreak(db, userId, guildId);
-        const streakMultiplier = getXpMultiplier(streakDays);
+        // Применяем множитель Happy Hours к базовому XP
+        const xpWithHH = xpToAdd * happyHourMultiplier;
 
-        // Итоговый XP = base * streak_multiplier * happy_hour_multiplier
-        const totalMultiplier = streakMultiplier * happyHourMultiplier;
-        const finalXp = Math.round(xpToAdd * totalMultiplier);
-
-        console.log(`[XP] ${author.username}: base=${xpToAdd}, streak=${streakMultiplier}x, happyHour=${happyHourMultiplier}x, total=${finalXp} XP`);
-
+        // Используем awardXpWithAllMultipliers для сезонного/недельного учёта
+        const { finalXp } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
         xpToAdd = finalXp;
+
+        console.log(`[XP] ${author.username}: base=${xpToAdd}, happyHour=${happyHourMultiplier}x, season/week recorded`);
       }
 
       const oldXp = (row.xp as number) || 0;
@@ -2152,27 +2447,21 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
             args: [voiceSecondsToAdd, userId, guild.id],
           });
 
-          // Начисление XP за войс с множителями
+          // Начисление XP за войс через awardXpWithAllMultipliers (Season + Week учёт)
           if (voiceSecondsToAdd > 0) {
             const xpPerMinute = 5; // Базовый XP за минуту в войсе
             const xpToAdd = Math.floor(voiceSecondsToAdd / 60) * xpPerMinute;
 
             if (xpToAdd > 0) {
-              // Получаем множители
+              // Получаем множитель Happy Hours
               const happyHourMultiplier = await isHappyHourActive(db, guild.id);
-              const { streakDays } = await updateUserStreak(db, userId, guild.id);
-              const streakMultiplier = getXpMultiplier(streakDays);
+              // Применяем множитель Happy Hours к базовому XP
+              const xpWithHH = xpToAdd * happyHourMultiplier;
 
-              const totalMultiplier = streakMultiplier * happyHourMultiplier;
-              const finalXp = Math.round(xpToAdd * totalMultiplier);
+              // Используем awardXpWithAllMultipliers для сезонного/недельного учёта
+              const { finalXp } = await awardXpWithAllMultipliers(db, userId, guild.id, xpWithHH);
 
-              // Обновляем XP
-              await db.execute({
-                sql: 'UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?',
-                args: [finalXp, userId, guild.id],
-              });
-
-              console.log(`[Voice XP] ${newState.member?.displayName}: ${xpToAdd} base, ${streakMultiplier}x streak, ${happyHourMultiplier}x HH, total +${finalXp} XP`);
+              console.log(`[Voice XP] ${newState.member?.displayName}: base=${xpToAdd} (${xpWithHH} with HH), season/week recorded, total +${finalXp} XP`);
             }
           }
 
