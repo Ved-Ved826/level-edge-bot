@@ -436,7 +436,7 @@ async function getUserInventory(db: any, userId: string, guildId: string, page: 
   return { items: itemsRes.rows, total, page: safePage, maxPages };
 }
 
-// Достать все надетые предметы пользователя
+// Достать все надетые предметы пользователя (объединённый запрос с IN)
 async function getUserGear(db: any, userId: string, guildId: string): Promise<{
   weapon: any;
   armor: any;
@@ -454,18 +454,20 @@ async function getUserGear(db: any, userId: string, guildId: string): Promise<{
   let totalCoin = 0;
 
   const slots = ['weapon', 'armor', 'ring', 'amulet'] as const;
-  for (const slot of slots) {
-    const res = await db.execute({
-      sql: 'SELECT * FROM user_inventory WHERE user_id = ? AND guild_id = ? AND slot = ? AND is_equipped = 1',
-      args: [userId, guildId, slot],
-    });
-    if (res.rows.length > 0) {
-      const item = res.rows[0];
-      gear[slot] = item;
-      totalAtk += (item.atk_bonus as number) || 0;
-      totalDef += (item.def_bonus as number) || 0;
-      totalCrit += (item.crit_bonus as number) || 0;
-      totalCoin += (item.coin_bonus as number) || 0;
+  const placeholders = slots.map(() => '?').join(', ');
+  const res = await db.execute({
+    sql: `SELECT * FROM user_inventory WHERE user_id = ? AND guild_id = ? AND slot IN (${placeholders}) AND is_equipped = 1`,
+    args: [userId, guildId, ...slots],
+  });
+
+  for (const row of res.rows) {
+    const slot = row.slot as string;
+    if (gear.hasOwnProperty(slot)) {
+      gear[slot] = row;
+      totalAtk += (row.atk_bonus as number) || 0;
+      totalDef += (row.def_bonus as number) || 0;
+      totalCrit += (row.crit_bonus as number) || 0;
+      totalCoin += (row.coin_bonus as number) || 0;
     }
   }
 
@@ -1731,12 +1733,14 @@ export default {
       // ============================================
 
       // 24. Обработка кнопок атаки босса (Type 3)
+      // ИСПРАВЛЕНО: type: 4 для ранних валидаций, единственный type: 5 defer перед тяжёлой работой
       if (inter.type === 3 && inter.data?.custom_id?.startsWith("boss_atk_")) {
         const customId = inter.data.custom_id;
         const attackType = customId === 'boss_atk_basic' ? 'basic' : customId === 'boss_atk_skill' ? 'skill' : 'ult';
         const uid = inter.member?.user.id;
         const gid = inter.guild_id;
 
+        // 1. БЫСТРАЯ ВАЛИДАЦИЯ: uid/gid отсутствуют -> type: 4
         if (!uid || !gid) {
           return Response.json({
             type: 4,
@@ -1744,9 +1748,8 @@ export default {
           });
         }
 
+        // 2. БЫСТРАЯ ВАЛИДАЦИЯ: нет активного босса -> type: 4
         const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
-
-        // Проверяем наличие активного босса
         const bossResult = await db.execute({
           sql: 'SELECT * FROM world_boss WHERE guild_id = ? AND status = ? LIMIT 1',
           args: [gid, 'active'],
@@ -1764,7 +1767,7 @@ export default {
         const maxHp = boss.max_hp as number;
         const currentHp = boss.current_hp as number;
 
-        // Достаём данные пользователя
+        // 3. БЫСТРАЯ ВАЛИДАЦИЯ: данные пользователя не найдены -> type: 4
         const userRes = await db.execute({
           sql: 'SELECT level, class_id, prestige_count, last_boss_attack_at FROM users WHERE user_id = ? AND guild_id = ?',
           args: [uid, gid],
@@ -1783,17 +1786,17 @@ export default {
         const prestigeCount = (userData.prestige_count as number) || 0;
         const lastAttackAt = userData.last_boss_attack_at as number || 0;
 
-        // Проверка статуса 'stripped' — проклятие дезертира
+        // 4. БЫСТРАЯ ВАЛИДАЦИЯ: класс stripped (только basic доступен) -> type: 4
         if (classId === 'stripped' && attackType !== 'basic') {
           return Response.json({
             type: 4,
-            data: { content: `❌ Вы лишены классового звания!只能 использовать **⚔️ Обычный удар** until сброса Престижа.`, flags: 64 },
+            data: { content: `❌ Вы лишены классового звания! Можно использовать только **⚔️ Обычный удар** до сброса Престижа.`, flags: 64 },
           });
         }
 
-        // Проверка кулдауна
+        // 5. БЫСТРАЯ ВАЛИДАЦИЯ: кулдаун -> type: 4
         const isSpeedBoss = bossType === 'speed';
-        const baseCooldown = isSpeedBoss ? 6 * 60 * 1000 : 10 * 60 * 1000; // 6 min for speed, 10 min for others
+        const baseCooldown = isSpeedBoss ? 6 * 60 * 1000 : 10 * 60 * 1000;
         const now = Date.now();
         const timeSinceLastAttack = now - lastAttackAt;
 
@@ -1806,7 +1809,7 @@ export default {
           });
         }
 
-        // Проверка уровня для специальных атак
+        // 6. БЫСТРАЯ ВАЛИДАЦИЯ: уровень для скилла < 10 -> type: 4
         if (attackType === 'skill' && level < 10) {
           return Response.json({
             type: 4,
@@ -1814,6 +1817,7 @@ export default {
           });
         }
 
+        // 7. БЫСТРАЯ ВАЛИДАЦИЯ: уровень для ульты < 50 -> type: 4
         if (attackType === 'ult' && level < 50) {
           return Response.json({
             type: 4,
@@ -1821,249 +1825,247 @@ export default {
           });
         }
 
-        // Базовый урон
-        let baseDamage = 0;
-        if (attackType === 'basic') {
-          baseDamage = Math.floor(Math.random() * 201) + 600; // 600-800
-        } else if (attackType === 'skill') {
-          baseDamage = Math.floor(Math.random() * 301) + 1100; // 1100-1400
-        } else { // ult
-          baseDamage = Math.floor(Math.random() * 601) + 1800; // 1800-2400
-        }
+        // ============================================
+        // ЕДИНСТВЕННЫЙ DEFER (type: 5) — после всех быстрых проверок
+        // Всё, что ниже — тяжёлая работа с БД, уходит в ctx.waitUntil
+        // ============================================
+        ctx.waitUntil(
+          (async () => {
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}`;
 
-        // Достаём экипированные статы (интеграция с Этапом 14)
-        const gear = await getUserGear(db, uid, gid);
-        baseDamage += gear.totalAtk;
-
-        // Войс-буст
-        const today = getVladivostokDate();
-        const voiceResult = await db.execute({
-          sql: 'SELECT voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
-          args: [uid, gid, today],
-        });
-        const voiceSeconds = (voiceResult.rows[0]?.voice_seconds as number) || 0;
-        const voiceHours = voiceSeconds / 3600;
-
-        let voiceBonus = 0;
-        if (bossType === 'voice') {
-          // +50% за час, максимум +100% (x2.0)
-          voiceBonus = Math.min(voiceHours * 0.5, 1.0);
-        } else {
-          // +25% за час, максимум +50% (x1.5)
-          voiceBonus = Math.min(voiceHours * 0.25, 0.5);
-        }
-
-        // Престиж-буст: +5% к урону за каждую звезду
-        const prestigeBonus = prestigeCount * 0.05;
-
-        // Особенности босса
-        if (bossType === 'tank' && attackType === 'basic') {
-          baseDamage = Math.round(baseDamage * 0.75); // -25% урон от обычных ударов
-        }
-
-        // Классовые особенности
-        if (classId === 'berserker' && attackType === 'ult' && currentHp < maxHp * 0.2) {
-          baseDamage = Math.round(baseDamage * 3); // Казнь! x3 урон
-        }
-
-        // Итоговый урон
-        const finalDamage = Math.round(baseDamage * (1 + voiceBonus + prestigeBonus));
-
-        // Фишка Мимика (Goblin) - выдача монет
-        if (bossType === 'goblin') {
-          const randomCoins = Math.floor(Math.random() * 26) + 15; // 15-40
-          await db.execute({
-            sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
-            args: [randomCoins, uid, gid],
-          });
-        }
-
-        // Атомарный урон в БД
-        const bossId = boss.id as number;
-        await db.execute({
-          sql: 'UPDATE world_boss SET current_hp = MAX(0, current_hp - ?) WHERE id = ? AND guild_id = ? AND status = ?',
-          args: [finalDamage, bossId, gid, 'active'],
-        });
-
-        await db.execute({
-          sql: 'UPDATE users SET last_boss_attack_at = ? WHERE user_id = ? AND guild_id = ?',
-          args: [now, uid, gid],
-        });
-
-        await db.execute({
-          sql: 'INSERT INTO boss_damage_logs (boss_id, user_id, guild_id, damage, attack_type, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-          args: [bossId, uid, gid, finalDamage, attackType, now],
-        });
-
-        // Проверяем, повержен ли босс
-        const updatedBossResult = await db.execute({
-          sql: 'SELECT current_hp, max_hp, message_id FROM world_boss WHERE id = ? AND guild_id = ?',
-          args: [bossId, gid],
-        });
-        const updatedBoss = updatedBossResult.rows[0];
-        const newCurrentHp = updatedBoss.current_hp as number;
-
-        const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}`;
-        const bossChannelId = boss.channel_id as string;
-
-        if (newCurrentHp <= 0) {
-          // БОСС ПОВЕРЖЕН!
-          await db.execute({
-            sql: 'UPDATE world_boss SET status = ? WHERE id = ? AND guild_id = ?',
-            args: ['defeated', bossId, gid],
-          });
-
-          // Начисляем награду всем участникам
-          const participantsResult = await db.execute({
-            sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
-            args: [bossId],
-          });
-
-          const participants = participantsResult.rows || [];
-          const xpReward = boss.xp_reward as number;
-          const coinsReward = boss.coins_reward as number;
-
-          for (const p of participants) {
-            const pUserId = p.user_id as string;
-            await db.execute({
-              sql: 'UPDATE users SET xp = xp + ?, coins = coins + ? WHERE user_id = ? AND guild_id = ?',
-              args: [xpReward, coinsReward, pUserId, p.guild_id as string],
-            });
-          }
-
-          // Топ-3 дамагеров
-          const topDamageersResult = await db.execute({
-            sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
-            args: [bossId],
-          });
-          const topDamageers = topDamageersResult.rows || [];
-
-          // Редактируем сообщение босса через webhook (доступ к message_id есть в БД)
-          const appId = env.DISCORD_APPLICATION_ID;
-          const editUrl = `https://discord.com/api/v10/webhooks/${appId}/${boss.message_id as string}`;
-
-          // Отправляем победный Embed в канал
-          const victoryEmbed = {
-            embeds: [{
-              title: `🎉 МИРОВОЙ БОСС ${boss.boss_name as string} ПОВЕРЖЕН!`,
-              description: `Победа! Босс повержен!\n\n` +
-                `**Награда каждому участнику:**\n` +
-                `• 🎯 **+${xpReward} XP**\n` +
-                `• 🪙 **+${coinsReward} монет**\n\n` +
-                `**Топ дамагеров:**\n` +
-                topDamageers.map((d: any, i: number) => {
-                  const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
-                  return `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона`;
-                }).join('\n') || '*Ударов пока не нанесено*',
-              color: 0xF1C40F,
-            }],
-            components: [],
-          };
-
-          try {
-            await fetch(editUrl, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(victoryEmbed),
-            });
-          } catch (err) {
-            console.error('[WorldBoss] Failed to edit victory message:', err);
-          }
-
-          return Response.json({
-            type: 4,
-            data: { content: `💥 Вы нанесли добивающий удар на **${finalDamage}** урона! Босс повержен! 🎉`, flags: 64 },
-          });
-        } else {
-          // БОЙ ПРОДОЛЖАЕТСЯ
-          const hpBarLength = 20;
-          const hpRatio = Math.max(0, Math.min(newCurrentHp / maxHp, 1));
-          const filled = Math.round(hpRatio * hpBarLength);
-          const empty = hpBarLength - filled;
-          const hpBar = '█'.repeat(filled) + '░'.repeat(empty);
-
-          // Топ-3 текущих дамагеров
-          const currentTopResult = await db.execute({
-            sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
-            args: [bossId],
-          });
-          const currentTop = currentTopResult.rows || [];
-
-          let topText = '';
-          if (currentTop.length > 0) {
-            topText = currentTop.map((d: any, i: number) => {
-              const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
-              return `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона`;
-            }).join('\n');
-          } else {
-            topText = '*Ударов пока не нанесено*';
-          }
-
-          // Формируем обновлённый Embed для босса
-          const bossDesc = BOSS_DESCRIPTIONS[boss.boss_type as string] || 'Одолейте босса вместе с друзьями!';
-          const diffMs = Math.max(0, (boss.expires_at as number) - now);
-          const hoursLeft = Math.floor(diffMs / 3600000);
-          const minsLeft = Math.floor((diffMs % 3600000) / 60000);
-          const timeLeftStr = hoursLeft > 24
-            ? `${Math.floor(hoursLeft / 24)} дн. ${hoursLeft % 24} ч.`
-            : `${hoursLeft} ч. ${minsLeft} мин.`;
-
-          const updatedEmbed = {
-            embeds: [{
-              title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
-              description: `${bossDesc}\n\n` +
-                `❤️ **HP:** \`${hpBar}\` **${newCurrentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
-                `⏳ **Исчезнет через:** ${timeLeftStr}\n\n` +
-                `💥 **Топ охотников:**\n${topText}`,
-              color: 0xE74C3C,
-            }],
-            components: [
-              {
-                type: 1,
-                components: [
-                  { type: 2, custom_id: 'boss_atk_basic', style: 4, label: '⚔️ Обычный удар' },
-                  { type: 2, custom_id: 'boss_atk_skill', style: 1, label: '✨ Спец-скилл' },
-                  { type: 2, custom_id: 'boss_atk_ult', style: 3, label: '👑 Ульта' },
-                ],
-              },
-            ],
-          };
-
-          // Редактируем Embed в канале через API бота (в фоне, не блокирует ответ игроку)
-          // Правильный эндпоинт: PATCH /channels/{channel_id}/messages/{message_id}
-          ctx.waitUntil(
-            (async () => {
-              const token = env.DISCORD_BOT_TOKEN;
-              if (!token) {
-                console.warn('[WorldBoss] DISCORD_BOT_TOKEN is not set - cannot update HP embed');
-                return;
+            try {
+              // Базовый урон
+              let baseDamage = 0;
+              if (attackType === 'basic') {
+                baseDamage = Math.floor(Math.random() * 201) + 600;
+              } else if (attackType === 'skill') {
+                baseDamage = Math.floor(Math.random() * 301) + 1100;
+              } else {
+                baseDamage = Math.floor(Math.random() * 601) + 1800;
               }
-              if (!updatedBoss.message_id) {
-                console.warn('[WorldBoss] message_id is not set - cannot update HP embed');
-                return;
+
+              // Достаём экипированные статы
+              const gear = await getUserGear(db, uid, gid);
+              baseDamage += gear.totalAtk;
+
+              // Войс-буст
+              const today = getVladivostokDate();
+              const voiceResult = await db.execute({
+                sql: 'SELECT voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
+                args: [uid, gid, today],
+              });
+              const voiceSeconds = (voiceResult.rows[0]?.voice_seconds as number) || 0;
+              const voiceHours = voiceSeconds / 3600;
+
+              let voiceBonus = 0;
+              if (bossType === 'voice') {
+                voiceBonus = Math.min(voiceHours * 0.5, 1.0);
+              } else {
+                voiceBonus = Math.min(voiceHours * 0.25, 0.5);
               }
-              const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${updatedBoss.message_id}`;
-              try {
-                await fetch(editUrl, {
-                  method: 'PATCH',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bot ${token}`,
-                  },
-                  body: JSON.stringify(updatedEmbed),
+
+              // Престиж-буст
+              const prestigeBonus = prestigeCount * 0.05;
+
+              // Особенности босса
+              if (bossType === 'tank' && attackType === 'basic') {
+                baseDamage = Math.round(baseDamage * 0.75);
+              }
+
+              // Классовые особенности
+              if (classId === 'berserker' && attackType === 'ult' && currentHp < maxHp * 0.2) {
+                baseDamage = Math.round(baseDamage * 3);
+              }
+
+              // Итоговый урон
+              const finalDamage = Math.round(baseDamage * (1 + voiceBonus + prestigeBonus));
+
+              // Фишка Мимика — выдача монет
+              if (bossType === 'goblin') {
+                const randomCoins = Math.floor(Math.random() * 26) + 15;
+                await db.execute({
+                  sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+                  args: [randomCoins, uid, gid],
                 });
-              } catch (err) {
-                console.error('[WorldBoss] Failed to edit HP message:', err);
               }
-            })()
-          );
 
-          const cdMinutes = Math.ceil(baseCooldown / 60000);
-          return Response.json({
-            type: 4,
-            data: { content: `💥 Вы нанесли **${finalDamage}** урона! (Осталось HP: ${newCurrentHp} / ${maxHp}). Следующий удар доступен через ${cdMinutes} мин.`, flags: 64 },
-          });
-        }
+              // Атомарный урон в БД
+              const bossId = boss.id as number;
+              await db.execute({
+                sql: 'UPDATE world_boss SET current_hp = MAX(0, current_hp - ?) WHERE id = ? AND guild_id = ? AND status = ?',
+                args: [finalDamage, bossId, gid, 'active'],
+              });
+
+              await db.execute({
+                sql: 'UPDATE users SET last_boss_attack_at = ? WHERE user_id = ? AND guild_id = ?',
+                args: [now, uid, gid],
+              });
+
+              await db.execute({
+                sql: 'INSERT INTO boss_damage_logs (boss_id, user_id, guild_id, damage, attack_type, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+                args: [bossId, uid, gid, finalDamage, attackType, now],
+              });
+
+              // Проверяем, повержен ли босс
+              const updatedBossResult = await db.execute({
+                sql: 'SELECT current_hp, max_hp, message_id, xp_reward, coins_reward, boss_name FROM world_boss WHERE id = ? AND guild_id = ?',
+                args: [bossId, gid],
+              });
+              const updatedBoss = updatedBossResult.rows[0];
+              const newCurrentHp = updatedBoss.current_hp as number;
+              const xpReward = (updatedBoss.xp_reward as number) || 800;
+              const coinsReward = (updatedBoss.coins_reward as number) || 200;
+              const bossName = updatedBoss.boss_name as string;
+              const bossChannelId = boss.channel_id as string;
+
+              // Ветка: БОСС ПОВЕРЖЕН
+              if (newCurrentHp <= 0) {
+                await db.execute({
+                  sql: 'UPDATE world_boss SET status = ? WHERE id = ? AND guild_id = ?',
+                  args: ['defeated', bossId, gid],
+                });
+
+                // Начисляем награду всем участникам через batch
+                const participantsResult = await db.execute({
+                  sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
+                  args: [bossId],
+                });
+
+                const participants = participantsResult.rows || [];
+                const batchOps = participants.map((p: any) => ({
+                  sql: 'UPDATE users SET xp = xp + ?, coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+                  args: [xpReward, coinsReward, p.user_id as string, p.guild_id as string],
+                }));
+                await db.batch(batchOps);
+
+                // Топ-3 дамагеров
+                const topDamageersResult = await db.execute({
+                  sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
+                  args: [bossId],
+                });
+                const topDamageers = topDamageersResult.rows || [];
+
+                // Редактируем Embed в канале
+                const appId = env.DISCORD_APPLICATION_ID;
+                const editUrl = `https://discord.com/api/v10/webhooks/${appId}/${boss.message_id as string}`;
+
+                const victoryEmbed = {
+                  embeds: [{
+                    title: `🎉 МИРОВОЙ БОСС ${bossName} ПОВЕРЖЕН!`,
+                    description: `Победа! Босс повержен!\n\n` +
+                      `**Награда каждому участнику:**\n` +
+                      `• 🎯 **+${xpReward} XP**\n` +
+                      `• 🪙 **+${coinsReward} монет**\n\n` +
+                      `**Топ дамагеров:**\n` +
+                      (topDamageers.map((d: any, i: number) => {
+                        const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+                        return `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона`;
+                      }).join('\n') || '*Ударов пока не нанесено*'),
+                    color: 0xF1C40F,
+                  }],
+                  components: [],
+                };
+
+                try {
+                  await fetch(editUrl, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(victoryEmbed),
+                  });
+                } catch (err) {
+                  console.error('[WorldBoss] Failed to edit victory message:', err);
+                }
+              } else {
+                // Ветка: БОЙ ПРОДОЛЖАЕТСЯ
+                const hpBarLength = 20;
+                const hpRatio = Math.max(0, Math.min(newCurrentHp / maxHp, 1));
+                const filled = Math.round(hpRatio * hpBarLength);
+                const empty = hpBarLength - filled;
+                const hpBar = '█'.repeat(filled) + '░'.repeat(empty);
+
+                // Топ-3 текущих дамагеров
+                const currentTopResult = await db.execute({
+                  sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
+                  args: [bossId],
+                });
+                const currentTop = currentTopResult.rows || [];
+
+                let topText = '';
+                if (currentTop.length > 0) {
+                  topText = currentTop.map((d: any, i: number) => {
+                    const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+                    return `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона`;
+                  }).join('\n');
+                } else {
+                  topText = '*Ударов пока не нанесено*';
+                }
+
+                const bossDesc = BOSS_DESCRIPTIONS[boss.boss_type as string] || 'Одолейте босса вместе с друзьями!';
+                const diffMs = Math.max(0, (boss.expires_at as number) - now);
+                const hoursLeft = Math.floor(diffMs / 3600000);
+                const minsLeft = Math.floor((diffMs % 3600000) / 60000);
+                const timeLeftStr = hoursLeft > 24
+                  ? `${Math.floor(hoursLeft / 24)} дн. ${hoursLeft % 24} ч.`
+                  : `${hoursLeft} ч. ${minsLeft} мин.`;
+
+                const updatedEmbed = {
+                  embeds: [{
+                    title: `⚔️ МИРОВОЙ ��ОСС: ${boss.boss_name as string}`,
+                    description: `${bossDesc}\n\n` +
+                      `❤️ **HP:** \`${hpBar}\` **${newCurrentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
+                      `⏳ **Исчезнет через:** ${timeLeftStr}\n\n` +
+                      `💥 **Топ охотников:**\n${topText}`,
+                    color: 0xE74C3C,
+                  }],
+                  components: [
+                    {
+                      type: 1,
+                      components: [
+                        { type: 2, custom_id: 'boss_atk_basic', style: 4, label: '⚔️ Обычный удар' },
+                        { type: 2, custom_id: 'boss_atk_skill', style: 1, label: '✨ Спец-скилл' },
+                        { type: 2, custom_id: 'boss_atk_ult', style: 3, label: '👑 Ульта' },
+                      ],
+                    },
+                  ],
+                };
+
+                // Редактируем Embed в канале через API бота
+                const botToken = env.DISCORD_BOT_TOKEN;
+                if (botToken && updatedBoss.message_id) {
+                  const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${updatedBoss.message_id}`;
+                  try {
+                    await fetch(editUrl, {
+                      method: 'PATCH',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bot ${botToken}`,
+                      },
+                      body: JSON.stringify(updatedEmbed),
+                    });
+                  } catch (err) {
+                    console.error('[WorldBoss] Failed to edit HP message:', err);
+                  }
+                }
+              }
+
+              // Ответ обновлением через PATCH @original (БЕЗ поля type!)
+              const cdMinutes = Math.ceil(baseCooldown / 60000);
+              await fetch(webhookUrl, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  content: `💥 Вы нанесли **${finalDamage}** урона! (Осталось HP: ${newCurrentHp} / ${maxHp}). Следующий удар доступен через ${cdMinutes} мин.`,
+                  flags: 64,
+                }),
+              });
+            } catch (err) {
+              console.error('[WorldBoss] Error in waitUntil:', err);
+            }
+          })()
+        );
+
+        // ЕДИНСТВЕННЫЙ type: 5 (DEFERRED) — сразу после всех быстрых проверок
+        return Response.json({ type: 5 });
       }
 
       // 25. Слэш-команда /boss (Этап 13 - Показать статус босса)
