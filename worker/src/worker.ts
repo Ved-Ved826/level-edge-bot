@@ -368,6 +368,55 @@ function renderProgressBar(current: number, target: number, length: number = 10)
 }
 
 // ============================================
+// Система RPG-классов (Этап 12)
+// ============================================
+
+interface ClassInfo {
+  displayName: string;
+  skill1Name: string;
+  skill2Name: string;
+}
+
+function getClassDisplayName(classId: string): string {
+  const classes: Record<string, string> = {
+    warrior: "🛡️ Воин",
+    mage: "🔮 Маг",
+    ranger: "🏹 Охотник",
+    bard: "🎵 Бард",
+  };
+  return classes[classId] || classId;
+}
+
+function getClassSkills(classId: string): { skill1Name: string; skill2Name: string } {
+  const skills: Record<string, ClassInfo> = {
+    warrior: {
+      displayName: "🛡️ Воин",
+      skill1Name: "Удар щитом",
+      skill2Name: "Вихрь клинков",
+    },
+    mage: {
+      displayName: "🔮 Маг",
+      skill1Name: "Огненная стрела",
+      skill2Name: "Комета",
+    },
+    ranger: {
+      displayName: "🏹 Охотник",
+      skill1Name: "Прицельный выстрел",
+      skill2Name: "Град стрел",
+    },
+    bard: {
+      displayName: "🎵 Бард",
+      skill1Name: "Боевой мотив",
+      skill2Name: "Гимн победы",
+    },
+  };
+  const info = skills[classId];
+  return info
+    ? { skill1Name: info.skill1Name, skill2Name: info.skill2Name }
+    : { skill1Name: "Навык", skill2Name: "Ульта" };
+}
+
+// ============================================
 // Генерация карточки ранга (/rank)
 // ============================================
 
@@ -1528,7 +1577,7 @@ export default {
           // Подтверждение сброса
           const guildId = inter.guild_id as string;
           await db.execute({
-            sql: 'UPDATE users SET prestige_count = prestige_count + 1, xp = 0, level = 0 WHERE user_id = ? AND guild_id = ?',
+            sql: 'UPDATE users SET prestige_count = prestige_count + 1, xp = 0, level = 0, class_id = NULL WHERE user_id = ? AND guild_id = ?',
             args: [uid, guildId],
           });
 
@@ -1536,6 +1585,7 @@ export default {
             embeds: [{
               title: '🎉 ПОЗДРАВЛЯЕМ СО СБРОСОМ ПРЕСТИЖА!',
               description: `**<@${uid}>** успешно сбросил уровень и получил **Престиж ★ ${prestigeCount + 1}**!\n\n` +
+                '✨ Ваш класс сброшен! Вы можете выбрать новый боевой путь через **/class**!\n\n' +
                 'Золотая звезда престижа теперь сияет на вашей карточке **/rank**!',
               color: 0xFFD700,
             }],
@@ -1790,7 +1840,90 @@ export default {
         }
       }
 
-      // 12. Слэш-команда /achievements (Этап 6 - Система достижений)
+      // 12. Обработка кнопок выбора класса (Type 3 - Этап 12)
+      if (inter.type === 3 && inter.data?.custom_id?.startsWith("class_pick_")) {
+        const customId = inter.data.custom_id;
+        const classKey = customId.substring(11); // remove "class_pick_"
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        // Валидация выбранного класса
+        const validClasses = ["warrior", "mage", "ranger", "bard"];
+        if (!validClasses.includes(classKey)) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Неверный выбор класса.", flags: 64 },
+          });
+        }
+
+        try {
+          const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+          // Достаём текущие данные пользователя
+          const userRes = await db.execute({
+            sql: "SELECT level, class_id FROM users WHERE user_id = ? AND guild_id = ?",
+            args: [uid, gid],
+          });
+
+          if (userRes.rows.length === 0) {
+            return Response.json({
+              type: 4,
+              data: { content: "❌ Данные пользователя не найдены.", flags: 64 },
+            });
+          }
+
+          const userData = userRes.rows[0];
+          const level = (userData.level as number) || 0;
+
+          // Проверка: уровень >= 5 и class_id еще НЕ выбран
+          if (level < 5) {
+            return Response.json({
+              type: 4,
+              data: { content: "⚠️ Ваш уровень изменился. Выбор класса недоступен.", flags: 64 },
+            });
+          }
+
+          if (userData.class_id !== null) {
+            return Response.json({
+              type: 4,
+              data: { content: "⚠️ Вы уже выбрали класс. Сменить его можно только при сбросе Престижа.", flags: 64 },
+            });
+          }
+
+          // Атомарно сохраняем выбор класса
+          await db.execute({
+            sql: "UPDATE users SET class_id = ? WHERE user_id = ? AND guild_id = ? AND class_id IS NULL",
+            args: [classKey, uid, gid],
+          });
+
+          // Проверяем, был ли успешный update (класс еще не был выбран)
+          // Если строк затронуто 0, значит класс уже выбрали (конфликт)
+          const classDisplayName = getClassDisplayName(classKey);
+
+          // Праздничный Embed с поздравлением
+          const result = {
+            embeds: [{
+              title: `🎉 Вы выбрали класс: ${classDisplayName}!`,
+              description: `**<@${uid}>** теперь состоит в классе **${classDisplayName}**!\n\n` +
+                `Ваш скилл **Скилл 1** откроется на 10 уровне, а **Ульта** — на 50 уровне.\n\n` +
+                `🔒 *Сменить класс можно только при сбросе Престижа на 100 уровне.*`,
+              color: 0x2ecc71,
+            }],
+            components: [],
+          };
+          return Response.json({ type: 7, data: result });
+        } catch (err) {
+          console.error("[ClassPick] Error:", err);
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Ошибка при выборе класса. Попробуйте позже.", flags: 64 },
+          });
+        }
+      }
+
+      // 13. Слэш-команда /achievements (Этап 6 - Система достижений)
       if (inter.type === 2 && inter.data?.name === "achievements") {
         const uidOption = inter.data?.options?.find((o: any) => o.name === "user")?.value as string | undefined;
         const targetId = uidOption || inter.member?.user.id;
@@ -2247,7 +2380,130 @@ export default {
         return Response.json({ type: 5 });
       }
 
-      // 15. Слэш-команда /export (Этап 10 - CSV-экспорт аналитики)
+      // 15. Слэш-команда /class (Этап 12 - Система RPG-классов)
+      if (inter.type === 2 && inter.data?.name === "class") {
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+        if (!uid || !gid) return Response.json({ error: "No user or guild" }, { status: 400 });
+
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+              // Достаём данные пользователя
+              const userRes = await db.execute({
+                sql: "SELECT level, class_id, prestige_count FROM users WHERE user_id = ? AND guild_id = ?",
+                args: [uid, gid],
+              });
+
+              if (userRes.rows.length === 0) {
+                await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    content: "❌ Данные пользователя не найдены. Напишите первое сообщение, чтобы зарегистрироваться!",
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
+
+              const userData = userRes.rows[0];
+              const level = (userData.level as number) || 0;
+              const classId = userData.class_id as string | null;
+              const prestigeCount = (userData.prestige_count as number) || 0;
+
+              // А) Если уровень < 5
+              if (level < 5) {
+                const result = {
+                  embeds: [{
+                    title: "🔒 Выбор класса недоступен",
+                    description: `Выбор боевого RPG-класса открывается на **5 уровне**!\nВаш текущий уровень: **${level} / 5**.\n\n*Продолжайте общаться в чате и голосовых каналах, чтобы разблокировать классы!*`,
+                    color: 0x747f8d,
+                  }],
+                  components: [],
+                };
+                await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(result),
+                });
+                return;
+              }
+
+              // Б) Если class_id еще НЕ выбран
+              if (classId === null) {
+                const result = {
+                  embeds: [{
+                    title: "⚔️ Выберите свой боевой класс",
+                    description: `Выберите свой путь! **Внимание:** сменить класс можно будет только после сброса Престижа на 100 уровне!\n\n` +
+                      "🛡️ **Воин** — Танк и мощь. Урон масштабируется от защиты.\n" +
+                      "🔮 **Маг** — Стихийный DoT. Поджигает босса автономным ожогом.\n" +
+                      "🏹 **Охотник** — Криты и скорость.\n" +
+                      "🎵 **Бард** — Душа войса. Баффает друзей в комнате.\n\n" +
+                      "*Нажмите кнопку ниже, чтобы сделать окончательный выбор:*",
+                    color: 0x5865f2,
+                  }],
+                  components: [
+                    {
+                      type: 1,
+                      components: [
+                        { type: 2, custom_id: "class_pick_warrior", style: 1, label: "🛡️ Воин" },
+                        { type: 2, custom_id: "class_pick_mage", style: 1, label: "🔮 Маг" },
+                        { type: 2, custom_id: "class_pick_ranger", style: 1, label: "🏹 Охотник" },
+                        { type: 2, custom_id: "class_pick_bard", style: 1, label: "🎵 Бард" },
+                      ],
+                    },
+                  ],
+                };
+                await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(result),
+                });
+                return;
+              }
+
+              // В) Если class_id УЖЕ выбран
+              const className = getClassDisplayName(classId);
+              const { skill1Name, skill2Name } = getClassSkills(classId);
+              const skill1Status = level >= 10 ? "✅ Доступен" : "🔒 Откроется на 10 ур.";
+              const skill2Status = level >= 50 ? "✅ Доступна" : "🔒 Откроется на 50 ур.";
+
+              const colorMap: Record<string, number> = {
+                warrior: 0xe74c3c,
+                mage: 0x3498db,
+                ranger: 0x2ecc71,
+                bard: 0x9b59b6,
+              };
+
+              const result = {
+                embeds: [{
+                  title: `📜 Ваш боевой профиль: ${className}`,
+                  description: `**Класс:** ${className}\n**Уровень:** ${level}\n\n` +
+                    `**Скилл 1 (10 ур.):** ${skill1Name} — ${skill1Status}\n` +
+                    `**Ульта (50 ур.):** ${skill2Name} — ${skill2Status}\n\n` +
+                    `🔒 *Сменить класс можно только при сбросе Престижа на 100 уровне.*`,
+                  color: colorMap[classId] || 0x5865f2,
+                }],
+                components: [],
+              };
+              await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(result),
+              });
+            } catch (e) {
+              console.error("[Class] Error:", e);
+            }
+          })()
+        );
+
+        return Response.json({ type: 5 });
+      }
+
+      // 16. Слэш-команда /export (Этап 10 - CSV-экспорт аналитики)
       if (inter.type === 2 && inter.data?.name === "export") {
         const gid = inter.guild_id;
         const uid = inter.member?.user.id;

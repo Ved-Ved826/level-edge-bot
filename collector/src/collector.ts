@@ -900,6 +900,17 @@ async function migrateSchema() {
       console.log('[Migrate] Added column: coins');
     }
 
+    // ============================================
+    // Миграция 015: Колонка class_id для системы RPG-классов (Этап 12)
+    // ============================================
+    if (!columns.includes('class_id')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN class_id TEXT DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: class_id');
+    }
+
     // Таблица user_inventory (Этап 11 - Система инвентаря)
     const userInventoryCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_inventory'",
