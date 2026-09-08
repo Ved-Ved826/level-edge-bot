@@ -930,7 +930,83 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 017: Система реликвий, экипировки и рынка (Этап 14)
+    // Миграция 017: Колонка last_boss_attack_at для Мирового Босса (Этап 13)
+    // ============================================
+    if (!columns.includes('last_boss_attack_at')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN last_boss_attack_at INTEGER DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: last_boss_attack_at');
+    }
+
+    // ============================================
+    // Миграция 018: Система Мирового Босса (Этап 13)
+    // ============================================
+
+    // Создаём таблицу world_boss
+    const worldBossCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='world_boss'",
+      args: [],
+    });
+
+    if (worldBossCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE world_boss (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          guild_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          message_id TEXT DEFAULT NULL,
+          boss_id TEXT NOT NULL,
+          boss_name TEXT NOT NULL,
+          boss_type TEXT NOT NULL,
+          max_hp INTEGER NOT NULL,
+          current_hp INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          spawned_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_world_boss_guild_status ON world_boss(guild_id, status)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: world_boss');
+    }
+
+    // Создаём таблицу boss_damage_logs
+    const bossDamageLogsCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='boss_damage_logs'",
+      args: [],
+    });
+
+    if (bossDamageLogsCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE boss_damage_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          boss_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          damage INTEGER NOT NULL,
+          attack_type TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_boss_damage_logs_boss ON boss_damage_logs(boss_id)',
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_boss_damage_logs_user ON boss_damage_logs(user_id, guild_id)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: boss_damage_logs');
+    }
+
+    // ============================================
+    // Миграция 017 (переиндексация): Система реликвий, экипировки и рынка (Этап 14)
     // ============================================
 
     // Добавляем колонки в user_inventory (если ещё нет)
@@ -2019,6 +2095,232 @@ async function awardOnlineSeconds(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
+// Мировой Босс Сервера (Этап 13 - 4 босса в ротации)
+// ============================================
+
+const BOSS_CHANNEL_ID = '1051085743839260694';
+
+// 4 пресета боссов
+const WORLD_BOSS_PRESETS = [
+  {
+    boss_id: 'dragon',
+    boss_name: '🔥 Пепельный Дракон Золотого Рога',
+    boss_type: 'tank',
+    max_hp: 7500,
+    hours: 24,
+    xp_reward: 800,
+    coins_reward: 200,
+    desc: 'Обычные тычки наносят -25% урона. Пробивают скиллы и ульты!'
+  },
+  {
+    boss_id: 'mimic',
+    boss_name: '💰 Жадный Мимик с Шаморы',
+    boss_type: 'goblin',
+    max_hp: 4200,
+    hours: 12,
+    xp_reward: 300,
+    coins_reward: 600,
+    desc: 'Быстрый босс на 12ч! Каждый удар выбивает +15..40 🪙 прямо в карман!'
+  },
+  {
+    boss_id: 'leviathan',
+    boss_name: '🌊 Кибер-Левиафан Японского Моря',
+    boss_type: 'voice',
+    max_hp: 6000,
+    hours: 24,
+    xp_reward: 500,
+    coins_reward: 350,
+    desc: 'Войс-буст работает в 2 раза сильнее (+50%/час, кап +100%)!'
+  },
+  {
+    boss_id: 'phantom',
+    boss_name: '👁️ Фантомный Архитектор Бездны',
+    boss_type: 'speed',
+    max_hp: 5500,
+    hours: 24,
+    xp_reward: 600,
+    coins_reward: 250,
+    desc: 'Кулдаун ударов 6 минут вместо 10! Скоростной бой.'
+  }
+] as const;
+
+/**
+ * Формирует описание текущего состояния босса для Embed
+ */
+function renderBossEmbed(boss: any): any {
+  const maxHp = boss.max_hp as number;
+  const currentHp = boss.current_hp as number;
+  const hoursLeft = Math.ceil((boss.expires_at - Date.now()) / 3600000);
+
+  // Прогресс-бар HP (20 символов)
+  const hpRatio = Math.max(0, Math.min(currentHp / maxHp, 1));
+  const filled = Math.round(hpRatio * 20);
+  const empty = 20 - filled;
+  const hpBar = '█'.repeat(filled) + '░'.repeat(empty);
+
+  return {
+    embeds: [{
+      title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
+      description: `${boss.desc as string}\n\n` +
+        `❤️ **HP:** \`${hpBar}\` **${currentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
+        `⏳ **Исчезнет через:** ${hoursLeft} ч.\n\n` +
+        `💥 **Топ охотников:**`,
+      color: 0xE74C3C,
+    }],
+    components: [
+      {
+        type: 1,
+        components: [
+          { type: 2, custom_id: 'boss_atk_basic', style: 4, label: '⚔️ Обычный удар' },
+          { type: 2, custom_id: 'boss_atk_skill', style: 1, label: '✨ Спец-скилл' },
+          { type: 2, custom_id: 'boss_atk_ult', style: 3, label: '👑 Ульта' },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Формирует победный Embed для босса
+ */
+function renderVictoryEmbed(boss: any, topDamageers: Array<{ user_id: string; total_dmg: number }>): any {
+  const maxHp = boss.max_hp as number;
+  const hpBar = '█'.repeat(20) + '░'.repeat(0);
+
+  let topDescription = '';
+  topDamageers.forEach((d, i) => {
+    const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+    topDescription += `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона\n`;
+  });
+  if (topDamageers.length === 0) {
+    topDescription = '*Ударов пока не нанесено*';
+  }
+
+  return {
+    embeds: [{
+      title: `🎉 МИРОВОЙ БОСС ${boss.boss_name as string} ПОВЕРЖЕН!`,
+      description: `Победа! Босс повержен!\n\n` +
+        `**Награда каждому участнику:**\n` +
+        `• 🎯 **+${boss.xp_reward as number} XP**\n` +
+        `• 🪙 **+${boss.coins_reward as number} монет**\n\n` +
+        `**Топ дамагеров:**\n${topDescription}`,
+      color: 0xF1C40F,
+    }],
+    components: [],
+  };
+}
+
+/**
+ * Проверяет и спавнит Мирового Босса
+ */
+async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
+  try {
+    // Ищем активного босса
+    const activeBossResult = await db.execute({
+      sql: 'SELECT * FROM world_boss WHERE status = ? LIMIT 1',
+      args: ['active'],
+    });
+
+    const now = Date.now();
+
+    if (activeBossResult.rows.length > 0) {
+      const boss = activeBossResult.rows[0];
+      const expiresAt = boss.expires_at as number;
+
+      // Проверяем истек ли срок босса
+      if (now > expiresAt) {
+        // Босс сбежал
+        await db.execute({
+          sql: "UPDATE world_boss SET status = ? WHERE id = ?",
+          args: ['escaped', boss.id],
+        });
+
+        // Редактируем сообщение в канале
+        const channelId = boss.channel_id as string;
+        const messageId = boss.message_id as string;
+
+        if (channelId && messageId) {
+          try {
+            const guild = bot.guilds.cache.get(boss.guild_id as string);
+            if (guild) {
+              const channel = guild.channels.cache.get(channelId);
+              if (channel) {
+                await (channel as any).messages.fetch(messageId).then((msg: any) => {
+                  return msg.edit({
+                    embeds: [{
+                      title: '💨 Босс скрылся в тумане!',
+                      description: 'Рейд не успел одолеть босса за отведенное время.',
+                      color: 0x747f8d,
+                    }],
+                    components: [],
+                  });
+                });
+              }
+            }
+          } catch (err) {
+            console.error('[WorldBoss] Failed to edit escaped boss message:', err);
+          }
+        }
+      }
+    } else {
+      // Нет активного босса - спавним нового
+      const preset = WORLD_BOSS_PRESETS[Math.floor(Math.random() * WORLD_BOSS_PRESETS.length)];
+      const spawnedAt = now;
+      const expiresAt = now + preset.hours * 3600 * 1000;
+
+      // Получаем guild_id из канала
+      const guild = bot.guilds.cache.get('1051085743231094795') || bot.guilds.cache.first();
+      if (!guild) {
+        console.error('[WorldBoss] Guild not found in cache');
+        return;
+      }
+      const guildId = guild.id;
+
+      // Вставляем запись босса с реальным guild_id
+      const insertResult = await db.execute({
+        sql: `INSERT INTO world_boss (guild_id, channel_id, boss_id, boss_name, boss_type, max_hp, current_hp, status, spawned_at, expires_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        args: [guildId, BOSS_CHANNEL_ID, preset.boss_id, preset.boss_name, preset.boss_type, preset.max_hp, preset.max_hp, spawnedAt, expiresAt],
+      });
+
+      const bossId = (insertResult.lastRowId as number) || 1;
+
+      // Отправляем Embed в канал
+      if (guild) {
+        const channel = guild.channels.cache.get(BOSS_CHANNEL_ID);
+        if (channel) {
+          try {
+            const embed = renderBossEmbed({
+              boss_id: preset.boss_id,
+              boss_name: preset.boss_name,
+              boss_type: preset.boss_type,
+              max_hp: preset.max_hp,
+              current_hp: preset.max_hp,
+              desc: preset.desc,
+              expires_at: expiresAt,
+            });
+
+            const msg = await (channel as any).send(embed);
+
+            // Обновляем message_id в БД
+            await db.execute({
+              sql: 'UPDATE world_boss SET message_id = ? WHERE id = ?',
+              args: [msg.id, bossId],
+            });
+
+            console.log(`[WorldBoss] Spawned ${preset.boss_name} in channel ${BOSS_CHANNEL_ID}, expires in ${preset.hours}h`);
+          } catch (err) {
+            console.error('[WorldBoss] Failed to send spawn message:', err);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[WorldBoss] Error in checkAndSpawnWorldBoss:', err);
+  }
+}
+
+// ============================================
 // Функции для Happy Hours (Этап 4 - Счастливые часы)
 // ============================================
 
@@ -2626,6 +2928,14 @@ client.on('ready', async () => {
     console.log('[DeserterCheck] Checking for deserters...');
     await checkDeserters(db, client);
   }, 6 * 60 * 60 * 1000); // Каждые 6 часов
+
+  // Таймер проверки и спавна Мирового Босса (каждые 10 минут)
+  console.log('[WorldBoss] Starting world boss checker...');
+  await checkAndSpawnWorldBoss(db, client); // Проверка сразу при старте
+  setInterval(async () => {
+    console.log('[WorldBoss] Checking for world boss...');
+    await checkAndSpawnWorldBoss(db, client);
+  }, 10 * 60 * 1000); // Каждые 10 минут
 });
 
 client.on('messageCreate', async (message: Message) => {

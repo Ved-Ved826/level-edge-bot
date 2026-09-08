@@ -253,11 +253,13 @@ interface DiscordInteraction {
     options?: { name: string; value: any }[];
     custom_id?: string;
     values?: string[];
+    resolved?: { users?: { [id: string]: { username: string; discriminator: string; avatar?: string | null } }; members?: { [id: string]: any } };
   } | {
     name: string;
     options?: { name: string; value: any }[];
     custom_id?: string;
     values?: string[];
+    resolved?: { users?: { [id: string]: { username: string; discriminator: string; avatar?: string | null } }; members?: { [id: string]: any } };
   };
   member?: {
     user: { id: string; username: string; avatar: string | null; discriminator: string };
@@ -266,7 +268,6 @@ interface DiscordInteraction {
   };
   guild_id?: string;
   message?: { components?: any[]; embeds?: any[] };
-  resolved?: { users?: { [id: string]: { username: string; discriminator: string } }; members?: { [id: string]: any } };
 }
 
 // ============================================
@@ -583,12 +584,10 @@ async function fetchAvatarAsBase64(user: { id: string; avatar: string | null; di
   let url = "";
   if (user.avatar) {
     url = "https://cdn.discordapp.com/avatars/" + user.id + "/" + user.avatar + ".png?size=256";
-  } else if (user.discriminator === "0" || !user.discriminator) {
-    const idx = Number((BigInt(user.id) >> 22n) % 6n);
-    url = "https://cdn.discordapp.com/embed/avatars/" + idx + ".png";
   } else {
-    const idx = (parseInt(user.discriminator, 10) % 5) || 0;
-    url = "https://cdn.discordapp.com/embed/avatars/" + idx + ".png";
+    // Для новых пользователей (discriminator === "0") используем default avatar index
+    const idx = Number((BigInt(user.id) >> 22n) % 6n);
+    url = "https://cdn.discordapp.com/embed/avatars/" + idx + ".png?size=256";
   }
   try {
     const res = await fetch(url);
@@ -614,28 +613,34 @@ async function handleRankCommand(interaction: DiscordInteraction, env: Env): Pro
   if (!gid) return { error: "No guild" };
 
   // Получаем ID целевого пользователя из опции 'user' или используем ID автора команды
-  const targetId = (interaction.data?.options?.find((o: any) => o.name === 'user')?.value as string) || interaction.member?.user.id;
-  if (!targetId) return { error: "No target user" };
+  const userOption = interaction.data?.options?.find((o: any) => o.name === 'user')?.value as string | undefined;
+  const callerUser = interaction.member?.user;
+  if (!callerUser) return { error: "No caller user" };
 
-  // Получаем объект пользователя для корректного отображения ника и аватарки
-  const memberUser = interaction.member?.user;
-  const resolvedUser = interaction.resolved?.users?.[targetId];
+  const isSelf = !userOption || userOption === callerUser.id;
+  const targetId = isSelf ? callerUser.id : userOption;
 
-  // Если пользователь сам себя смотрит — используем member.user
-  // Если смотрит другого — берем из resolved.users, но там нет id/avatar, поэтому берем их из member.user и id
-  const targetUser = resolvedUser
-    ? {
-        id: targetId,
-        avatar: memberUser?.avatar ?? null,
-        discriminator: resolvedUser.discriminator || memberUser?.discriminator || "0",
-        username: resolvedUser.username || memberUser?.username || "Unknown"
-      }
-    : {
-        id: targetId,
-        avatar: memberUser?.avatar ?? null,
-        discriminator: memberUser?.discriminator || "0",
-        username: memberUser?.username || "Unknown"
-      };
+  let targetUser: { id: string; username: string; avatar: string | null; discriminator?: string };
+
+  if (isSelf) {
+    targetUser = {
+      id: callerUser.id,
+      username: callerUser.username,
+      avatar: callerUser.avatar ?? null,
+      discriminator: callerUser.discriminator || "0",
+    };
+  } else {
+    const resolvedUser = interaction.data?.resolved?.users?.[targetId];
+    if (!resolvedUser) {
+      return { error: "User not found in resolved" };
+    }
+    targetUser = {
+      id: targetId,
+      username: resolvedUser.username || "Unknown",
+      avatar: resolvedUser.avatar ?? null,
+      discriminator: resolvedUser.discriminator || "0",
+    };
+  }
 
   try {
     const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
@@ -1477,8 +1482,8 @@ export default {
           });
         }
 
-        if (inter.resolved?.users?.[opponentOption]) {
-          const opponentUser = inter.resolved.users[opponentOption];
+        if (inter.data?.resolved?.users?.[opponentOption]) {
+          const opponentUser = inter.data.resolved.users[opponentOption];
           // Проверка бота по discriminator или флагу (если будет добавлен)
           // В текущей схеме боты имеют discriminator "0000" - но это не надёжно
           // Поэтому просто проверяем, что пользователь есть в resolved
@@ -1709,6 +1714,407 @@ export default {
 
           return Response.json({ type: 7, data: result });
         }
+      }
+
+      // ============================================
+      // Обработка кнопок атаки Мирового Босса (Этап 13)
+      // ============================================
+
+      // 24. Обработка кнопок атаки босса (Type 3)
+      if (inter.type === 3 && inter.data?.custom_id?.startsWith("boss_atk_")) {
+        const customId = inter.data.custom_id;
+        const attackType = customId === 'boss_atk_basic' ? 'basic' : customId === 'boss_atk_skill' ? 'skill' : 'ult';
+        const uid = inter.member?.user.id;
+        const gid = inter.guild_id;
+
+        if (!uid || !gid) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Не удалось определить пользователя или сервер.", flags: 64 },
+          });
+        }
+
+        const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+        // Проверяем наличие активного босса
+        const bossResult = await db.execute({
+          sql: 'SELECT * FROM world_boss WHERE guild_id = ? AND status = ? LIMIT 1',
+          args: [gid, 'active'],
+        });
+
+        if (bossResult.rows.length === 0) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Сейчас нет активного босса!", flags: 64 },
+          });
+        }
+
+        const boss = bossResult.rows[0];
+        const bossType = boss.boss_type as string;
+        const maxHp = boss.max_hp as number;
+        const currentHp = boss.current_hp as number;
+
+        // Достаём данные пользователя
+        const userRes = await db.execute({
+          sql: 'SELECT level, class_id, prestige_count, last_boss_attack_at FROM users WHERE user_id = ? AND guild_id = ?',
+          args: [uid, gid],
+        });
+
+        if (userRes.rows.length === 0) {
+          return Response.json({
+            type: 4,
+            data: { content: "❌ Данные пользователя не найдены.", flags: 64 },
+          });
+        }
+
+        const userData = userRes.rows[0];
+        const level = (userData.level as number) || 0;
+        const classId = userData.class_id as string | null;
+        const prestigeCount = (userData.prestige_count as number) || 0;
+        const lastAttackAt = userData.last_boss_attack_at as number || 0;
+
+        // Проверка статуса 'stripped' — проклятие дезертира
+        if (classId === 'stripped' && attackType !== 'basic') {
+          return Response.json({
+            type: 4,
+            data: { content: `❌ Вы лишены классового звания!只能 использовать **⚔️ Обычный удар** until сброса Престижа.`, flags: 64 },
+          });
+        }
+
+        // Проверка кулдауна
+        const isSpeedBoss = bossType === 'speed';
+        const baseCooldown = isSpeedBoss ? 6 * 60 * 1000 : 10 * 60 * 1000; // 6 min for speed, 10 min for others
+        const now = Date.now();
+        const timeSinceLastAttack = now - lastAttackAt;
+
+        if (timeSinceLastAttack < baseCooldown) {
+          const remainingMs = baseCooldown - timeSinceLastAttack;
+          const remainingMin = Math.ceil(remainingMs / 60000);
+          return Response.json({
+            type: 4,
+            data: { content: `⏳ Отдых между атаками! До следующего удара: **${remainingMin} мин.**`, flags: 64 },
+          });
+        }
+
+        // Проверка уровня для специальных атак
+        if (attackType === 'skill' && level < 10) {
+          return Response.json({
+            type: 4,
+            data: { content: "🔒 Классовый спец-скилл откроется на 10 уровне!", flags: 64 },
+          });
+        }
+
+        if (attackType === 'ult' && level < 50) {
+          return Response.json({
+            type: 4,
+            data: { content: "🔒 Ультимативная способность откроется на 50 уровне!", flags: 64 },
+          });
+        }
+
+        // Базовый урон
+        let baseDamage = 0;
+        if (attackType === 'basic') {
+          baseDamage = Math.floor(Math.random() * 201) + 600; // 600-800
+        } else if (attackType === 'skill') {
+          baseDamage = Math.floor(Math.random() * 301) + 1100; // 1100-1400
+        } else { // ult
+          baseDamage = Math.floor(Math.random() * 601) + 1800; // 1800-2400
+        }
+
+        // Достаём экипированные статы (интеграция с Этапом 14)
+        const gear = await getUserGear(db, uid, gid);
+        baseDamage += gear.totalAtk;
+
+        // Войс-буст
+        const today = getVladivostokDate();
+        const voiceResult = await db.execute({
+          sql: 'SELECT voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
+          args: [uid, gid, today],
+        });
+        const voiceSeconds = (voiceResult.rows[0]?.voice_seconds as number) || 0;
+        const voiceHours = voiceSeconds / 3600;
+
+        let voiceBonus = 0;
+        if (bossType === 'voice') {
+          // +50% за час, максимум +100% (x2.0)
+          voiceBonus = Math.min(voiceHours * 0.5, 1.0);
+        } else {
+          // +25% за час, максимум +50% (x1.5)
+          voiceBonus = Math.min(voiceHours * 0.25, 0.5);
+        }
+
+        // Престиж-буст: +5% к урону за каждую звезду
+        const prestigeBonus = prestigeCount * 0.05;
+
+        // Особенности босса
+        if (bossType === 'tank' && attackType === 'basic') {
+          baseDamage = Math.round(baseDamage * 0.75); // -25% урон от обычных ударов
+        }
+
+        // Классовые особенности
+        if (classId === 'berserker' && attackType === 'ult' && currentHp < maxHp * 0.2) {
+          baseDamage = Math.round(baseDamage * 3); // Казнь! x3 урон
+        }
+
+        // Итоговый урон
+        const finalDamage = Math.round(baseDamage * (1 + voiceBonus + prestigeBonus));
+
+        // Фишка Мимика (Goblin) - выдача монет
+        if (bossType === 'goblin') {
+          const randomCoins = Math.floor(Math.random() * 26) + 15; // 15-40
+          await db.execute({
+            sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+            args: [randomCoins, uid, gid],
+          });
+        }
+
+        // Атомарный урон в БД
+        const bossId = boss.id as number;
+        await db.execute({
+          sql: 'UPDATE world_boss SET current_hp = MAX(0, current_hp - ?) WHERE id = ? AND status = ?',
+          args: [finalDamage, bossId, 'active'],
+        });
+
+        await db.execute({
+          sql: 'UPDATE users SET last_boss_attack_at = ? WHERE user_id = ? AND guild_id = ?',
+          args: [now, uid, gid],
+        });
+
+        await db.execute({
+          sql: 'INSERT INTO boss_damage_logs (boss_id, user_id, guild_id, damage, attack_type, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          args: [bossId, uid, gid, finalDamage, attackType, now],
+        });
+
+        // Проверяем, повержен ли босс
+        const updatedBossResult = await db.execute({
+          sql: 'SELECT current_hp, max_hp, message_id FROM world_boss WHERE id = ?',
+          args: [bossId],
+        });
+        const updatedBoss = updatedBossResult.rows[0];
+        const newCurrentHp = updatedBoss.current_hp as number;
+
+        const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}`;
+        const bossChannelId = boss.channel_id as string;
+
+        if (newCurrentHp <= 0) {
+          // БОСС ПОВЕРЖЕН!
+          await db.execute({
+            sql: 'UPDATE world_boss SET status = ? WHERE id = ?',
+            args: ['defeated', bossId],
+          });
+
+          // Начисляем награду всем участникам
+          const participantsResult = await db.execute({
+            sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
+            args: [bossId],
+          });
+
+          const participants = participantsResult.rows || [];
+          const xpReward = boss.xp_reward as number;
+          const coinsReward = boss.coins_reward as number;
+
+          for (const p of participants) {
+            const pUserId = p.user_id as string;
+            await db.execute({
+              sql: 'UPDATE users SET xp = xp + ?, coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+              args: [xpReward, coinsReward, pUserId, p.guild_id as string],
+            });
+          }
+
+          // Топ-3 дамагеров
+          const topDamageersResult = await db.execute({
+            sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
+            args: [bossId],
+          });
+          const topDamageers = topDamageersResult.rows || [];
+
+          // Редактируем сообщение босса через webhook (доступ к message_id есть в БД)
+          const appId = env.DISCORD_APPLICATION_ID;
+          const editUrl = `https://discord.com/api/v10/webhooks/${appId}/${boss.message_id as string}`;
+
+          // Отправляем победный Embed в канал
+          const victoryEmbed = {
+            embeds: [{
+              title: `🎉 МИРОВОЙ БОСС ${boss.boss_name as string} ПОВЕРЖЕН!`,
+              description: `Победа! Босс повержен!\n\n` +
+                `**Награда каждому участнику:**\n` +
+                `• 🎯 **+${xpReward} XP**\n` +
+                `• 🪙 **+${coinsReward} монет**\n\n` +
+                `**Топ дамагеров:**\n` +
+                topDamageers.map((d: any, i: number) => {
+                  const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+                  return `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона`;
+                }).join('\n') || '*Ударов пока не нанесено*',
+              color: 0xF1C40F,
+            }],
+            components: [],
+          };
+
+          try {
+            await fetch(editUrl, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(victoryEmbed),
+            });
+          } catch (err) {
+            console.error('[WorldBoss] Failed to edit victory message:', err);
+          }
+
+          return Response.json({
+            type: 4,
+            data: { content: `💥 Вы нанесли добивающий удар на **${finalDamage}** урона! Босс повержен! 🎉`, flags: 64 },
+          });
+        } else {
+          // БОЙ ПРОДОЛЖАЕТСЯ
+          const hpBarLength = 20;
+          const hpRatio = Math.max(0, Math.min(newCurrentHp / maxHp, 1));
+          const filled = Math.round(hpRatio * hpBarLength);
+          const empty = hpBarLength - filled;
+          const hpBar = '█'.repeat(filled) + '░'.repeat(empty);
+
+          // Топ-3 текущих дамагеров
+          const currentTopResult = await db.execute({
+            sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
+            args: [bossId],
+          });
+          const currentTop = currentTopResult.rows || [];
+
+          let topText = '';
+          if (currentTop.length > 0) {
+            topText = currentTop.map((d: any, i: number) => {
+              const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+              return `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона`;
+            }).join('\n');
+          } else {
+            topText = '*Ударов пока не нанесено*';
+          }
+
+          // Формируем обновлённый Embed для босса
+          const updatedEmbed = {
+            embeds: [{
+              title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
+              description: `${boss.desc as string}\n\n` +
+                `❤️ **HP:** \`${hpBar}\` **${newCurrentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
+                `⏳ **Исчезнет через:** ${Math.ceil((boss.expires_at as number - now) / 3600000)} ч.\n\n` +
+                `💥 **Топ охотников:**\n${topText}`,
+              color: 0xE74C3C,
+            }],
+            components: [
+              {
+                type: 1,
+                components: [
+                  { type: 2, custom_id: 'boss_atk_basic', style: 4, label: '⚔️ Обычный удар' },
+                  { type: 2, custom_id: 'boss_atk_skill', style: 1, label: '✨ Спец-скилл' },
+                  { type: 2, custom_id: 'boss_atk_ult', style: 3, label: '👑 Ульта' },
+                ],
+              },
+            ],
+          };
+
+          // Редактируем Embed в канале через API бота
+          // Правильный эндпоинт: PATCH /channels/{channel_id}/messages/{message_id}
+          const token = env.DISCORD_BOT_TOKEN;
+          if (token) {
+            const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${updatedBoss.message_id as string}`;
+            try {
+              await fetch(editUrl, {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bot ${token}`,
+                },
+                body: JSON.stringify(updatedEmbed),
+              });
+            } catch (err) {
+              console.error('[WorldBoss] Failed to edit HP message:', err);
+            }
+          }
+
+          const cdMinutes = Math.ceil(baseCooldown / 60000);
+          return Response.json({
+            type: 4,
+            data: { content: `💥 Вы нанесли **${finalDamage}** урона! (Осталось HP: ${newCurrentHp} / ${maxHp}). Следующий удар доступен через ${cdMinutes} мин.`, flags: 64 },
+          });
+        }
+      }
+
+      // 25. Слэш-команда /boss (Этап 13 - Показать статус босса)
+      if (inter.type === 2 && inter.data?.name === "boss") {
+        const gid = inter.guild_id;
+        if (!gid) return Response.json({ error: "No guild" }, { status: 400 });
+
+        const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+        // Проверяем наличие активного босса
+        const bossResult = await db.execute({
+          sql: 'SELECT * FROM world_boss WHERE guild_id = ? AND status = ? LIMIT 1',
+          args: [gid, 'active'],
+        });
+
+        if (bossResult.rows.length === 0) {
+          return Response.json({
+            type: 4,
+            data: { content: "В данный момент на сервере нет активного босса. Он появится по расписанию!", flags: 64 },
+          });
+        }
+
+        const boss = bossResult.rows[0];
+        const maxHp = boss.max_hp as number;
+        const currentHp = boss.current_hp as number;
+        const hoursLeft = Math.ceil((boss.expires_at as number - Date.now()) / 3600000);
+
+        // Прогресс-бар HP (20 символов)
+        const hpRatio = Math.max(0, Math.min(currentHp / maxHp, 1));
+        const filled = Math.round(hpRatio * 20);
+        const empty = 20 - filled;
+        const hpBar = '█'.repeat(filled) + '░'.repeat(empty);
+
+        // Топ-3 дамагеров
+        const topDamageersResult = await db.execute({
+          sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
+          args: [boss.id as number],
+        });
+        const topDamageers = topDamageersResult.rows || [];
+
+        let topText = '';
+        if (topDamageers.length > 0) {
+          topText = topDamageers.map((d: any, i: number) => {
+            const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
+            return `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона`;
+          }).join('\n');
+        } else {
+          topText = '*Ударов пока не нанесено*';
+        }
+
+        const result = {
+          embeds: [{
+            title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
+            description: `${boss.desc as string}\n\n` +
+              `❤️ **HP:** \`${hpBar}\` **${currentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
+              `⏳ **Исчезнет через:** ${hoursLeft} ч.\n\n` +
+              `**Топ охотников:**\n${topText}\n\n` +
+              `Сражение проходит в канале <#1051085743839260694>!`,
+            color: 0xE74C3C,
+          }],
+          components: [],
+        };
+
+        ctx.waitUntil(
+          (async () => {
+            try {
+              const resp = await fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(result),
+              });
+              if (!resp.ok) console.error("Boss status update fail:", await resp.text());
+            } catch (e) {
+              console.error("Boss status error:", e);
+            }
+          })()
+        );
+
+        return Response.json({ type: 5 });
       }
 
       // 10. Обработка кнопок сброса престижа (Type 3 - Этап 9)
@@ -2142,7 +2548,7 @@ export default {
               const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
 
               // Достаём имя пользователя
-              const targetUser = inter.resolved?.users?.[targetId];
+              const targetUser = inter.data?.resolved?.users?.[targetId];
               const username = targetUser ? targetUser.username : inter.member?.user.username || "Unknown";
 
               // Достаём все открытые ачивки из БД
@@ -2302,7 +2708,7 @@ export default {
               const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
 
               // Достаём имя пользователя
-              const targetUser = inter.resolved?.users?.[targetId];
+              const targetUser = inter.data?.resolved?.users?.[targetId];
               const username = targetUser ? targetUser.username : inter.member?.user.username || 'Unknown';
 
               // Достаём данные пользователя
