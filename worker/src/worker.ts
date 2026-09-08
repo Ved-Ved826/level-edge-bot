@@ -15,6 +15,16 @@ import { Card, CardProps } from "./Card";
 import { UNIQUE_ITEMS, getRarityColor, getRarityEmoji, findItemById } from "./itemsCatalog";
 
 // ============================================
+// Описания Мировых Боссов (Этап 13)
+// ============================================
+const BOSS_DESCRIPTIONS: Record<string, string> = {
+  dragon: 'Обычные тычки наносят -25% урона. Пробивают скиллы и ульты!',
+  mimic: 'Быстрый босс на 12ч! Каждый удар выбивает +15..40 🪙 прямо в карман!',
+  leviathan: 'Войс-буст работает в 2 раза сильнее (+50%/час, кап +100%)!',
+  phantom: 'Кулдаун ударов 6 минут вместо 10! Скоростной бой.',
+};
+
+// ============================================
 // Система достижений (Этап 6 - 27 секретных пасхалок)
 // ============================================
 
@@ -1990,10 +2000,11 @@ export default {
           }
 
           // Формируем обновлённый Embed для босса
+          const bossDesc = BOSS_DESCRIPTIONS[boss.boss_type as string] || 'Одолейте босса вместе с друзьями!';
           const updatedEmbed = {
             embeds: [{
               title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
-              description: `${boss.desc as string}\n\n` +
+              description: `${bossDesc}\n\n` +
                 `❤️ **HP:** \`${hpBar}\` **${newCurrentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
                 `⏳ **Исчезнет через:** ${Math.ceil((boss.expires_at as number - now) / 3600000)} ч.\n\n` +
                 `💥 **Топ охотников:**\n${topText}`,
@@ -2059,6 +2070,7 @@ export default {
         }
 
         const boss = bossResult.rows[0];
+        const bossDesc = BOSS_DESCRIPTIONS[boss.boss_type as string] || 'Одолейте босса вместе с друзьями!';
         const maxHp = boss.max_hp as number;
         const currentHp = boss.current_hp as number;
         const hoursLeft = Math.ceil((boss.expires_at as number - Date.now()) / 3600000);
@@ -2089,7 +2101,7 @@ export default {
         const result = {
           embeds: [{
             title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
-            description: `${boss.desc as string}\n\n` +
+            description: `${bossDesc}\n\n` +
               `❤️ **HP:** \`${hpBar}\` **${currentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
               `⏳ **Исчезнет через:** ${hoursLeft} ч.\n\n` +
               `**Топ охотников:**\n${topText}\n\n` +

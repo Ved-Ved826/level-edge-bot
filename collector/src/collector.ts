@@ -2962,17 +2962,17 @@ client.on('messageCreate', async (message: Message) => {
     });
 
     const xpPerMessage = (settingsResult.rows[0]?.xp_per_message as number) || 15;
-    const cooldown = (settingsResult.rows[0]?.message_cooldown_seconds as number) || 30;
+    const cooldown = (settingsResult.rows[0]?.message_cooldown_seconds as number) || 45;
 
     if (userResult.rows.length === 0) {
-      // First message from this user
+      // First message from this user - INSERT с last_activity_at
       const newXp = xpPerMessage;
       const newLevel = calculateLevel(newXp);
 
       await db.execute({
-        sql: `INSERT INTO users (user_id, guild_id, xp, level, messages_count, last_message_at)
-              VALUES (?, ?, ?, ?, 1, ?)`,
-        args: [userId, guildId, newXp, newLevel, Math.floor(now / 1000)],
+        sql: `INSERT INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at)
+              VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        args: [userId, guildId, newXp, newLevel, Math.floor(now / 1000), Math.floor(now / 1000)],
       });
       console.log(`[Message] New user: ${author.username} (${userId}) in ${guild.name} - XP: ${newXp}, Level: ${newLevel}`);
 
@@ -2987,27 +2987,14 @@ client.on('messageCreate', async (message: Message) => {
       const lastMessageAt = (row.last_message_at as number) || 0;
       const timeSinceLastMessage = (now - lastMessageAt * 1000) / 1000;
 
+      // XP начисляется ТОЛЬКО если прошёл кулдаун
       let xpToAdd = 0;
       if (timeSinceLastMessage >= cooldown) {
         xpToAdd = xpPerMessage;
       }
 
-      // Начисляем XP через awardXpWithAllMultipliers (Season + Week учёт)
-      if (xpToAdd > 0) {
-        // Получаем множитель Happy Hours
-        const happyHourMultiplier = await isHappyHourActive(db, guildId);
-        // Применяем множитель Happy Hours к базовому XP
-        const xpWithHH = xpToAdd * happyHourMultiplier;
-
-        // Используем awardXpWithAllMultipliers для сезонного/недельного учёта
-        const { finalXp } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
-        xpToAdd = finalXp;
-
-        console.log(`[XP] ${author.username}: base=${xpToAdd}, happyHour=${happyHourMultiplier}x, season/week recorded`);
-      }
-
-      const oldXp = (row.xp as number) || 0;
-      const newXp = oldXp + xpToAdd;
+      // ВСЕГДА обновляем messages_count и last_activity_at для любого сообщения
+      const newXp = (row.xp as number) || 0 + xpToAdd;
       const newLevel = calculateLevel(newXp);
 
       await db.execute({
@@ -3018,9 +3005,28 @@ client.on('messageCreate', async (message: Message) => {
         args: [newXp, newLevel, Math.floor(now / 1000), Math.floor(now / 1000), userId, guildId],
       });
 
+      // Начисляем XP через awardXpWithAllMultipliers (Season + Week учёт) только если кулдаун прошёл
+      if (xpToAdd > 0) {
+        // Получаем множитель Happy Hours
+        const happyHourMultiplier = await isHappyHourActive(db, guildId);
+        // Применяем множитель Happy Hours к базовому XP
+        const xpWithHH = xpToAdd * happyHourMultiplier;
+
+        // Используем awardXpWithAllMultipliers для сезонного/недельного учёта
+        const { finalXp } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
+        xpToAdd = finalXp;
+
+        // Обновляем xp с учётом множителей (пересчитываем total XP)
+        const newXpWithMultiplier = (row.xp as number) || 0 + xpToAdd;
+        await db.execute({
+          sql: `UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?`,
+          args: [newXpWithMultiplier, calculateLevel(newXpWithMultiplier), userId, guildId],
+        });
+
+        console.log(`[XP] ${author.username}: base=${xpToAdd}, happyHour=${happyHourMultiplier}x, season/week recorded`);
+      }
+
       // Проверка достижений (Этап 6)
-      const hour = new Date().getUTCHours(); // Для проверки времени Владивостока нужно сдвигать
-      // Владивосток UTC+10, поэтому сдвигаем часовой пояс
       const vladivostokDate = new Date(new Date().getTime() + 10 * 60 * 60 * 1000);
       const vh = vladivostokDate.getUTCHours();
       const vm = vladivostokDate.getUTCMinutes();
@@ -3070,7 +3076,7 @@ client.on('messageCreate', async (message: Message) => {
         await unlockAchievement(db, userId, guildId, 'witcher_coin', client, message.channel);
       }
 
-      // Обновление ежедневной активности
+      // Обновление ежедневной активности - ВСЕГДА
       await db.execute({
         sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count)
               VALUES (?, ?, ?, 1)
@@ -3085,7 +3091,7 @@ client.on('messageCreate', async (message: Message) => {
         console.log(`[Message] ${author.username} - Cooldown (total messages: ${(row.messages_count as number) + 1})`);
       }
 
-      // Проверка квестов типа messages
+      // Проверка квестов типа messages - ВСЕГДА
       await checkQuestsForMessage(db, userId, guildId, message);
     }
 
