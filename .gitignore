@@ -6,3 +6,4 @@ dist/
 *.log
 .wrangler/
 register.js
+.aider*
