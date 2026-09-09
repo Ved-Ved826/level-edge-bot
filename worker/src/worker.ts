@@ -1852,7 +1852,7 @@ export default {
         // ============================================
         ctx.waitUntil(
           (async () => {
-            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}`;
+            const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
 
             try {
               // Базовый урон
@@ -1918,10 +1918,23 @@ export default {
 
               // Атомарный урон в БД
               const bossId = boss.id as number;
-              await db.execute({
+              const hpUpdateResult = await db.execute({
                 sql: 'UPDATE world_boss SET current_hp = MAX(0, current_hp - ?) WHERE id = ? AND guild_id = ? AND status = ?',
                 args: [finalDamage, bossId, gid, 'active'],
               });
+
+              // Защита от гонки: если статус уже не 'active' (босс повержен/исчез другим ударом), урон не засчитывается
+              if (!hpUpdateResult.rowsAffected) {
+                await fetch(webhookUrl, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    content: '⚠️ Босс уже повержен или исчез! Ваш удар не засчитан.',
+                    flags: 64,
+                  }),
+                });
+                return;
+              }
 
               await db.execute({
                 sql: 'UPDATE users SET last_boss_attack_at = ? WHERE user_id = ? AND guild_id = ?',
@@ -1959,23 +1972,29 @@ export default {
 
               // Ветка: БОСС ПОВЕРЖЕН
               if (newCurrentHp <= 0) {
-                await db.execute({
-                  sql: 'UPDATE world_boss SET status = ? WHERE id = ? AND guild_id = ?',
-                  args: ['defeated', bossId, gid],
+                // Атомарное переключение статуса: только если он ещё 'active'.
+                // Защищает от повторного начисления наград при гонке/дублирующемся клике.
+                const statusSwitch = await db.execute({
+                  sql: "UPDATE world_boss SET status = 'defeated' WHERE id = ? AND guild_id = ? AND status = 'active'",
+                  args: [bossId, gid],
                 });
 
-                // Начисляем награду всем участникам через batch
-                const participantsResult = await db.execute({
-                  sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
-                  args: [bossId],
-                });
+                if (statusSwitch.rowsAffected) {
+                  // Начисляем награду всем участникам через batch
+                  const participantsResult = await db.execute({
+                    sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
+                    args: [bossId],
+                  });
 
-                const participants = participantsResult.rows || [];
-                const batchOps = participants.map((p: any) => ({
-                  sql: 'UPDATE users SET xp = xp + ?, coins = coins + ? WHERE user_id = ? AND guild_id = ?',
-                  args: [xpReward, coinsReward, p.user_id as string, p.guild_id as string],
-                }));
-                await db.batch(batchOps);
+                  const participants = participantsResult.rows || [];
+                  const batchOps = participants.map((p: any) => ({
+                    sql: 'UPDATE users SET xp = xp + ?, coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+                    args: [xpReward, coinsReward, p.user_id as string, p.guild_id as string],
+                  }));
+                  if (batchOps.length > 0) {
+                    await db.batch(batchOps);
+                  }
+                }
 
                 // Топ-3 дамагеров
                 const topDamageersResult = await db.execute({
@@ -2099,6 +2118,17 @@ export default {
               });
             } catch (err) {
               console.error('[WorldBoss] Error in waitUntil:', err);
+              try {
+                await fetch(webhookUrl, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    content: '❌ Произошла ошибка при обработке атаки босса. Попробуйте позже.',
+                  }),
+                });
+              } catch (notifyErr) {
+                console.error('[WorldBoss] Failed to notify about error:', notifyErr);
+              }
             }
           })()
         );
