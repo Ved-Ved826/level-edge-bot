@@ -14,6 +14,40 @@ http.createServer((req, res) => {
 });
 
 // ============================================
+// Глобальная защита от сетевых сбоев Turso/libSQL
+// (FetchError: Premature close, ECONNRESET, fetch failed и т.п.)
+// Не даём процессу упасть из-за временного разрыва соединения с БД.
+// ============================================
+function isTransientNetworkError(err: any): boolean {
+  const message = String(err?.message || err || '');
+  return (
+    message.includes('Premature close') ||
+    message.includes('FetchError') ||
+    message.includes('ECONNRESET') ||
+    message.includes('fetch failed') ||
+    message.includes('ETIMEDOUT') ||
+    message.includes('ENOTFOUND') ||
+    message.includes('socket hang up')
+  );
+}
+
+process.on('unhandledRejection', (reason: any) => {
+  if (isTransientNetworkError(reason)) {
+    console.error('[Network] Unhandled rejection (transient network error), collector продолжает работу:', reason?.message || reason);
+  } else {
+    console.error('[UnhandledRejection]', reason);
+  }
+});
+
+process.on('uncaughtException', (err: any) => {
+  if (isTransientNetworkError(err)) {
+    console.error('[Network] Uncaught exception (transient network error), collector продолжает работу:', err?.message || err);
+  } else {
+    console.error('[UncaughtException]', err);
+  }
+});
+
+// ============================================
 // Пул квестов (дублировано для collector, избегаем tsconfig issues)
 // ============================================
 interface QuestTemplate {
@@ -859,6 +893,23 @@ async function migrateSchema() {
         args: [],
       });
       console.log('[Migrate] Added column: last_week_reset');
+    }
+
+    // ============================================
+    // Миграция 019: Колонка weekly_reset_week (безопасное добавление, фикс стабильности)
+    // ============================================
+    try {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN weekly_reset_week INTEGER DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: weekly_reset_week');
+    } catch (colErr: any) {
+      // Игнорируем ошибку, если колонка уже существует
+      const errMsg = String(colErr?.message || colErr || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding weekly_reset_week column (ignored):', colErr);
+      }
     }
 
     // ============================================
@@ -2924,10 +2975,18 @@ client.on('ready', async () => {
 
   // Еженедельный сброс и награждение (раз в час)
   console.log('[WeeklyReset] Starting weekly reset checker...');
-  await checkWeeklyReset(db, client); // Проверка сразу при старте
+  try {
+    await checkWeeklyReset(db, client); // Проверка сразу при старте
+  } catch (err) {
+    console.error('[WeeklyReset] Startup check failed, collector продолжает работу:', err);
+  }
   setInterval(async () => {
-    console.log('[WeeklyReset] Checking for weekly reset...');
-    await checkWeeklyReset(db, client);
+    try {
+      console.log('[WeeklyReset] Checking for weekly reset...');
+      await checkWeeklyReset(db, client);
+    } catch (err) {
+      console.error('[WeeklyReset] Interval check failed, collector продолжает работу:', err);
+    }
   }, 60 * 60 * 1000); // Каждый час
 
   // Таймер проверки и запуска Happy Hours (раз в час)
@@ -2959,10 +3018,18 @@ client.on('ready', async () => {
 
   // Таймер проверки и спавна Мирового Босса (каждые 10 минут)
   console.log('[WorldBoss] Starting world boss checker...');
-  await checkAndSpawnWorldBoss(db, client); // Проверка сразу при старте
+  try {
+    await checkAndSpawnWorldBoss(db, client); // Проверка сразу при старте
+  } catch (err) {
+    console.error('[WorldBoss] Startup check failed, collector продолжает работу:', err);
+  }
   setInterval(async () => {
-    console.log('[WorldBoss] Checking for world boss...');
-    await checkAndSpawnWorldBoss(db, client);
+    try {
+      console.log('[WorldBoss] Checking for world boss...');
+      await checkAndSpawnWorldBoss(db, client);
+    } catch (err) {
+      console.error('[WorldBoss] Interval check failed, collector продолжает работу:', err);
+    }
   }, 10 * 60 * 1000); // Каждые 10 минут
 });
 
