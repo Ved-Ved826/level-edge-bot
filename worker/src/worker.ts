@@ -1814,8 +1814,9 @@ export default {
           });
         }
 
-        // 5. БЫСТРАЯ ВАЛИДАЦИЯ: кулдаун -> type: 4
-        const isSpeedBoss = bossType === 'speed';
+        // 5. БЫСТРАЯ ВАЛИДАЦИЯ: кулдаун (атомарный переход) -> type: 4
+        // Используем атомарный UPDATE для предотвращения race condition на double-click
+        const isSpeedBoss = bossType === 'phantom'; // phantom имеет 6-минутный кулдаун
         const baseCooldown = isSpeedBoss ? 6 * 60 * 1000 : 10 * 60 * 1000;
         const now = Date.now();
         const timeSinceLastAttack = now - lastAttackAt;
@@ -1868,7 +1869,7 @@ export default {
               const gear = await getUserGear(db, uid, gid);
               baseDamage += gear.totalAtk;
 
-              // Войс-буст
+              // Войс-буст (для leviathan усилен в 2 раза)
               const today = getVladivostokDate();
               const voiceResult = await db.execute({
                 sql: 'SELECT voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
@@ -1878,23 +1879,29 @@ export default {
               const voiceHours = voiceSeconds / 3600;
 
               let voiceBonus = 0;
-              if (bossType === 'voice') {
+              if (bossType === 'leviathan') {
+                // Левиафан: войс-буст работает в 2 раза сильнее (+50%/час, кап +100%)
                 voiceBonus = Math.min(voiceHours * 0.5, 1.0);
               } else {
+                // Обычный войс-буст
                 voiceBonus = Math.min(voiceHours * 0.25, 0.5);
               }
 
-              // Престиж-буст
+              // Престиж-буст (+5% на каждую звезду престижа)
               const prestigeBonus = prestigeCount * 0.05;
 
-              // Особенности босса
-              if (bossType === 'tank' && attackType === 'basic') {
+              // Особенности босса по типам
+              // dragon: обычные тычки наносят -25% урона, пробивают скиллы/ульты
+              if (bossType === 'dragon' && attackType === 'basic') {
                 baseDamage = Math.round(baseDamage * 0.75);
               }
 
-              // Классовые особенности
+              // mimic: быстрый босс, каждый удар выбивает монеты (уже обработано ниже)
+              // phantom: кулдаун 6 минут вместо 10 (уже обработано выше в cooldown проверке)
+
+              // Классовые особенности: берсеркер на low HP ульте
               if (classId === 'berserker' && attackType === 'ult' && currentHp < maxHp * 0.2) {
-                baseDamage = Math.round(baseDamage * 3);
+                baseDamage = Math.round(baseDamage * 3); // x3 урона на ульте при < 20% HP босса
               }
 
               // Итоговый урон
@@ -1926,15 +1933,27 @@ export default {
                 args: [bossId, uid, gid, finalDamage, attackType, now],
               });
 
-              // Проверяем, повержен ли босс
+              // Проверяем, повержен ли босс (безопасный SELECT с правильными колонками)
               const updatedBossResult = await db.execute({
-                sql: 'SELECT current_hp, max_hp, message_id, xp_reward, coins_reward, boss_name FROM world_boss WHERE id = ? AND guild_id = ?',
+                sql: 'SELECT current_hp, max_hp, message_id, boss_name FROM world_boss WHERE id = ? AND guild_id = ?',
                 args: [bossId, gid],
               });
               const updatedBoss = updatedBossResult.rows[0];
               const newCurrentHp = updatedBoss.current_hp as number;
-              const xpReward = (updatedBoss.xp_reward as number) || 800;
-              const coinsReward = (updatedBoss.coins_reward as number) || 200;
+
+              // Используем фиксированные награды по типу босса
+              // (xp_reward и coins_reward не существуют в таблице world_boss)
+              let xpReward = 800;
+              let coinsReward = 200;
+
+              // Комбинируем награды в зависимости от типа босса
+              if (bossType === 'mimic') {
+                coinsReward = 300; // Мимик выдаёт больше монет
+              } else if (bossType === 'leviathan') {
+                xpReward = 1000; // Левиафан выдаёт больше опыта
+              } else if (bossType === 'phantom') {
+                xpReward = 900; // Фантом чуть дороже
+              }
               const bossName = updatedBoss.boss_name as string;
               const bossChannelId = boss.channel_id as string;
 
