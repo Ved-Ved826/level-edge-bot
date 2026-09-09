@@ -2003,9 +2003,9 @@ export default {
                 });
                 const topDamageers = topDamageersResult.rows || [];
 
-                // Редактируем Embed в канале
-                const appId = env.DISCORD_APPLICATION_ID;
-                const editUrl = `https://discord.com/api/v10/webhooks/${appId}/${boss.message_id as string}`;
+                // Редактируем Embed в канале через Discord Bot API (не через webhook!)
+                const victoryMessageId = (updatedBoss.message_id as string) || (boss.message_id as string);
+                const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${victoryMessageId}`;
 
                 const victoryEmbed = {
                   embeds: [{
@@ -2025,11 +2025,17 @@ export default {
                 };
 
                 try {
-                  await fetch(editUrl, {
+                  const victoryResp = await fetch(editUrl, {
                     method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bot ${env.DISCORD_BOT_TOKEN}`,
+                    },
                     body: JSON.stringify(victoryEmbed),
                   });
+                  if (!victoryResp.ok) {
+                    console.error('[WorldBoss] Victory message edit failed:', await victoryResp.text());
+                  }
                 } catch (err) {
                   console.error('[WorldBoss] Failed to edit victory message:', err);
                 }
