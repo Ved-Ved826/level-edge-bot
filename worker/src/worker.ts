@@ -4203,10 +4203,11 @@ export default {
               const idResult = await db.execute({ sql: 'SELECT last_insert_rowid() as id', args: [] });
               const bossId = (idResult.rows[0]?.id as number) || 1;
 
-              // Сбрасываем кулдаун атак
+              // Сбрасываем кулдаун атак для пользователей текущей гильдии ТОЛЬКО
+              // КРИТИЧНО: добавляем guild_id фильтр, чтобы не сбрасывать cooldown в других гильдиях
               await db.execute({
-                sql: 'UPDATE users SET last_boss_attack_at = 0',
-                args: [],
+                sql: 'UPDATE users SET last_boss_attack_at = 0 WHERE guild_id = ?',
+                args: [gid],
               });
 
               // Формируем Embed для спавна босса
