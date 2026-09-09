@@ -214,7 +214,7 @@ const ACHIEVEMENTS_LIST: Achievement[] = [
   {
     id: 'fbk_investigation',
     title: '🕵️ Команда расследователей',
-    description: 'Посмотреть карточ  и /rank 5 разных людей за день',
+    description: 'Посмотреть карточки и /rank 5 разных людей за день',
     quote: 'Мы нашли у него незадекларированный уровень.',
     reward: 150,
   },
@@ -1569,7 +1569,7 @@ export default {
       }
 
       // 8. Обработка кнопок дуэли (Type 3)
-      if (inter.type === 3 && inter.data?.custom_id?.startsWith("duel_accept_") || inter.data?.custom_id?.startsWith("duel_decline_")) {
+      if (inter.type === 3 && (inter.data?.custom_id?.startsWith("duel_accept_") || inter.data?.custom_id?.startsWith("duel_decline_"))) {
         const customId = inter.data.custom_id;
         // Парсим custom_id: duel_accept_{duelId}_{currency} или duel_decline_{duelId}
         let duelId: string;
@@ -1653,34 +1653,54 @@ export default {
           const tax = Math.round(totalPot * 0.26);
           const winnerProfit = (totalPot - tax) - bet;
 
-          // Повторная проверка баланса перед начислением (в зависимости от валюты)
-          let currentChallengerBalance, currentOpponentBalance;
+          // Атомарная операция: проверка баланса и списание в одном UPDATE
+          // Предотвращает гонку данных при параллельных запросах
           if (currency === 'coins') {
-            currentChallengerBalance = await getUserCoins(db, challengerId, guildId);
-            currentOpponentBalance = await getUserCoins(db, opponentId, guildId);
-          } else {
-            currentChallengerBalance = await getUserXp(db, challengerId, guildId);
-            currentOpponentBalance = await getUserXp(db, opponentId, guildId);
-          }
-
-          if (currentChallengerBalance < bet || currentOpponentBalance < bet) {
-            await updateDuelStatus(db, duelId, "declined");
-            const currencyLabel = currency === 'coins' ? '🪙' : 'XP';
-            return Response.json({
-              type: 4,
-              data: { content: `⚠️ У одного из участников больше недостаточно ${currencyLabel} для дуэли. Дуэль отменена.`, flags: 64 },
+            // Попытка списать монеты с гарантией достаточного баланса
+            const challengerDeduct = await db.execute({
+              sql: "UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ? AND coins >= ?",
+              args: [bet, challengerId, guildId, bet],
             });
-          }
 
-          // Начисление/списание средств (в зависимости от валюты)
-          if (currency === 'coins') {
-            // Монеты: списываем у проигравшего, начисляем победителю
-            await updateCoins(db, loserId, guildId, -bet);  // списываем полную ставку
-            await updateCoins(db, winnerId, guildId, winnerProfit);  // начисляем чистый выигрыш
+            const opponentDeduct = await db.execute({
+              sql: "UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ? AND coins >= ?",
+              args: [bet, opponentId, guildId, bet],
+            });
+
+            // Проверяем, удалось ли списать с обоих (rowsAffected == 1)
+            if (!challengerDeduct.rowsAffected || !opponentDeduct.rowsAffected) {
+              await updateDuelStatus(db, duelId, "declined");
+              return Response.json({
+                type: 4,
+                data: { content: `⚠️ У одного из участников недостаточно 🪙 для дуэли. Дуэль отменена.`, flags: 64 },
+              });
+            }
+
+            // Начисляем выигрыши
+            await updateCoins(db, winnerId, guildId, winnerProfit);
           } else {
-            // XP: списываем у проигравшего, начисляем победителю
+            // Попытка списать XP с гарантией достаточного баланса
+            const challengerDeduct = await db.execute({
+              sql: "UPDATE users SET xp = xp - ? WHERE user_id = ? AND guild_id = ? AND xp >= ?",
+              args: [bet, challengerId, guildId, bet],
+            });
+
+            const opponentDeduct = await db.execute({
+              sql: "UPDATE users SET xp = xp - ? WHERE user_id = ? AND guild_id = ? AND xp >= ?",
+              args: [bet, opponentId, guildId, bet],
+            });
+
+            // Проверяем, удалось ли списать с обоих
+            if (!challengerDeduct.rowsAffected || !opponentDeduct.rowsAffected) {
+              await updateDuelStatus(db, duelId, "declined");
+              return Response.json({
+                type: 4,
+                data: { content: `⚠️ У одного из участников недостаточно XP для дуэли. Дуэль отменена.`, flags: 64 },
+              });
+            }
+
+            // Начисляем выигрыши и обновляем уровни
             await updateXpAndLevel(db, winnerId, guildId, winnerProfit);
-            await updateXpAndLevel(db, loserId, guildId, -bet);
           }
 
           // Обновляем статус дуэли
