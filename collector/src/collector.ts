@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
-import { createClient } from '@libsql/client';
+import { createClient } from '@libsql/client/web';
 import 'dotenv/config';
 
 import http from 'node:http';
