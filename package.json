@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "scripts": {
+    "termux:install": "npm install --force --ignore-scripts",
+    "termux:build": "npm run build -w shared && npm run build -w collector",
+    "termux:start": "npm run start -w collector"
+  },
   "workspaces": [
     "collector",
     "worker",
