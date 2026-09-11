@@ -275,7 +275,7 @@ const ACHIEVEMENTS_LIST: Achievement[] = [
   // --- Мемы / Навальный ---
   {
     id: 'fbk_hello',
-    title: '📣 Привет, это Навальны��',
+    title: '📣 Привет, это Навальный',
     description: 'Написать сообщение после 3+ дней отсутствия на сервере',
     quote: 'Я не молчал, я просто был в оффлайне!',
     reward: 150,
@@ -806,6 +806,10 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
+    // C8: без GuildPresences member.presence?.status всегда undefined,
+    // из-за чего awardOnlineSeconds не начислял online_seconds никому.
+    // ВАЖНО: требует включения Privileged Intent в Discord Developer Portal.
+    GatewayIntentBits.GuildPresences,
   ],
 });
 
@@ -1071,6 +1075,36 @@ async function migrateSchema() {
     // Миграция 017 (переиндексация): Система реликвий, экипировки и рынка (Этап 14)
     // ============================================
 
+    // C11: CREATE TABLE user_inventory ОБЯЗАН идти ДО ALTER TABLE ниже.
+    // На чистой БД первый же ALTER бросал "no such table: user_inventory",
+    // исключение глоталось внешним catch и все последующие миграции не выполнялись.
+    // Таблица user_inventory (Этап 11 - Система инвентаря)
+    const userInventoryCheck = await db.execute({
+      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_inventory'",
+      args: [],
+    });
+
+    if (userInventoryCheck.rows.length === 0) {
+      await db.execute({
+        sql: `CREATE TABLE user_inventory (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT NOT NULL,
+          guild_id TEXT NOT NULL,
+          item_name TEXT NOT NULL,
+          item_type TEXT NOT NULL,
+          rarity TEXT NOT NULL,
+          sell_price INTEGER NOT NULL DEFAULT 10,
+          created_at INTEGER NOT NULL
+        )`,
+        args: [],
+      });
+      await db.execute({
+        sql: 'CREATE INDEX idx_user_inventory_user ON user_inventory(user_id, guild_id)',
+        args: [],
+      });
+      console.log('[Migrate] Created table: user_inventory');
+    }
+
     // Добавляем колонки в user_inventory (если ещё нет)
     if (!columns.includes('item_id')) {
       await db.execute({
@@ -1199,33 +1233,6 @@ async function migrateSchema() {
       console.log('[Migrate] Created table: direct_trades');
     }
 
-    // Таблица user_inventory (Этап 11 - Система инвентаря)
-    const userInventoryCheck = await db.execute({
-      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_inventory'",
-      args: [],
-    });
-
-    if (userInventoryCheck.rows.length === 0) {
-      await db.execute({
-        sql: `CREATE TABLE user_inventory (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id TEXT NOT NULL,
-          guild_id TEXT NOT NULL,
-          item_name TEXT NOT NULL,
-          item_type TEXT NOT NULL,
-          rarity TEXT NOT NULL,
-          sell_price INTEGER NOT NULL DEFAULT 10,
-          created_at INTEGER NOT NULL
-        )`,
-        args: [],
-      });
-      await db.execute({
-        sql: 'CREATE INDEX idx_user_inventory_user ON user_inventory(user_id, guild_id)',
-        args: [],
-      });
-      console.log('[Migrate] Created table: user_inventory');
-    }
-
     // ============================================
     // Миграция 007: Таблица user_cosmetics (Этап 5 - Кастомизация карточки)
     // ============================================
@@ -1327,7 +1334,7 @@ async function migrateSchema() {
         ['fbk_prb', '☀️ Прекрасный Сервер Будущего', 'Закрыть все 3 дейлика за один день', 'Россия будет счастливой, а опыт нафармлен.', 250],
         // Классика
         ['lucky_777', '🎰 Три топора', 'Зафиксировать ровно 777 XP на балансе', 'Поднял бабла, теперь в топе.', 250],
-        ['casino_house', '🎲 Казино всегда в плюсе', 'Сжечь боле�� 100 XP налога в одной дуэли', 'Карты с самого начала были краплеными.', 150],
+        ['casino_house', '🎲 Казино всегда в плюсе', 'Сжечь более 100 XP налога в одной дуэли', 'Карты с самого начала были краплеными.', 150],
       ];
       const placeholders = achievements.map(() => '(?, ?, ?, ?, ?)').join(', ');
       const values = achievements.flat();
@@ -1893,14 +1900,13 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
   const currentWeekKey = getWeekKey();
   const currentSeasonId = getSeasonId();
 
-  // Получаем ID прошлой недели из guild_settings (сохраняем как JSON)
-  let lastWeekKey: string | null = null;
+  // C7: здесь был мёртвый запрос
+  //   'SELECT weekly_reset_week FROM guild_settings WHERE guild_id = ?' с args: [],
+  // Он падал на каждом вызове (несовпадение числа плейсхолдеров и аргументов),
+  // исключение глоталось внешним catch — и весь checkWeeklyReset был мёртв.
+  // Колонки weekly_reset_week в guild_settings не существует вовсе (она есть
+  // только у users), а результат запроса нигде не использовался, поэтому он удалён.
   try {
-    const settingsResult = await db.execute({
-      sql: 'SELECT weekly_reset_week FROM guild_settings WHERE guild_id = ?', // Проверим все гильдии
-      args: [],
-    });
-
     // Получаем все guild_id из users
     const guildsResult = await db.execute({
       sql: 'SELECT DISTINCT guild_id FROM users',
@@ -1910,6 +1916,10 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
     const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
 
     for (const guildId of guildIds) {
+      // lastWeekKey читается заново для КАЖДОЙ гильдии — раньше значение
+      // протекало из предыдущей итерации цикла и гильдия могла пропустить сброс.
+      let lastWeekKey: string | null = null;
+
       // Получаем дату последнего сброса из пользовательской записи
       const userResult = await db.execute({
         sql: 'SELECT last_week_reset FROM users WHERE user_id = ? AND guild_id = ?',
@@ -2169,7 +2179,7 @@ const WORLD_BOSS_PRESETS = [
   {
     boss_id: 'dragon',
     boss_name: '🔥 Пепельный Дракон Золотого Рога',
-    boss_type: 'tank',
+    boss_type: 'dragon',
     max_hp: 7500,
     hours: 24,
     xp_reward: 800,
@@ -2179,7 +2189,7 @@ const WORLD_BOSS_PRESETS = [
   {
     boss_id: 'mimic',
     boss_name: '💰 Жадный Мимик с Шаморы',
-    boss_type: 'goblin',
+    boss_type: 'mimic',
     max_hp: 4200,
     hours: 12,
     xp_reward: 300,
@@ -2189,7 +2199,7 @@ const WORLD_BOSS_PRESETS = [
   {
     boss_id: 'leviathan',
     boss_name: '🌊 Кибер-Левиафан Японского Моря',
-    boss_type: 'voice',
+    boss_type: 'leviathan',
     max_hp: 6000,
     hours: 24,
     xp_reward: 500,
@@ -2199,7 +2209,7 @@ const WORLD_BOSS_PRESETS = [
   {
     boss_id: 'phantom',
     boss_name: '👁️ Фантомный Архитектор Бездны',
-    boss_type: 'speed',
+    boss_type: 'phantom',
     max_hp: 5500,
     hours: 24,
     xp_reward: 600,
@@ -3093,43 +3103,50 @@ client.on('messageCreate', async (message: Message) => {
 
       // Если кулдаун прошёл — начисляем базовый XP, иначе 0 XP
       const xpToAdd = canEarnXp ? xpPerMessage : 0;
-      const currentXp = Number(row.xp || 0);
-      const finalXp = currentXp + xpToAdd; // СТРОГО СУММИРУЕМ!
-      const finalLevel = calculateLevel(finalXp);
       const lastMsgToSave = canEarnXp ? now : lastMessageAt;
 
       // ============================================
-      // 2. Запрос в БД - обновляем уровень и базовый XP
+      // 2. Запрос в БД - счётчик сообщений и таймстемпы
+      // C9: базовый XP здесь больше НЕ пишется абсолютным значением (xp = ?),
+      // из-за чего при параллельных сообщениях терялись апдейты. Единственная
+      // точка начисления — awardXpWithAllMultipliers ниже (там xp = xp + ?),
+      // иначе base XP начислялся дважды за одно сообщение.
       // ============================================
       await db.execute({
         sql: `UPDATE users
-              SET xp = ?, level = ?, messages_count = messages_count + 1,
+              SET messages_count = messages_count + 1,
                   last_message_at = ?, last_activity_at = ?
               WHERE user_id = ? AND guild_id = ?`,
-        args: [finalXp, finalLevel, lastMsgToSave, now, userId, guildId],
+        args: [lastMsgToSave, now, userId, guildId],
       });
 
       // ============================================
       // 3. Начисляем XP с множителями (Season + Week + HH)
       // ============================================
-      let xpToAddFinal = xpToAdd;
+      let xpToAddFinal = 0;
+      let finalLevel = Number(row.level || 0);
       if (xpToAdd > 0) {
         const happyHourMultiplier = await isHappyHourActive(db, guildId);
         const xpWithHH = xpToAdd * happyHourMultiplier;
 
-        // Эта функция сама обновляет xp через UPDATE users SET xp = xp + ?
+        // Начисляет xp атомарно (UPDATE users SET xp = xp + ?) с учётом стрика/сезона/недели
         const { finalXp: finalXpWithMultipliers } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
         xpToAddFinal = finalXpWithMultipliers;
 
-        // Обновляем уровень после применения множителей
+        // Уровень считается по ФАКТИЧЕСКОМУ xp из БД и обязательно сохраняется
         const updatedUserResult = await db.execute({
           sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
           args: [userId, guildId],
         });
-        const newXpTotal = (updatedUserResult.rows[0]?.xp as number) || 0;
-        const newLevelFinal = calculateLevel(newXpTotal);
+        const newXpTotal = Number(updatedUserResult.rows[0]?.xp) || 0;
+        finalLevel = calculateLevel(newXpTotal);
 
-        console.log(`[XP] ${author.username}: base=${xpToAdd}, HH=${happyHourMultiplier}x, total=${newXpTotal} XP, level=${newLevelFinal}`);
+        await db.execute({
+          sql: 'UPDATE users SET level = ? WHERE user_id = ? AND guild_id = ?',
+          args: [finalLevel, userId, guildId],
+        });
+
+        console.log(`[XP] ${author.username}: base=${xpToAdd}, HH=${happyHourMultiplier}x, total=${newXpTotal} XP, level=${finalLevel}`);
       } else {
         console.log(`[Message] ${author.username} - Cooldown (${elapsedMs}ms elapsed, need ${COOLDOWN_MS}ms)`);
       }

@@ -1,0 +1,9 @@
+﻿package-lock.json
+node_modules/
+.git/
+.wrangler/
+dist/
+build/
+worker/assets/
+PROJECT_AUDIT.txt
+*.log

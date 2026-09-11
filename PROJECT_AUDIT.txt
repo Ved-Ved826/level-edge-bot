@@ -1,0 +1,536 @@
+════════════════════════════════════════════════════════════════════════
+  PROJECT_AUDIT.txt — Полный аудит проекта LevelEdge (disbot)
+  Дата: 12.09.2026 · Режим: READ-ONLY (код не менялся, коммитов нет)
+  Версии: worker/src/worker.ts (9733 строки), collector/src/collector.ts
+  (3366 строк), shared/ (миграции 001-006), itemsCatalog.ts, register.js
+════════════════════════════════════════════════════════════════════════
+
+МЕТОДИКА:
+ 1. Полный grep всех SQL-запросов к таблицам с guild_id по worker/src и collector/src.
+ 2. Аудит всех 40+ обработчиков Interactions в worker.ts (defer / количество запросов до ответа).
+ 3. Реальный запуск tsc --noEmit по трём воркспейсам (вывод ниже).
+ 4. Сверка itemsCatalog.ts с миграциями и всеми INSERT user_inventory.
+ 5. Аудит collector.ts на Termux/Android-совместимость и устойчивость Gateway.
+
+РЕЗУЛЬТАТЫ ПРОВЕРОК ТИПИЗАЦИИ (сырой вывод, exit codes реальные):
+  worker:   npx tsc --noEmit  -> EXIT_CODE=0 (ошибок нет)
+  collector: npx tsc --noEmit -> EXIT_CODE=0 (ошибок нет)
+  shared:   npx tsc --noEmit  -> EXIT_CODE=0 (ошибок нет)
+  ВАЖНО: компилятор чистый, потому что почти вся БД-логика оперирует типами any —
+  ошибки схем и колонок компилятор поймать не может (см. разделы ниже).
+
+СВОДКА: найдено 14 критических проблем, ~30 потенциальных, ~10 недочётов.
+
+════════════════════════════════════════════════════════════════════════
+🔴 КРИТИЧЕСКИЕ БАГИ (бот упадёт / сломает данные / деньги пропадут)
+════════════════════════════════════════════════════════════════════════
+
+C1. Секреты: захардкоженный Discord-токен бота в register.js:1
+    Файл содержит живой токен бота ('OTM5Nzc3...') в открытом виде.
+    Файл сейчас НЕ в git (gitignored, история проверена: `git log -S` — токен
+    никогда не коммитился), но он лежит на диске и одно «git add -A» в будущем
+    зальёт его в репозиторий. Любой, кто получит файл, получит полный контроль
+    над ботом. Аналогично collector/.env (уже по документации должен быть вне git).
+    ФАЙЛ: register.js:1-2
+    РЕКОМЕНДАЦИЯ: сменить токен бота в Discord Developer Portal, перейти на
+    переменные окружения, очистить токен из файла.
+
+C2. Дуэль /duel accept: монеты вызывавшего ПРОПАДАЮТ, если у оппонента их нет
+    worker.ts:3328-3362 (coins) и 3374-3408 (xp). Списание с challenger
+    происходит ПЕРВЫМ атомарным UPDATE. Если списание у opponent не проходит
+    (строка 3350: !opponentDeduct.rowsAffected) — дуэль помечается declined
+    и происходит выход. Возврата монет challenger НЕТ.
+    Последовательность бага: клик Accept -> у оппонента недостаточно средств ->
+    challenger потерял ставку навсегда, дуэль отменена.
+    РЕКОМЕНДАЦИЯ: списывать в одном db.batch из двух условных UPDATE или
+    возвращать списание challenger'у перед выходом.
+
+C3. Дуэль /duel accept: полное нарушение правила 4.2 (нет defer) + гонка двойных выплат
+    worker.ts:3270-3504. До первого ответа `Response.json({type:7})` (3502)
+    выполняется 8-18 запросов к БД и до 5 внешних fetch:
+      getDuelById (3190) -> 2 списания (3328/3338) -> updateCoins = 2 запроса
+      (3368 -> 2176,2192) -> updateDuelStatus (3422) -> 2x getUserXp (3432,3434)
+      -> до 5x unlockAchievement (3448-3496; каждый = 2 запроса + fetch).
+    Последствия: (а) Discord ACK-дедлайн 3 секунды — «Interaction failed» на
+    медленном пути; (б) любой сбой БД в середине -> необработанное исключение ->
+    HTTP 500, деньги УЖЕ списаны без отката; (в) updateDuelStatus (2310-2323)
+    делает `UPDATE duels SET status=? WHERE id=?` БЕЗ `AND status='pending'` и
+    без проверки rowsAffected -> двойной клик по Accept = двойная выплата
+    winnerProfit (создание монет из воздуха).
+    РЕКОМЕНДАЦИЯ: defer type:5 сразу после валидаций; атомарный перевод статуса
+    `SET status='completed' WHERE id=? AND status='pending'` с проверкой
+    rowsAffected перед начислениями; начисления в db.batch.
+
+C4. Дуэль /duel (создание вызова): 5 запросов БД до ответа type:4
+    worker.ts:2894-3144: checkUserExists x2 (3022,3024) + getUserCoins/getUserXp
+    x2 (3062-3070) + createDuelRecord (3120) — и только потом type:4 (3144).
+    Лимит для type:4 — максимум 2 запроса. Нет try/catch: сбой БД -> 500.
+    РЕКОМЕНДАЦИЯ: после первых двух проверок defer type:5 + PATCH @original.
+
+C5. Войс-дропы airdrop_claim: нет defer, TOCTOU-гонка, потеря награды
+    worker.ts:4680-4877. 5-7 запросов БД + внешний fetch до type:7 (4876).
+    Гонка: проверка claimed_by (4726) и UPDATE (4764: `UPDATE air_drops SET
+    claimed_by=? WHERE id=?`) неатомарны — два одновременных клика оба получают
+    награду. Сбой БД между UPDATE claim (4764) и выдачей награды (4780-4826) ->
+    claimed_by проставлен, награда потеряна.
+    РЕКОМЕНДАЦИЯ: defer + атомарный `UPDATE air_drops SET claimed_by=? WHERE
+    id=? AND claimed_by IS NULL` с проверкой rowsAffected.
+
+C6. Выбор темы карточки card_select_theme: нет defer + покупка с уходом в минус + сброс купленного титула
+    worker.ts:5046-5206. 3-6 запросов + fetch до type:7 (5190), без defer.
+    Покупка неатомарна: SELECT coins (5114) -> UPDATE coins (5138) без
+    `AND coins >= ?` -> двойной клик уводит баланс в минус.
+    `INSERT OR REPLACE INTO user_cosmetics (..., 'Новичок')` (5152) при покупке
+    темы (3500 🪙) ЗАТИРАЕТ купленный ранее платный титул (до 50,000 🪙) обратно
+    на «Новичок» — деньги пользователя потеряны. Сравните с корректным upsert
+    в /shop: 9510-9518 (`ON CONFLICT ... DO UPDATE SET title_id`).
+    РЕКОМЕНДАЦИЯ: defer; UPDATE с `AND coins >= ?`; upsert как в /shop.
+
+C7. collector.ts: checkWeeklyReset полностью мёртв — еженедельный сброс и чемпион недели никогда не срабатывают
+    collector.ts:1899-1902:
+        sql: 'SELECT weekly_reset_week FROM guild_settings WHERE guild_id = ?',
+        args: [],                       <-- плейсхолдер БЕЗ аргумента
+    libSQL бросает исключение на каждом вызове; оно молча глотается catch на
+    ~2001 -> весь checkWeeklyReset мёртв (таймер 2986 вызывает его каждый час).
+    Награда чемпиона недели (+500 XP, collector.ts:1941-1957) недостижима.
+    РЕКОМЕНДАЦИЯ: убрать мёртвый запрос (результат не используется) либо
+    передать реальный аргумент.
+
+C8. collector.ts: online_seconds никогда не начисляются (Этап 8 мёртв)
+    collector.ts:803-810 — интенты: Guilds, GuildMessages, GuildVoiceStates,
+    GuildMembers. `GatewayIntentBits.GuildPresences` ОТСУТСТВУЕТ. В
+    awardOnlineSeconds (2139): `member.presence?.status` всегда undefined ->
+    `continue` для всех -> ни один пользователь не получает +300 сек/5мин,
+    last_activity_at от тикера онлайна не обновляется, Зал Славы по онлайну пуст.
+    РЕКОМЕНДАЦИЯ: добавить intent GuildPresences (и учесть, что он требует
+    privileged-права в Developer Portal) либо определять активность иначе.
+
+C9. collector.ts: race/потеря XP и двойное начисление base XP за одно сообщение
+    collector.ts:3095-3132. (а) UPDATE users SET xp = ? (АБСОЛЮТНОЕ значение,
+    3104-3110) после отдельного чтения (3096) — два параллельных messageCreate
+    читают одинаковый xp и оба пишут currentXp+15 -> потерянный апдейт. Нужно
+    `xp = xp + ?`. (б) Двойное начисление: base XP уже добавлен в 3106, затем
+    awardXpWithAllMultipliers (3121 -> 1876-1879) добавляет ЕЩЁ РАЗ
+    base*стрик-множитель -> пользователь получает base + base*mult за одно
+    сообщение (season_xp и weekly_activity при этом получают только base*mult —
+    users.xp разъезжается с сезонной статистикой). (в) Уровень после множителей
+    только вычисляется и логируется (3124-3132), но НЕ записывается в БД ->
+    level отстаёт от xp.
+
+C10. Мировой Босс: расхождение словаря boss_type между коллектором и воркером — половина механик боссов мертва
+     Коллектор спавнит боссов с boss_type: 'tank'/'goblin'/'voice'/'speed'
+     (collector.ts:2172,2182,2192,2202 -> INSERT 2337-2340).
+     Воркер ветвит механики по boss_type: 'dragon'/'mimic'/'leviathan'/'phantom'
+     (worker.ts:3646 кулдаун phantom, 3772 leviathan-войс x2, 3798 dragon -25%,
+     3830 goblin-монеты, 3934 mimic-награда, 3942 phantom-награда).
+     Следствие:
+       - авто-спавн (основной путь, раз в 24ч): фантом получает кулдаун 10 мин
+         вместо 6 ('speed' не матчится), левиафан не даёт двойной войс-буст
+         ('voice' не матчится), дракон не снижает урон обычных удара ('tank');
+       - /boss-spawn воркера создаёт boss_type='mimic' -> проверка 'goblin'
+         (3830) никогда не срабатывает для админ-спавна: Мимик не выбивает монеты;
+       - BOSS_DESCRIPTIONS[4204] для collector-типов возвращает fallback-текст.
+     РЕКОМЕНДАЦИЯ: единый словарь boss_type в обоих сервисах (лучше — общий
+     модуль в shared/).
+
+C11. collector.ts: миграции на ЧИСТОЙ БД падают молча (ALTER до CREATE)
+     Весь migrateSchema обёрнут в один try (818) с catch (~1588), который глотает
+     ошибку и продолжает запуск. ALTER TABLE user_inventory (блок 1075-1137)
+     выполняется РАНЬШЕ, чем CREATE TABLE user_inventory (1203-1227). На пустой
+     базе первый же ALTER бросит "no such table", ВСЕ последующие миграции
+     (market_listings, direct_trades, user_cosmetics, user_achievements, duels,
+     guild_events, air_drops, user_daily_activity, quests_*, weekly_activity,
+     season_archive, guild_settings) никогда не создадутся и будут падать заново
+     при каждом старте — без единого сообщения об ошибке в логах уровня error.
+     РЕКОМЕНДАЦИЯ: перенести CREATE до ALTER; разбить миграции на независимые
+     шаги с логированием каждой ошибки.
+
+C12. Кнопки /trade, пагинации /inventory и /market — «Interaction failed»
+     Воркер СОЗДАЁТ кнопки, но НИГДЕ не обрабатывает:
+       - trade_accept_{id} / trade_decline_{id} (worker.ts:7468, 7480);
+       - inventory_page_prev/next (6760-6762);
+       - market_page_prev/next (7640-7642).
+     Любой клик попадает в фолбэк `return Response.json({error:"Unknown
+     interaction"},{status:400})` (9720). Вся фича прямой торговли (/trade,
+     Этап 14) нефункциональна: лот создаётся, но принять/отклонить его нельзя.
+     РЕКОМЕНДАЦИЯ: реализовать обработчики (для пагинации достаточно
+     передать страницу в custom_id и пересчитать).
+
+C13. /market buy: кросс-гильдийная покупка + уход баланса в минус (нарушение правила 4.1)
+     worker.ts:7824-8028:
+       - 7826: `SELECT * FROM market_listings WHERE id = ?` — БЕЗ guild_id:
+         пользователь гильдии A может купить лот гильдии B; продавцу монеты
+         начисляются с guild_id ПОКУПАТЕЛЯ (8006), предмет не проверяется на
+         гильдию (7934);
+       - 7994: списание `coins = coins - ?` без `AND coins >= ?` (проверка
+         баланса отдельным SELECT на 7870) — двойной клик уводит в минус;
+       - перевод НЕатомарен (4 последовательных UPDATE/DELETE, 7994-8028):
+         обрыв между ними = потеря монет/предмета. Два параллельных покупателя:
+         оба проходят проверку 7968, оба платят — покупатель №1 теряет монеты
+         без предмета;
+       - цена не валидируется на отрицательное значение (параметр /market sell
+         price в register.js:133 без min_value) -> лот с отрицательной ценой
+         = печать монет через альт-аккаунт;
+       - 5% комиссия рынка (CLAUDE.md Этап 14) не реализована.
+     РЕКОМЕНДАЦИЯ: добавить guild_id в оба SELECT, атомарное списание
+     `AND coins >= ?`, перевод в db.batch, валидацию price >= 0.
+
+C14. Битый Unicode в строках-литералах (4 места)
+       - worker.ts:4224 — title живого Embed босса: `⚔️ МИРОВОЙ ОСС` (битый
+         символ в слове БОСС) — этот title рендерится в канале при КАЖДОМ
+         обновлении боя (не-смертельный удар);
+       - worker.ts:7356 — комментарий (косметика);
+       - collector.ts:278 — приветствие «Навальны» (битый символ);
+       - collector.ts:1330 — текст ачивки casino_house (битый символ).
+     РЕКОМЕНДАЦИЯ: восстановить корректные UTF-8 строки (файлы保存ить в UTF-8
+     без BOM; проверить редактор/конвертацию CRLF).
+
+════════════════════════════════════════════════════════════════════════
+🟡 ПОТЕНЦИАЛЬНЫЕ ПРОБЛЕМЫ (таймауты, забытые guild_id, узкие места)
+════════════════════════════════════════════════════════════════════════
+
+П1. SQL без фильтра guild_id — сводные результаты grep (правило 4.1)
+    Сырой вывод grep по воркспейсам (таблицы с guild_id) выявил следующие места
+    в РЕГУЛЯРНОМ пути выполнения:
+
+    КРОСС-ГИЛЬДИЙНЫЕ (реальные баги):
+      - worker.ts:7826  SELECT * FROM market_listings WHERE id = ?        (см. C13)
+      - worker.ts:7934  SELECT * FROM user_inventory WHERE id = ?         (смягчено проверкой seller_id на 7968, но лот/предмет чужой гильдии доступны)
+      - worker.ts:8012  UPDATE user_inventory SET user_id=? WHERE id=?    (см. C13)
+      - worker.ts:8024  DELETE FROM market_listings WHERE id = ?          (см. C13)
+      - worker.ts:4692  SELECT * FROM air_drops WHERE id = ?              (дроп чужой гильдии можно claim: guild_id из inter не сверяется с drop.guild_id)
+      - worker.ts:4766  UPDATE air_drops SET claimed_by=? WHERE id = ?    (без guild_id и без `AND claimed_by IS NULL`)
+      - collector.ts:1900 SELECT ... guild_settings WHERE guild_id=? args:[] (см. C7)
+
+    БЕЗОПАСНО ПО СЕМАНТИКЕ, но формально по букве правила 4.1:
+      - worker.ts:3982/4062/4174/4430 — boss_damage_logs WHERE boss_id=? без
+        guild_id. boss_id = AUTOINCREMENT-id строки world_boss (глобально
+        уникален, INSERT 3898 пишет именно его), поэтому утечки данных между
+        гильдиями нет; 3982 дополнительно GROUP BY guild_id и использует p.guild_id
+        в наградах (3994-3996). Риск только если когда-нибудь boss_id станет
+        «типом босса».
+      - worker.ts:7068/8012/9194 — UPDATE user_inventory ... WHERE id=? без
+        guild_id: владение проверено предыдущим SELECT (818/7360/7700/9138 с
+        user_id+guild_id) — ок, но остаётся TOCTOU-окно с параллельной продажей
+        предмета (заточка/экипировка применятся к предмету, уже принадлежащему
+        другому игроку).
+      - collector.ts:979/988 — одноразовые миграции внутри if(!columns.includes(...)) — корректно.
+      - collector.ts:1996 — INSERT OR REPLACE INTO users (user_id=guildId)
+        как метаданные last_week_reset: REPLACE затирает всю строку users по
+        составному PK (user_id=guildId, guild_id) — хрупкий трюк, лучше
+        отдельная таблица guild_meta.
+      - collector.ts:1906/2023/2487 — SELECT DISTINCT guild_id FROM users —
+        задуманное перечисление гильдий (цикл по каждой гильдии ниже — по правилу).
+    Итог: настоящий непарированный кросс-гильдийный баг один — рынок (C13);
+    airdrop — вторая степень риска.
+
+П2. Мировой Босс воркера: гонка двойного клика + RESET кулдауна всех пользователей
+      - worker.ts:3656-3670: кулдаун проверяется ЧТЕНИЕМ last_boss_attack_at до
+        defer; атомарный UPDATE last_boss_attack_at происходит позже внутри
+        waitUntil (3886-3892) -> два быстрых клика оба проходят валидацию ->
+        двойной урон и двойной шанс лута. Атомарный пре-UPDATE (как делали для
+        дуэлей) закрывает дыру.
+      - worker.ts:8610: `UPDATE users SET last_boss_attack_at = 0 WHERE guild_id=?`
+        при каждом /boss-spawn обновляет ВСЕ строки гильдии — задумано, но
+        тяжело при большой таблице.
+      - collector.ts:2343-2347: привязка message_id через повторный SELECT
+        `ORDER BY id DESC LIMIT 1` — при наложении двух таймеров спавна
+        (см. П10) возможен двойной спавн босса: UNIQUE-ограничения на активного
+        босса per guild нет.
+
+П3. Достижения: воркер и коллектор начисляют награду ПО-РАЗНОМУ
+      - worker.ts:573-677 (unlockAchievement): INSERT в user_achievements +
+        embed «+N XP», но НИКТОМУ не начисляются ни XP, ни монеты — эмбед врёт.
+      - collector.ts:358-404: начисляет reward XP + 300 монет + пересчёт уровня.
+      Дуэльные/airopp-ачивки (hl_crowbar, fbk_final_battle, casino_house,
+      rdr_quickdraw, witcher_damn, hl_airdrop, vlad_right_hand) идут через
+      воркер и награду НЕ дают.
+      Также 27 списков достижений дублируются в обоих сервисах (worker.ts:79+,
+      collector.ts:~1250) — уже разъехались по текстам (см. C14).
+
+П4. /sell-junk — мёртвая фича + расхождение со спекой
+      - В кодовой базе НЕТ ни одного INSERT/UPDATE, создающего предмет
+        item_type='junk' (unit'ы создаются только как 'relic', worker.ts:4040, 8252).
+        worker.ts:6178-6184/6278 всегда находят 0 предметов -> «У вас нет хлама».
+      - Спека CLAUDE.md Этап 11: автобай платит 20-25% цены; реализация платит
+        100% sell_price (worker.ts:6242, fallback ||10).
+      РЕКОМЕНДАЦИЯ: либо генерировать junk (дропы, /spin), либо удалить команду.
+
+П5. Схема quests_pool расходится между сервисами
+      - worker.ts:1706: INSERT INTO quests_pool (... target, reward_xp) —
+        колонки `target` НЕ существует ни в миграции 002 (target_value), ни в
+        CREATE коллектора (collector.ts:1462-1470, target_value + is_active).
+        INSERT выполняется только если пул пуст; на чистой БД воркер упадёт
+        (ошибка глотается catch 1716) и квесты не посеются.
+      - Живой путь: collector.ts:2641-2660 сеет пул правильно.
+      РЕКОМЕНДАЦИЯ: починить SQL воркера или делегировать сидинг коллектору.
+
+П6. Дрейф схемы user_inventory и world_boss между миграциями и кодом
+      - migration 005:101-110: sell_price NOT NULL БЕЗ DEFAULT, нет slot/is_equipped;
+        migration 006:73: item_id TEXT DEFAULT NULL;
+      - collector.ts:1210-1219: sell_price NOT NULL DEFAULT 10; 1077:
+        item_id TEXT NOT NULL DEFAULT 'junk'; slot NOT NULL DEFAULT 'junk' (1085);
+      - INSERT'ы воркера (worker.ts:4040, 8252) НЕ вставляют sell_price: на
+        схеме из миграций упадёт с NOT NULL constraint (дроп реликвии теряется
+        внутри цикла победы без try/catch), на схеме коллектора — молча
+        получит sell_price=10 для реликвии ценой 50-5000.
+      - world_boss: collector CREATE (1017-1030) не создаёт xp_reward/coins_reward
+        из миграции 006:27-28; worker.ts:3924 прямо комментирует «не существуют».
+        Если 006 однажды применят — дублирующие источники наград разъедутся
+        (пресеты коллектора 2175-2176: 800/200 против хардкода воркера 800/40).
+      - shared/migrations не создаёт частичный UNIQUE-индекс реликвий
+        idx_unique_guild_item (collector.ts:1141) — на БД из миграций защита
+        уникальности реликвий отсутствует.
+      РЕКОМЕНДАЦИЯ: единый источник схемы (миграции), collector'у — только проверка
+      применимости, не собственная схема.
+
+П7. Нет defer в card_select_theme — см. C6 (лимит запросов превышен 3-6).
+    Дополнительно по правилу 4.2:
+      - prestige_confirm (worker.ts:4634-4670): 2 запроса до type:7 — на грани;
+        UPDATE престижа (4640) без `AND level >= 100` — гонка между проверкой
+        и подтверждением (двойной престиж при параллельных кликах на инстансах).
+      - /recap (5764-5774): «мёртвый» type:4 внутри waitUntil — пользователь
+        навсегда остаётся на «Бот думает...» в ветке «не найден». Нужен PATCH
+        @original и return.
+      - 15 defer-обработчиков в catch только console.error (без PATCH @original):
+        /rank (2582), /leaderboard (2634), /rank-today (2816), /quests (2876),
+        /boss (4504), /achievements (5546), /recap (5918) — пользователь висит
+        в вечном «...думает» при ошибке. Остальные (market, sell-junk, forge,
+        equip, unequip, gear, trade, settings, give-relic, boss-spawn, export,
+        boss_atk) корректно PATCH-ат ошибку.
+      - Нет ВНЕШНЕГО try/catch вокруг диспетчера /interactions (2514-9720):
+        валидационные await'ы на главном потоке без try/catch (/duel 3022-3120,
+        duel_* 3190-3422, lb_ 2736, /boss 4378-4428, boss_atk 3554/3590,
+        prestige_* 4558, airdrop 4690) -> исключение = HTTP 500 без ответа.
+
+П8. Монетные списания почти везде без атомарного guard
+    Атомарный паттерн `... AND coins >= ?` есть ТОЛЬКО в дуэлях (worker.ts:3330,
+    3340). Во всех остальных местах: SELECT-баланса -> UPDATE без guard:
+      - покупка темы: 5114/5138;
+      - /shop freeze: 9402 (в defer-обработчике, двойной клик -> минус);
+      - /shop титул: 9478;
+      - /forge: 9172 (SELECT 9056, UPDATE 9172 без `AND coins >= 1500`);
+      - /market buy: 7996 (см. C13).
+    Все они уязвимы к двойному клику / параллельным запросам -> отрицательный
+    баланс. Проверка-то одна строка.
+
+П9. Незакрытые кнопки/элементы UI и мелкие UX-разрывы
+      - Селект-меню /card-customize theme: 2 запроса до type:4 на грани лимита
+        + CREATE TABLE IF NOT EXISTS user_cosmetics на КАЖДЫЙ запрос
+        (4902-4922, 5082-5102) — лишний DDL в горячем пути.
+      - unlockAchievement (worker.ts:661-669): fire-and-forget fetch вне
+        ctx.waitUntil — уведомление может быть отменено рантаймом.
+      - BigInt(perms) без try/catch (8128, 8340, 5948).
+      - verifyDiscordSignature (705-735): НЕ проверяется свежесть x-signature-
+        timestamp -> возможен replay захваченного запроса (дискорд рекомендует
+        отклонять ts старше ~5 минут).
+      - worker.ts:1016 и 8598: last_insert_rowid() отдельным вторым запросом —
+        при параллельной вставке вернёт чужой id; у @libsql/client есть
+        lastInsertRowid прямо в результате execute.
+      - /market sell не проверяет, что предмет уже в другом лоте (дубли лотов);
+        при покупке is_equipped не сбрасывается (7966-8016) — покупатель может
+        получить «надетый» предмет, занимающий его слот.
+
+П10. collector.ts: устойчивость и ресурсы
+      - client.login() (3366) без .catch: невалидный токен (code 4004) ->
+        unhandledRejection -> процесс-зомби (healthcheck жив, бот мёртв).
+      - client.on('ready') (2961) вместо once: после re-identify (invalid
+        session) 'ready' может эмититься повторно -> 5 setInterval (2983-3033)
+        стартуют ВТОРОЙ раз -> двойные таймеры (двойные спавны/начисления).
+      - Ни одного clearInterval, ни одного SIGTERM/SIGINT-handler, нет
+        client.destroy() — остановка обрывает многошаговые последовательности
+        (INSERT world_boss -> send -> UPDATE message_id, 2336-2371).
+      - awardOnlineSeconds (2122-2153): последовательный await по каждому
+        участнику каждой гильдии — при латентности Turso ~100-300мс и сотнях
+        участников хвост цикла превышает интервал 5 мин -> наложение прогонов
+        (setInterval не ждёт async; guard-флага «уже идёт» нет).
+      - Healthcheck всегда 200 (5-14), даже если Gateway мёртв; у .listen()
+        нет обработчика error (EADDRINUSE будет глотаться глобальным
+        uncaughtException-хендлером).
+      - uncaughtException глотает и НЕ-сетевые ошибки (34-48) — процесс может
+        жить в неизвестном состоянии.
+      - collector.ts:1693-1694 и 778-779: подсчёт закрытых квестов для стрика
+        БЕЗ фильтра по дате (completed_at IS NOT NULL за всё время) — после
+        первого закрытого квеста «сегодняшних» квестов достаточно навсегда;
+        стрик может никогда не сброситься.
+      - collector.ts:479: new Date('YYYY-MM-DD') парсится как UTC-полночь, а
+        не полночь Владивостока -> граница дня witcher_gwent сдвинута на 10ч.
+      - collector.ts:1612-1623: getWeekKey считает Math.ceil(dayOfYear/7), это
+        не ISO-неделя; week_key в weekly_activity может не совпасть с расчётом
+        воркера.
+      - Fallback DATABASE_URL = 'libsql://localhost' (813) — при запуске не из
+        папки collector (dotenv читает cwd/.env) бот молча падает в бесконечные
+        ENOTFOUND, которые глотаются глобальными обработчиками. Запускать
+        `npm run start -w collector` (cwd = collector/), что и делает setup-termux.sh.
+
+П11. Termux/Android — что НЕ_found (проверено, ок):
+      - @libsql/client/web (collector.ts:2) — чистый fetch-клиент, нативных
+        зависимостей нет; fs не используется; termux:install обходится
+        --ignore-scripts (setup-termux.sh:12) против сборки workerd.
+      - Intl с timeZone Asia/Vladivostok — работает на Termux node (full-ICU).
+      - Healthcheck-сервер (порт 8000/PORT) — безопасен.
+      Замечание: worker/src/worker.ts:3 импортирует '@libsql/client' (node-
+      вариант). Для Cloudflare Workers официально требуется '@libsql/client/web'
+      (тот же пакет, другой сабпуть) — сейчас работает лишь благодаря
+      nodejs_compat в wrangler.toml:4; при деплое возможны бандл-ошибки.
+
+П12. Ежемесячный/недельный фундамент:
+      - /spin (Этап 15) и Подземелье (Этап 16) в коде отсутствуют (это будущие
+        этапы — не баг, отметка для планирования).
+      - renderVictoryEmbed коллектора (2250-2269) читает boss.xp_reward/coins_
+        reward, которых в схеме нет -> если бы вызывалась, «+undefined XP».
+        (Мёртвый код.)
+      - collector INSERT босса не пишет xp_reward/coins_reward (2337-2340),
+        эмбед спавна renderBossEmbed их и не показывает — но пресеты обещают
+        другие награды, чем выдаёт воркер (см. П6).
+
+П13. Сортировка инвентаря по rarity — алфавитная
+      worker.ts:872: `ORDER BY rarity DESC` по TEXT: редкость сортируется как
+      строка: 'rare' > 'mythic' > 'legendary' > 'epic' > 'common'. В /inventory
+      «Редкий» будет выше «Мифического». Нужен CASE WHEN или числовой вес.
+
+П14. Покупка темы сбрасывает титул — см. C6 (там же описано).
+
+════════════════════════════════════════════════════════════════════════
+🟢 НЕДОЧЕТЫ ТИПИЗАЦИИ И ФОРМАТИРОВАНИЯ
+════════════════════════════════════════════════════════════════════════
+
+Т1. Вся БД-логика на `any`
+      - Все функции-хелперы принимают `db: any` (worker.ts:573, 2116-2334,
+        collector.ts и т.д.), строки результатов кастуются на месте
+        (`as string`, `as number`). Ни одного интерфейса строки таблиц.
+        Именно поэтому tsc зелёный при реальных багах схемы (C7, П5, П6).
+      - shared/src/index.ts содержит только User/GuildSettings + XP-формулы;
+        shared/src/schema.ts — ПУСТОЙ файл-заглушка (0 строк).
+      - worker/src/types.d.ts — только declare module '*.ttf'/*.wasm'.
+      РЕКОМЕНДАЦИЯ: описать row-интерфейсы (UserRow, BossRow, InventoryRow...)
+      в shared и типизировать db.execute результат —编译 поймает расхождения
+      колонок на этапе сборки.
+
+П2. Тройное дублирование пула квестов
+      - shared/quests_pool.ts (15 квестов, ни разу не импортируется — мёртвый файл);
+      - worker.ts:1670 DEFAULT_QUESTS (свой список + INSERT с колонкой target);
+      - collector.ts:60-100 собственный QuestTemplate + сидинг 2641-2660.
+      Три источника правды. Убрать shared-файл или реально импортировать.
+
+П3. worker/src/index.ts — пустой файл (0 строк); PROJECT_STRUCTURE.md и
+    CLAUDE.md ссылаются на Roboto Cyrillic, фактически worker/assets/
+    Inter-Regular.ttf (worker.ts:17). Inter поддерживает кириллицу — работает,
+    но документация расходится.
+
+П4. boss_damage_logs.created_at пишется в МИЛЛИСЕКУНДАХ (worker.ts:3898-3900,
+    now = Date.now() из 3650), тогда как все остальные таблицы пишут секунды
+    (user_inventory 4036, market_listings 1004, direct_trades 7420, duels 2260,
+    air_drops 4762, user_achievements 615). Читатели boss_damage_logs используют
+    только SUM(damage) — функционально не ломается, но конвенция разъезжается.
+
+П5. Мёртвый код / хвосты:
+      - collector.ts renderVictoryEmbed (2250-2269) нигде не вызывается;
+      - worker.ts:2334 'stripped' класс — только гейт в боссе, полный набор
+        механик стрипнутых не описан;
+      - /recap мёртвый type:4 (5764-5774).
+
+П6. Форматирование: worker.ts сохранён с двойными пустыми строками между
+    всеми строками (артефакт конвертации CRLF — коммит 7afdddd), что удвоило
+    файл и мешает diff-ам. Русские комментарии с битыми символами см. C14.
+
+П7. Разночтения документации и кода (CLAUDE.md vs реализация):
+      - «4 класса» (Этап 12) — в коде 8 (worker.ts:1064-1088: warrior,
+        berserker, mage, necromancer, ranger, assassin, artificer, bard),
+        классовые скиллы из Этапа 12 (DoT мага, бафф барда и т.п.) в бою босса
+        не реализованы, кроме berserker x3 (worker.ts:3814);
+      - sell-junk 20-25% — платит 100% (П4);
+      - комиссия рынка 5% — не реализована (C13/П9);
+      - сет-бонусы 2/4 и 4/4 (Этап 14: «Владыка Японского Моря», Arasaka,
+        «Пепельный Жнец», «Барон Шаморы») — в коде отсутствуют полностью: поля
+        set_id нет ни в itemsCatalog.ts, ни в схеме БД; grep по set_id даёт
+        только название босса;
+      - обновление уровня после квестовых/ачивочных начислений — только в
+        коллекторе, воркер обновляет level не во всех путях.
+
+════════════════════════════════════════════════════════════════════════
+💡 РЕКОМЕНДАЦИИ ПО ИСПРАВЛЕНИЮ (по приоритету)
+════════════════════════════════════════════════════════════════════════
+
+Шаг 1 — деньги и данные (критические, точечные правки):
+  1. register.js:1 — отозвать токен, убрать из файла (env), ревок + новый токен
+     в Discord Developer Portal.
+  2. worker.ts:3330-3362/3374-3408 — при неудачном списании оппонента вернуть
+     списание challenger'у (UPDATE coins = coins + bet) ДО выхода.
+  3. worker.ts:2310-2323 — updateDuelStatus: `UPDATE duels SET status=? WHERE
+     id=? AND status='pending'`, проверять rowsAffected; выплачивать только
+     при успешном переводе статуса.
+  4. worker.ts:3270-3504 (duel_accept), 4680-4876 (airdrop_claim),
+     5046-5190 (card_select_theme), 2894-3144 (/duel) — обернуть в defer type:5
+     (или type 7 как отложенный) + ctx.waitUntil + PATCH @original; все
+     начисления — в db.batch.
+  5. worker.ts:7826/7934/8012/8024 — добавить `AND guild_id = ?`;
+     списание покупателя: `... AND coins >= ?` (7996).
+  6. worker.ts:5114/5138, 9056/9172, 9402, 9478 — добавить `AND coins >= ?`.
+  7. worker.ts:4764 — `UPDATE air_drops SET claimed_by=?, claimed_at=? WHERE
+     id=? AND claimed_by IS NULL` + rowsAffected.
+  8. worker.ts:5150-5156 — заменить INSERT OR REPLACE на upsert с сохранением
+     title_id (как в /shop 9510-9518).
+  9. Восстановить UTF-8 строки: worker.ts:4224, 7356; collector.ts:278, 1330.
+
+Шаг 2 — коллектор (надёжность и мёртвые фичи):
+  10. collector.ts:1899-1902 — удалить/починить мёртвый запрос guild_settings
+      (аргументы пустые) -> оживить еженедельный сброс.
+  11. collector.ts:803-810 — добавить GatewayIntentBits.GuildPresences или
+      переписать awardOnlineSeconds на другой сигнал активности.
+  12. collector.ts:3095-3110 — `SET xp = xp + ?, level = ?` (атомарно),
+      убрать двойное начисление base (одна из двух начисляющих веток),
+      записывать level после множителей (3124-3132).
+  13. collector.ts:818/1588 — разбить migrateSchema на независимые миграции
+      с отдельным try/catch и логом каждой; CREATE user_inventory (1203) —
+      ПЕРЕД блоком ALTER (1075).
+  14. collector.ts:2961 — `client.once('ready')`, хранить хэндлы таймеров,
+      добавить SIGTERM/SIGINT -> client.destroy() -> process.exit(0);
+      обернуть client.login в catch с process.exit(1).
+  15. collector.ts:2331-2346 — защита от двойного спавна: INSERT ... WHERE
+      NOT EXISTS активного босса или UNIQUE-частичный индекс по (guild_id,
+      status='active').
+  16. Синхронизировать boss_type пресетов коллектора (2172-2207) со словарём
+      воркера ('dragon'/'mimic'/'leviathan'/'phantom') — иначе см. C10.
+
+Шаг 3 — правила 4.1/4.2 массово:
+  17. Прогнать grep-чек-лист из П1 после правок: все SELECT/UPDATE/DELETE к
+      users, world_boss, user_inventory, user_daily_activity, market_listings,
+      air_drops, guild_settings — с `guild_id = ?`; boss_damage_logs — по
+      boss_id (задокументировать исключение в CLAUDE.md).
+  18. Все кнопочные обработчики, где >2 запросов до ответа, — по паттерну
+      boss_atk (валидации -> defer -> waitUntil -> PATCH @original).
+  19. Добавить внешний try/catch в диспетчер /interactions (2514) с ответом
+      type 4 «Произошла ошибка» как last resort.
+
+Шаг 4 — согласование схемы и фич:
+  20. Добавить sell_price в INSERT'ы воркера (4040, 8252) или DEFAULT в
+      миграцию 005; унифицировать item_id/slot/rarity-нотацию между
+      миграциями 005/006 и коллектором (П6).
+  21. Починить worker.ts:1706 (target -> target_value) или вынести сидинг
+      квестов в коллектор.
+  22. /sell-junk: либо генерация junk-предметов, либо удаление команды (П4).
+  23. ORDER BY rarity: CASE-выражение с весами (П13).
+  24. Обработать кнопки trade_accept/trade_decline и пагинации (C12).
+  25. Ачивки воркера: доначислять reward XP + 300 🪙 (синхронно с
+      коллектором) или вынести начисление в общий модуль (П3).
+  26. worker.ts:3 — перейти на '@libsql/client/web' как в коллекторе (П11).
+
+Шаг 5 — типизация и наведение порядка:
+  27. Row-интерфейсы для всех таблиц в shared/src; заменить `db: any`.
+  28. Удалить/подключить shared/quests_pool.ts, shared/src/schema.ts,
+      worker/src/index.ts.
+  29. Свежесть ts в verifyDiscordSignature (705) — отклонять ts старше 5 мин.
+  30. lastInsertRowid из результата INSERT вместо отдельного SELECT
+      (worker.ts:1016, 8598).
+
+════════════════════════════════════════════════════════════════════════
+СТАТУС АУДИТА
+════════════════════════════════════════════════════════════════════════
+- Код не изменён; git-статус до аудита: clean (main, b8a8b5a).
+- Единственный созданный файл — этот отчёт (PROJECT_AUDIT.txt).
+- Изменения НЕ закоммичены намеренно (режим READ-ONLY по задаче).
+- Проверки: tsc --noEmit (shared, worker, collector) — все 0 ошибок,
+  что подтверждает главную системную проблему: типизация не ловит
+  схемные и SQL-ошибки, т.к. вся работа с БД идёт через `any`.
+════════════════════════════════════════════════════════════════════════

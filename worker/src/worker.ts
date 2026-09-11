@@ -2311,15 +2311,17 @@ async function updateDuelStatus(db: any, duelId: string, status: "accepted" | "d
 
   try {
 
-    await db.execute({
+    // C3: атомарный перевод статуса — только из 'pending'. Повторный клик по Accept
+    // (или параллельный запрос) не пройдёт, значит двойной выплаты winnerProfit не будет.
+    const res = await db.execute({
 
-      sql: "UPDATE duels SET status = ? WHERE id = ?",
+      sql: "UPDATE duels SET status = ? WHERE id = ? AND status = 'pending'",
 
       args: [status, duelId],
 
     });
 
-    return true;
+    return ((res.rowsAffected as number) || 0) > 0;
 
   } catch (err) {
 
@@ -3349,6 +3351,22 @@ export default {
 
             if (!challengerDeduct.rowsAffected || !opponentDeduct.rowsAffected) {
 
+              // C2: если с challenger монеты УЖЕ списаны — вернуть их перед отменой дуэли,
+
+              // иначе ставка вызывавшего теряется навсегда.
+
+              if (challengerDeduct.rowsAffected) {
+
+                await db.execute({
+
+                  sql: "UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?",
+
+                  args: [bet, challengerId, guildId],
+
+                });
+
+              }
+
               await updateDuelStatus(db, duelId, "declined");
 
               return Response.json({
@@ -3356,6 +3374,42 @@ export default {
                 type: 4,
 
                 data: { content: `⚠️ У одного из участников недостаточно 🪙 для дуэли. Дуэль отменена.`, flags: 64 },
+
+              });
+
+            }
+
+
+
+            // C3: статус переводим ДО выплаты. Если перевод не прошёл (дуэль уже
+
+            // завершена/отменена) — возвращаем списанные ставки обоим.
+
+            const coinsStatusCompleted = await updateDuelStatus(db, duelId, "completed");
+
+            if (!coinsStatusCompleted) {
+
+              await db.execute({
+
+                sql: "UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?",
+
+                args: [bet, challengerId, guildId],
+
+              });
+
+              await db.execute({
+
+                sql: "UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?",
+
+                args: [bet, opponentId, guildId],
+
+              });
+
+              return Response.json({
+
+                type: 4,
+
+                data: { content: "⚠️ Эта дуэль уже завершена — ставки возвращены.", flags: 64 },
 
               });
 
@@ -3395,6 +3449,20 @@ export default {
 
             if (!challengerDeduct.rowsAffected || !opponentDeduct.rowsAffected) {
 
+              // C2: возврат уже списанной ставки challenger'у перед отменой дуэли
+
+              if (challengerDeduct.rowsAffected) {
+
+                await db.execute({
+
+                  sql: "UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?",
+
+                  args: [bet, challengerId, guildId],
+
+                });
+
+              }
+
               await updateDuelStatus(db, duelId, "declined");
 
               return Response.json({
@@ -3409,17 +3477,45 @@ export default {
 
 
 
+            // C3: статус переводим ДО выплаты; при неудаче возвращаем ставки обоим
+
+            const xpStatusCompleted = await updateDuelStatus(db, duelId, "completed");
+
+            if (!xpStatusCompleted) {
+
+              await db.execute({
+
+                sql: "UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?",
+
+                args: [bet, challengerId, guildId],
+
+              });
+
+              await db.execute({
+
+                sql: "UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?",
+
+                args: [bet, opponentId, guildId],
+
+              });
+
+              return Response.json({
+
+                type: 4,
+
+                data: { content: "⚠️ Эта дуэль уже завершена — ставки возвращены.", flags: 64 },
+
+              });
+
+            }
+
+
+
             // Начисляем выигрыши и обновляем уровни
 
             await updateXpAndLevel(db, winnerId, guildId, winnerProfit);
 
           }
-
-
-
-          // Обновляем статус дуэли
-
-          await updateDuelStatus(db, duelId, "completed");
 
 
 
@@ -4221,7 +4317,7 @@ export default {
 
                   embeds: [{
 
-                    title: `⚔️ МИРОВОЙ ��ОСС: ${boss.boss_name as string}`,
+                    title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
 
                     description: `${bossDesc}\n\n` +
 
@@ -4757,17 +4853,35 @@ export default {
 
 
 
-        // Помечаем дроп как забранный
+        // C5: помечаем дроп как забранный АТОМАРНО — только если claimed_by ещё NULL.
+
+        // Иначе два одновременных клика оба проходят проверку выше (TOCTOU) и оба
+
+        // получают награду; награда выдаётся ТОЛЬКО при успешном клейме.
 
         const now = Math.floor(Date.now() / 1000);
 
-        await db.execute({
+        const claimResult = await db.execute({
 
-          sql: 'UPDATE air_drops SET claimed_by = ?, claimed_at = ? WHERE id = ?',
+          sql: 'UPDATE air_drops SET claimed_by = ?, claimed_at = ? WHERE id = ? AND claimed_by IS NULL',
 
           args: [clickedUserId, now, dropId],
 
         });
+
+
+
+        if (!claimResult.rowsAffected) {
+
+          return Response.json({
+
+            type: 4,
+
+            data: { content: "❌ Этот дроп уже успел забрать кто-то другой!", flags: 64 },
+
+          });
+
+        }
 
 
 
@@ -5133,23 +5247,43 @@ export default {
 
             }
 
-            await db.execute({
+            // C6: списание атомарное, с проверкой баланса в самом UPDATE.
 
-              sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ?',
+            // Двойной клик по кнопке больше не уводит баланс в минус.
 
-              args: [themeCost, uid, gid],
+            const themePayResult = await db.execute({
+
+              sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ? AND coins >= ?',
+
+              args: [themeCost, uid, gid, themeCost],
 
             });
+
+
+
+            if (!themePayResult.rowsAffected) {
+
+              return Response.json({
+
+                type: 4,
+
+                data: { content: `❌ Недостаточно 🪙 для покупки темы (нужно **${themeCost.toLocaleString()} 🪙**).`, flags: 64 },
+
+              });
+
+            }
 
           }
 
 
 
-          // Сохраняем выбранную тему (INSERT OR REPLACE)
+          // C6: upsert вместо INSERT OR REPLACE — REPLACE затирал купленный ранее
+
+          // платный титул обратно на «Новичок». title_id при конфликте не трогаем.
 
           await db.execute({
 
-            sql: "INSERT OR REPLACE INTO user_cosmetics (user_id, guild_id, theme_id, title_id) VALUES (?, ?, ?, 'Новичок')",
+            sql: "INSERT INTO user_cosmetics (user_id, guild_id, theme_id, title_id) VALUES (?, ?, ?, 'Новичок') ON CONFLICT(user_id, guild_id) DO UPDATE SET theme_id = excluded.theme_id",
 
             args: [uid, gid, selectedTheme],
 
@@ -7693,6 +7827,34 @@ ctx.waitUntil(
 
 
 
+                // C13: цена должна быть строго положительной. Лот с отрицательной ценой
+
+                // = печать монет (покупатель получал деньги вместо списания).
+
+                if (priceOption <= 0) {
+
+                  await fetch(webhookUrl, {
+
+                    method: "PATCH",
+
+                    headers: { "Content-Type": "application/json" },
+
+                    body: JSON.stringify({
+
+                      content: "❌ Цена должна быть больше 0 🪙!",
+
+                      flags: 64,
+
+                    }),
+
+                  });
+
+                  return;
+
+                }
+
+
+
                 // Проверить предмет
 
                 const itemRes = await db.execute({
@@ -7823,9 +7985,11 @@ ctx.waitUntil(
 
                 const listingRes = await db.execute({
 
-                  sql: 'SELECT * FROM market_listings WHERE id = ?',
+                  // C13: фильтр по guild_id — иначе покупатель гильдии A мог купить лот гильдии B
 
-                  args: [itemOption],
+                  sql: 'SELECT * FROM market_listings WHERE id = ? AND guild_id = ?',
+
+                  args: [itemOption, gid],
 
                 });
 
@@ -7931,9 +8095,11 @@ ctx.waitUntil(
 
                 const itemRes = await db.execute({
 
-                  sql: 'SELECT * FROM user_inventory WHERE id = ?',
+                  // C13: фильтр по guild_id — предмет чужой гильдии недоступен
 
-                  args: [inventoryId],
+                  sql: 'SELECT * FROM user_inventory WHERE id = ? AND guild_id = ?',
+
+                  args: [inventoryId, gid],
 
                 });
 
@@ -7991,13 +8157,43 @@ ctx.waitUntil(
 
                 // Передача монет и предмета
 
-                await db.execute({
+                // C13: списание покупателя атомарное — с проверкой баланса в самом UPDATE.
 
-                  sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ?',
+                // Два параллельных покупателя больше не могут оба пройти проверку выше.
 
-                  args: [price, uid, gid],
+                const buyerDeduct = await db.execute({
+
+                  sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ? AND coins >= ?',
+
+                  args: [price, uid, gid, price],
 
                 });
+
+
+
+                if (!buyerDeduct.rowsAffected) {
+
+                  await fetch(webhookUrl, {
+
+                    method: "PATCH",
+
+                    headers: { "Content-Type": "application/json" },
+
+                    body: JSON.stringify({
+
+                      content: "❌ Недостаточно монет для покупки — возможно, баланс уже изменился. Попробуйте снова.",
+
+                      flags: 64,
+
+                    }),
+
+                  });
+
+                  return;
+
+                }
+
+
 
                 await db.execute({
 
@@ -8009,9 +8205,9 @@ ctx.waitUntil(
 
                 await db.execute({
 
-                  sql: 'UPDATE user_inventory SET user_id = ? WHERE id = ?',
+                  sql: 'UPDATE user_inventory SET user_id = ? WHERE id = ? AND guild_id = ?',
 
-                  args: [uid, inventoryId],
+                  args: [uid, inventoryId, gid],
 
                 });
 
@@ -8021,9 +8217,9 @@ ctx.waitUntil(
 
                 await db.execute({
 
-                  sql: 'DELETE FROM market_listings WHERE id = ?',
+                  sql: 'DELETE FROM market_listings WHERE id = ? AND guild_id = ?',
 
-                  args: [itemOption],
+                  args: [itemOption, gid],
 
                 });
 
