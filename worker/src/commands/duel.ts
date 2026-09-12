@@ -234,15 +234,29 @@ export async function handleDuelButtons(
   let duelId: string;
   let currency: string = 'xp'; // по умолчанию XP
   if (customId.startsWith("duel_accept_")) {
-    // Формат: duel_accept_{duelId}_{currency}
-    const parts = customId.substring(14).split('_');
-    duelId = parts.slice(0, -1).join('_'); // всё кроме последнего - duelId
-    const lastPart = parts[parts.length - 1];
-    if (lastPart === 'coins' || lastPart === 'xp') {
-      currency = lastPart;
+    const rest = customId.slice("duel_accept_".length);
+    if (rest.endsWith("_coins")) {
+      currency = "coins";
+      duelId = rest.slice(0, -6);
+    } else if (rest.endsWith("_xp")) {
+      currency = "xp";
+      duelId = rest.slice(0, -3);
+    } else {
+      duelId = rest;
+    }
+  } else if (customId.startsWith("duel_decline_")) {
+    const rest = customId.slice("duel_decline_".length);
+    if (rest.endsWith("_coins")) {
+      currency = "coins";
+      duelId = rest.slice(0, -6);
+    } else if (rest.endsWith("_xp")) {
+      currency = "xp";
+      duelId = rest.slice(0, -3);
+    } else {
+      duelId = rest;
     }
   } else {
-    duelId = customId.substring(16);
+    duelId = customId;
   }
   const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
   const duel = await getDuelById(db, duelId);
