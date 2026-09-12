@@ -1404,7 +1404,9 @@ async function migrateSchema() {
           opponent_id TEXT NOT NULL,
           bet_amount INTEGER NOT NULL,
           status TEXT DEFAULT 'pending',
-          created_at INTEGER NOT NULL
+          created_at INTEGER NOT NULL,
+          message_id TEXT DEFAULT NULL,
+          channel_id TEXT DEFAULT NULL
         )`,
         args: [],
       });
@@ -1417,6 +1419,35 @@ async function migrateSchema() {
         args: [],
       });
       console.log('[Migrate] Created table: duels');
+    }
+
+    // ============================================
+    // Миграция 020: Колонки message_id и channel_id для дуэлей (Этап 11+)
+    // ============================================
+    try {
+      const duelsColumnsCheck = await db.execute({
+        sql: "PRAGMA table_info(duels)",
+        args: [],
+      });
+      const duelsColumns = (duelsColumnsCheck.rows || []).map((row: any) => row.name as string);
+
+      if (!duelsColumns.includes('message_id')) {
+        await db.execute({
+          sql: 'ALTER TABLE duels ADD COLUMN message_id TEXT DEFAULT NULL',
+          args: [],
+        });
+        console.log('[Migrate] Added column: message_id to duels');
+      }
+
+      if (!duelsColumns.includes('channel_id')) {
+        await db.execute({
+          sql: 'ALTER TABLE duels ADD COLUMN channel_id TEXT DEFAULT NULL',
+          args: [],
+        });
+        console.log('[Migrate] Added column: channel_id to duels');
+      }
+    } catch (err: any) {
+      console.error('[Migrate] Error adding duel columns (ignored):', err);
     }
 
     // ============================================
@@ -2506,6 +2537,82 @@ async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
     }
   } catch (err) {
     console.error('[WorldBoss] Error in checkAndSpawnWorldBoss loop:', err);
+  }
+}
+
+// ============================================
+// Функции для автоматического истечения дуэлей (Этап 11+)
+// ============================================
+
+/**
+ * Проверяет истёкшие дуэли и обновляет их статус на 'expired'
+ * Вызывается каждые 20-30 секунд
+ */
+async function checkExpiredDuels(db: any, bot: Client): Promise<void> {
+  const nowMs = Date.now();
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const duelTimeoutSeconds = 300; // 5 минут
+
+  try {
+    // Ищем дуэли со статусом 'pending', созданные более 5 минут назад
+    const expiredDuels = await db.execute({
+      sql: "SELECT * FROM duels WHERE status = 'pending' AND (created_at + ?) < ?",
+      args: [duelTimeoutSeconds, nowSeconds],
+    });
+
+    if (!expiredDuels.rows || expiredDuels.rows.length === 0) {
+      return;
+    }
+
+    console.log(`[Duel] Found ${expiredDuels.rows.length} expired duels, processing...`);
+
+    // Атомарно обновляем статус всех истёкших дуэлей
+    for (const duel of expiredDuels.rows) {
+      const duelId = duel.id as string;
+      const channelId = duel.channel_id as string;
+      const messageId = duel.message_id as string;
+      const guildId = duel.guild_id as string;
+
+      // Атомарное обновление: только если статус всё ещё 'pending'
+      const updateResult = await db.execute({
+        sql: "UPDATE duels SET status = 'expired' WHERE id = ? AND status = 'pending'",
+        args: [duelId],
+      });
+
+      if (!updateResult.rowsAffected || updateResult.rowsAffected === 0) {
+        // Дуэль уже была обработана другим тикером или изменена
+        continue;
+      }
+
+      console.log(`[Duel] Duel ${duelId} expired, editing message...`);
+
+      // Редактируем сообщение в Discord, если есть channel_id и message_id
+      if (channelId && messageId) {
+        try {
+          const guild = bot.guilds.cache.get(guildId);
+          if (guild) {
+            const channel = getEventTargetChannel(guild);
+            if (channel) {
+              await (channel as any).messages.fetch(messageId).then((msg: any) => {
+                return msg.edit({
+                  embeds: [{
+                    title: "⏳ Дуэль отклонена по таймауту",
+                    description: "Время на принятие вызова (5 минут) истекло. Дуэль автоматически аннулирована.",
+                    color: 0x747f8d,
+                  }],
+                  components: [],
+                });
+              });
+              console.log(`[Duel] Edited expired duel message in channel ${channelId}`);
+            }
+          }
+        } catch (err) {
+          console.error(`[Duel] Failed to edit expired duel message ${messageId}:`, err);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Duel] Error in checkExpiredDuels:', err);
   }
 }
 

@@ -401,17 +401,43 @@ export async function updateXpAndLevel(db: any, userId: string, guildId: string,
   }
 }
 
-export async function createDuelRecord(db: any, duelId: string, guildId: string, challengerId: string, opponentId: string, betAmount: number): Promise<boolean> {
+export async function createDuelRecord(db: any, duelId: string, guildId: string, challengerId: string, opponentId: string, betAmount: number, messageId?: string, channelId?: string): Promise<boolean> {
   try {
     const now = Math.floor(Date.now() / 1000);
     await db.execute({
-      sql: "INSERT INTO duels (id, guild_id, challenger_id, opponent_id, bet_amount, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-      args: [duelId, guildId, challengerId, opponentId, betAmount, now],
+      sql: "INSERT INTO duels (id, guild_id, challenger_id, opponent_id, bet_amount, status, created_at, message_id, channel_id) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+      args: [duelId, guildId, challengerId, opponentId, betAmount, now, messageId || null, channelId || null],
     });
     return true;
   } catch (err) {
     console.error("[Duel] Error creating record:", err);
     return false;
+  }
+}
+
+export async function expireDuelById(db: any, duelId: string): Promise<boolean> {
+  try {
+    const res = await db.execute({
+      sql: "UPDATE duels SET status = 'expired' WHERE id = ? AND status = 'pending'",
+      args: [duelId],
+    });
+    return ((res.rowsAffected as number) || 0) > 0;
+  } catch (err) {
+    console.error("[Duel] Error expiring duel:", err);
+    return false;
+  }
+}
+
+export async function getExpiredDuels(db: any, nowSeconds: number): Promise<any[]> {
+  try {
+    const res = await db.execute({
+      sql: "SELECT * FROM duels WHERE status = 'pending' AND created_at < ?",
+      args: [nowSeconds],
+    });
+    return res.rows || [];
+  } catch (err) {
+    console.error("[Duel] Error getting expired duels:", err);
+    return [];
   }
 }
 

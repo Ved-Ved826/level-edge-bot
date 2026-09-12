@@ -3,7 +3,9 @@
 import { createClient } from "@libsql/client";
 import { calculateLevel } from "@shared/types";
 import { ButtonInteraction, CommandInteraction, Env, ExecutionContext } from "../types";
-import { checkUserExists, createDuelRecord, getDuelById, getUserCoins, getUserXp, unlockAchievement, updateCoins, updateDuelStatus, updateXpAndLevel } from "../db/queries";
+import { checkUserExists, createDuelRecord, expireDuelById, getDuelById, getExpiredDuels, getUserCoins, getUserXp, unlockAchievement, updateCoins, updateDuelStatus, updateXpAndLevel } from "../db/queries";
+
+const DUEL_TIMEOUT_SECONDS = 300; // 5 минут
 
 export function buildDuelEmbed(challengerId: string, opponentId: string, bet: number, duelId: string, currency: string = 'xp') {
   const totalPot = bet * 2;
@@ -13,6 +15,7 @@ export function buildDuelEmbed(challengerId: string, opponentId: string, bet: nu
   const isCoins = currency === 'coins';
   const currencyLabel = isCoins ? '🪙' : 'XP';
   const title = isCoins ? "⚔️ Дуэль на монеты!" : "⚔️ Дуэль на опыт!";
+  const timeoutTimestamp = Math.floor(Date.now() / 1000) + DUEL_TIMEOUT_SECONDS;
   return {
     embeds: [
       {
@@ -21,9 +24,9 @@ export function buildDuelEmbed(challengerId: string, opponentId: string, bet: nu
           `💰 Ставка: **${bet.toLocaleString()} ${currencyLabel}**\n` +
           `🏆 Чистый выигрыш победителя: **+${winnerProfit.toLocaleString()} ${currencyLabel}**\n` +
           `🔥 Сгораемый налог сервера (26%): **${tax.toLocaleString()} ${currencyLabel}**\n\n` +
-          `*У оппонента есть 60 секунд, чтобы принять вызов.*`,
+          `*У оппонента есть 5 минут, чтобы принять вызов.*`,
         color: 0xFF8800,
-        footer: { text: "Дуэль отменится автоматически через 60 секунд" },
+        footer: { text: `Дуэль отменится автоматически <t:${timeoutTimestamp}:R>` },
       },
     ],
     components: [
