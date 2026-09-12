@@ -1106,68 +1106,110 @@ async function migrateSchema() {
     }
 
     // Добавляем колонки в user_inventory (если ещё нет)
-    if (!columns.includes('item_id')) {
+    // C14: Каждый ALTER TABLE обёрнут в try/catch, чтобы дублирующиеся колонки игнорировались
+    // и не обрывали остальные миграции БД
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN item_id TEXT NOT NULL DEFAULT \'junk\'',
         args: [],
       });
       console.log('[Migrate] Added column: item_id');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding item_id column:', err);
+      }
     }
 
-    if (!columns.includes('slot')) {
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN slot TEXT NOT NULL DEFAULT \'junk\'',
         args: [],
       });
       console.log('[Migrate] Added column: slot');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding slot column:', err);
+      }
     }
 
-    if (!columns.includes('atk_bonus')) {
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN atk_bonus INTEGER NOT NULL DEFAULT 0',
         args: [],
       });
       console.log('[Migrate] Added column: atk_bonus');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding atk_bonus column:', err);
+      }
     }
 
-    if (!columns.includes('def_bonus')) {
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN def_bonus INTEGER NOT NULL DEFAULT 0',
         args: [],
       });
       console.log('[Migrate] Added column: def_bonus');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding def_bonus column:', err);
+      }
     }
 
-    if (!columns.includes('crit_bonus')) {
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN crit_bonus INTEGER NOT NULL DEFAULT 0',
         args: [],
       });
       console.log('[Migrate] Added column: crit_bonus');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding crit_bonus column:', err);
+      }
     }
 
-    if (!columns.includes('coin_bonus')) {
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN coin_bonus INTEGER NOT NULL DEFAULT 0',
         args: [],
       });
       console.log('[Migrate] Added column: coin_bonus');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding coin_bonus column:', err);
+      }
     }
 
-    if (!columns.includes('is_equipped')) {
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN is_equipped INTEGER NOT NULL DEFAULT 0',
         args: [],
       });
       console.log('[Migrate] Added column: is_equipped');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding is_equipped column:', err);
+      }
     }
 
-    if (!columns.includes('description')) {
+    try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN description TEXT DEFAULT \'\'',
         args: [],
       });
       console.log('[Migrate] Added column: description');
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '');
+      if (!errMsg.toLowerCase().includes('duplicate column')) {
+        console.error('[Migrate] Error adding description column:', err);
+      }
     }
 
     // Создаём уникальный индекс для реликвий (только не-junk предметов)
