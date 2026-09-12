@@ -1611,6 +1611,35 @@ function getVladivostokDate(): string {
   }).format(new Date());
 }
 
+/**
+ * Проверяет, разрешено ли запускать ивенты в текущее время по Владивостоку
+ * В будние дни (пн-пт): с 17:00 до 22:00
+ * В выходные дни (сб-вс): с 10:00 до 23:59
+ */
+function isEventTimeAllowed(timeZone: string = 'Asia/Vladivostok'): boolean {
+  const now = new Date();
+  const vladivostokDate = new Date(now.getTime() + 10 * 60 * 60 * 1000);
+
+  const dayOfWeek = vladivostokDate.getUTCDay(); // 0 = воскресенье, 6 = суббота
+  const hour = vladivostokDate.getUTCHours(); // 0-23 по Владивостоку
+
+  // В будние дни (понедельник-пятница: 1-5)
+  if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+    return hour >= 17 && hour < 22;
+  }
+
+  // В выходные дни (суббота-воскресенье: 0, 6)
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return hour >= 10 && hour <= 23;
+  }
+
+  return false;
+}
+
+// ============================================
+// Функции для работы с сезонами и неделями (Этап 7)
+// ============================================
+
 // ============================================
 // Функции для работы с сезонами и неделями (Этап 7)
 // ============================================
@@ -2285,11 +2314,37 @@ function renderVictoryEmbed(boss: any, topDamageers: Array<{ user_id: string; to
 }
 
 /**
+ * Получает целевой канал для ивентов (закреплённый канал с fallback на системный)
+ */
+function getEventTargetChannel(guild: any): any | null {
+  const BOSS_CHANNEL_ID = '1051085743839260694';
+
+  // Пытаемся найти закреплённый канал
+  let channel = guild.channels.cache.get(BOSS_CHANNEL_ID);
+
+  if (!channel) {
+    // Fallback: ищем любой текстовый канал с правами отправки
+    channel = guild.channels.cache.find((c: any) =>
+      c.type === 0 && // GuildText
+      c.permissionsFor(guild.members.me!)?.has('SendMessages')
+    ) as any;
+  }
+
+  return channel;
+}
+
+/**
  * Проверяет и спавнит Мирового Босса для одной гильдии
  */
 async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: string): Promise<void> {
   try {
     const now = Date.now();
+
+    // Проверка: разрешено ли сейчас запускать ивенты
+    if (!isEventTimeAllowed('Asia/Vladivostok')) {
+      console.log(`[WorldBoss] Guild ${guildId}: Skipped - вне разрешённого времени ивентов`);
+      return;
+    }
 
     // Ищем активного босса для конкретной гильдии
     const activeBossResult = await db.execute({
@@ -2317,7 +2372,7 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
           try {
             const guild = bot.guilds.cache.get(guildId);
             if (guild) {
-              const channel = guild.channels.cache.get(channelId);
+              const channel = getEventTargetChannel(guild);
               if (channel) {
                 await (channel as any).messages.fetch(messageId).then((msg: any) => {
                   return msg.edit({
@@ -2329,6 +2384,7 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
                     components: [],
                   });
                 });
+                console.log(`[WorldBoss] Guild ${guildId}: Edited escaped boss message in channel ${channel.id}`);
               }
             }
           } catch (err) {
@@ -2360,7 +2416,7 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
       if (boss) {
         const guild = bot.guilds.cache.get(guildId);
         if (guild) {
-          const channel = guild.channels.cache.get(BOSS_CHANNEL_ID);
+          const channel = getEventTargetChannel(guild);
           if (channel) {
             try {
               const embed = renderBossEmbed({
@@ -2380,11 +2436,13 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
                 args: [msg.id, guildId, boss.id],
               });
 
-              console.log(`[WorldBoss] Guild ${guildId}: Spawned ${preset.boss_name} in channel ${BOSS_CHANNEL_ID}, expires in ${preset.hours}h`);
+              console.log(`[WorldBoss] Guild ${guildId}: Spawned ${preset.boss_name} in channel ${channel.id}, expires in ${preset.hours}h`);
               console.log(`[WorldBoss] Guild ${guildId}: Successfully linked message_id ${msg.id} to active boss`);
             } catch (err) {
               console.error(`[WorldBoss] Guild ${guildId}: Failed to send spawn message:`, err);
             }
+          } else {
+            console.log(`[WorldBoss] Guild ${guildId}: No suitable channel found for spawn message`);
           }
         }
       }
@@ -2441,6 +2499,12 @@ async function isHappyHourActive(db: any, guildId: string): Promise<number> {
  * Запускает Happy Hour на 60 минут
  */
 async function startHappyHour(db: any, guildId: string, bot: Client): Promise<void> {
+  // Проверка: разрешено ли сейчас запускать ивенты
+  if (!isEventTimeAllowed('Asia/Vladivostok')) {
+    console.log(`[HappyHour] Guild ${guildId}: Skipped - вне разрешённого времени ивентов`);
+    return;
+  }
+
   const now = Date.now();
   const endsAt = now + 60 * 60 * 1000; // 60 минут
 
@@ -2451,13 +2515,10 @@ async function startHappyHour(db: any, guildId: string, bot: Client): Promise<vo
     });
     console.log(`[HappyHour] Started for guild ${guildId}, ends at ${new Date(endsAt).toISOString()}`);
 
-    // Ищем системный или первый доступный текстовый канал для уведомления
+    // Ищем закреплённый канал с fallback на систем��ый
     const guild = bot.guilds.cache.get(guildId);
     if (guild) {
-      const channel = guild.channels.cache.find(c =>
-        c.type === 0 && // GuildText
-        c.permissionsFor(guild.members.me!)?.has('SendMessages')
-      ) as any;
+      const channel = getEventTargetChannel(guild);
 
       if (channel) {
         const embed = {
@@ -2567,8 +2628,14 @@ async function createAirDrop(db: any, guildId: string, channelId: string, reward
 
 /**
  * Осуществляет спавн войс-дропа в канале
+ * Спавн только в разрешённое время ивентов
  */
 async function spawnAirDrop(db: any, channel: any, guildId: string, bot: Client): Promise<void> {
+  // Проверка: разрешено ли сейчас запускать ивенты
+  if (!isEventTimeAllowed('Asia/Vladivostok')) {
+    return;
+  }
+
   const channelId = channel.id;
 
   if (!canSpawnDrop(channelId)) {
