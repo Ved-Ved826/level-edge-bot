@@ -24,9 +24,10 @@ export function buildDuelEmbed(challengerId: string, opponentId: string, bet: nu
           `💰 Ставка: **${bet.toLocaleString()} ${currencyLabel}**\n` +
           `🏆 Чистый выигрыш победителя: **+${winnerProfit.toLocaleString()} ${currencyLabel}**\n` +
           `🔥 Сгораемый налог сервера (26%): **${tax.toLocaleString()} ${currencyLabel}**\n\n` +
-          `*У оппонента есть 5 минут, чтобы принять вызов.*`,
+          `*У оппонента есть 5 минут, чтобы принять вызов.*\n` +
+          `⏳ *Вызов действует 5 минут (истекает <t:${timeoutTimestamp}:R>).*`,
         color: 0xFF8800,
-        footer: { text: `Дуэль отменится автоматически <t:${timeoutTimestamp}:R>` },
+        footer: { text: "У оппонента есть 5 минут на ответ" },
       },
     ],
     components: [
@@ -197,7 +198,30 @@ export async function handleDuel(
   }
   // Отправляем Embed с кнопками (с учётом валюты)
   const result = buildDuelEmbed(challengerId, opponentOption, betOption, duelId, currency);
-  return Response.json({ type: 4, data: result });
+
+  const response = Response.json({ type: 4, data: result });
+
+  // Добавляем фоновую задачу для получения message_id через webhook @original
+  ctx.waitUntil((async () => {
+    try {
+      // Получаем message_id из оригинального сообщения Discord
+      const webhookUrl = `https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${inter.token}/messages/@original`;
+      const response = await fetch(webhookUrl);
+      if (response.ok) {
+        const msg = await response.json() as { id: string };
+        // Обновляем запись дуэли с реальным message_id и channel_id
+        await db.execute({
+          sql: "UPDATE duels SET message_id = ?, channel_id = ? WHERE id = ?",
+          args: [msg.id, inter.channel_id || null, duelId],
+        });
+      }
+    } catch (err) {
+      // Игнорируем ошибку - collector будет работать без message_id
+      console.error("Failed to capture duel message_id:", err);
+    }
+  })());
+
+  return response;
 }
 
 export async function handleDuelButtons(

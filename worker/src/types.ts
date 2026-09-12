@@ -16,6 +16,7 @@ export interface DiscordInteraction {
   id: string;
   token: string;
   type: number;
+  channel_id?: string;
   data?: {
     name?: string;
     options?: { name: string; value: any }[];
