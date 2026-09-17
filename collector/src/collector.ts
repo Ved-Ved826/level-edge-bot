@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
-import { createClient } from '@libsql/client/web';
+import { createClient } from '@libsql/client';
 import 'dotenv/config';
 
 import http from 'node:http';
@@ -1797,10 +1797,15 @@ async function getUserStreakData(db: any, userId: string, guildId: string): Prom
     ? { messages_count: (activityResult.rows[0].messages_count as number) || 0, voice_seconds: (activityResult.rows[0].voice_seconds as number) || 0 }
     : { messages_count: 0, voice_seconds: 0 };
 
-  // Проверяем, закрыт ли хотя бы 1 квест сегодня
+  // Проверяем, закрыт ли хотя бы 1 квест СЕГОДНЯ
+  // ИСПРАВЛЕНИЕ: раньше учитывались все квесты за всё время (без фильтра по дате),
+  // из-за чего стрик поддерживался давно закрытыми квестами. Добавлен фильтр по active_date.
   const questResult = await db.execute({
-    sql: 'SELECT COUNT(*) as completed FROM user_quest_progress WHERE user_id = ? AND guild_id = ? AND completed_at IS NOT NULL',
-    args: [userId, guildId],
+    sql: `SELECT COUNT(*) as completed
+          FROM user_quest_progress uqp
+          JOIN quests_daily qd ON uqp.quest_daily_id = qd.id
+          WHERE uqp.user_id = ? AND uqp.guild_id = ? AND uqp.completed_at IS NOT NULL AND qd.active_date = ?`,
+    args: [userId, guildId, today],
   });
 
   const questCompleted = (questResult.rows[0]?.completed as number) > 0;
@@ -2104,10 +2109,22 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
         }
 
         // Обновляем дату последнего сброса
-        await db.execute({
-          sql: 'INSERT OR REPLACE INTO users (user_id, guild_id, last_week_reset) VALUES (?, ?, ?)',
-          args: [guildId, guildId, currentWeekKey],
+        // ИСПРАВЛЕНИЕ: INSERT OR REPLACE удалял существующую строку users целиком
+        // (вместе с xp, level, стриками и т.д.), если служебная запись уже была в БД.
+        // Теперь безопасный UPDATE, а INSERT — только если записи ещё нет.
+        const updateResetResult = await db.execute({
+          sql: 'UPDATE users SET last_week_reset = ? WHERE user_id = ? AND guild_id = ?',
+          args: [currentWeekKey, guildId, guildId],
         });
+
+        if (!updateResetResult.rowsAffected || updateResetResult.rowsAffected === 0) {
+          // Служебной записи ещё нет — создаём её с нулевыми значениями
+          await db.execute({
+            sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, last_week_reset)
+                  VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
+            args: [guildId, guildId, Date.now(), currentWeekKey],
+          });
+        }
       }
     }
   } catch (err) {
@@ -3270,6 +3287,16 @@ client.on('messageCreate', async (message: Message) => {
 
   try {
     const now = Date.now();
+
+    // ============================================
+    // 0. Автосоздание пользователя (upsert), чтобы последующие
+    //    операции (XP, стрики, квесты) не падали с "user not found in DB"
+    // ============================================
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at)
+            VALUES (?, ?, 0, 0, 0, 0, ?)`,
+      args: [userId, guildId, now],
+    });
 
     // Get user and guild settings
     const userResult = await db.execute({
