@@ -3384,6 +3384,26 @@ client.on('ready', async () => {
   // Инициализация пула квестов
   await ensureQuestsPool(db);
 
+  // ============================================
+  // Автоматическая регистрация слэш-команды test-gazeta
+  // (guild.commands.create — мгновенная гильдейская регистрация,
+  // появляется в Discord СРАЗУ, без ожидания глобальной синхронизации)
+  // ============================================
+  try {
+    for (const [, guild] of client.guilds.cache) {
+      const existing = guild.commands.cache.find((cmd: any) => cmd.name === 'test-gazeta');
+      if (!existing) {
+        await guild.commands.create({
+          name: 'test-gazeta',
+          description: 'Сгенерировать и выпустить AI-газету за неделю (только для администрации)',
+        });
+        console.log(`[Gazeta] Slash command test-gazeta registered in guild ${guild.id}`);
+      }
+    }
+  } catch (err) {
+    console.error('[Gazeta] Failed to register slash command test-gazeta:', err);
+  }
+
   console.log(`[Collector] Ready as ${client.user?.tag}`);
   const memUsage = Math.round(process.memoryUsage().rss / 1024 / 1024);
   console.log(`[Memory] RSS: ${memUsage}MB`);
@@ -3459,28 +3479,6 @@ client.on('ready', async () => {
 client.on('messageCreate', async (message: Message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
-
-  // ============================================
-  // Быстрый вызов газеты: !газета / !test-gazet (только администрация)
-  // ============================================
-  if (message.content === '!газета' || message.content === '!test-gazet') {
-    const perms = message.member?.permissions;
-    if (!perms || (!perms.has('Administrator') && !perms.has('ManageGuild'))) {
-      await message.reply('⛔ Только для администрации');
-      return;
-    }
-
-    const statusMsg = await message.reply('⏳ Читаю переписку за 7 дней и генерирую газету недели...');
-    try {
-      await runWeeklyDigest(message.guild);
-      await statusMsg.edit('✅ Выпуск газеты успешно опубликован в канале!');
-    } catch (err: any) {
-      const errText = String(err?.message || err || 'Неизвестная ошибка');
-      console.error('[Gazeta] Error in quick trigger:', err);
-      await statusMsg.edit(`❌ Ошибка генерации газеты: ${errText.slice(0, 1500)}`);
-    }
-    return;
-  }
 
   // Пропускаем системные сообщения и вызовы слэш-команд,
   // чтобы вызовы команд не накручивали счётчик сообщений за день
@@ -3829,11 +3827,11 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
 });
 
 // ============================================
-// Слэш-команда /test-gazet (только для администрации)
+// Слэш-команда /test-gazeta (только для администрации)
 // ============================================
 client.on('interactionCreate', async (interaction: any) => {
   if (!interaction.isChatInputCommand?.()) return;
-  if (interaction.commandName !== 'test-gazet') return;
+  if (interaction.commandName !== 'test-gazeta') return;
 
   // Проверка прав: Administrator или ManageGuild
   const perms = interaction.memberPermissions;
@@ -3852,9 +3850,10 @@ client.on('interactionCreate', async (interaction: any) => {
 
     await runWeeklyDigest(interaction.guild);
     await interaction.editReply('✅ Выпуск газеты за неделю успешно опубликован в канале!');
-  } catch (err) {
-    console.error('[Gazeta] Error in /test-gazet:', err);
-    await interaction.editReply('❌ Не удалось выпустить газету. Подробности в логах коллектора.');
+  } catch (err: any) {
+    const errText = String(err?.message || err || 'Неизвестная ошибка');
+    console.error('[Gazeta] Error in /test-gazeta:', err);
+    await interaction.editReply(`❌ Ошибка генерации газеты: ${errText.slice(0, 1500)}`);
   }
 });
 
