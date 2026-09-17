@@ -3460,6 +3460,28 @@ client.on('messageCreate', async (message: Message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
+  // ============================================
+  // Быстрый вызов газеты: !газета / !test-gazet (только администрация)
+  // ============================================
+  if (message.content === '!газета' || message.content === '!test-gazet') {
+    const perms = message.member?.permissions;
+    if (!perms || (!perms.has('Administrator') && !perms.has('ManageGuild'))) {
+      await message.reply('⛔ Только для администрации');
+      return;
+    }
+
+    const statusMsg = await message.reply('⏳ Читаю переписку за 7 дней и генерирую газету недели...');
+    try {
+      await runWeeklyDigest(message.guild);
+      await statusMsg.edit('✅ Выпуск газеты успешно опубликован в канале!');
+    } catch (err: any) {
+      const errText = String(err?.message || err || 'Неизвестная ошибка');
+      console.error('[Gazeta] Error in quick trigger:', err);
+      await statusMsg.edit(`❌ Ошибка генерации газеты: ${errText.slice(0, 1500)}`);
+    }
+    return;
+  }
+
   // Пропускаем системные сообщения и вызовы слэш-команд,
   // чтобы вызовы команд не накручивали счётчик сообщений за день
   if (message.interaction || message.type !== 0) return;
