@@ -28,6 +28,11 @@ export async function unlockAchievement(
       sql: "INSERT INTO user_achievements (user_id, guild_id, achievement_id, unlocked_at) VALUES (?, ?, ?, ?)",
       args: [userId, guildId, achievementId, now],
     });
+    // Начисляем монеты за достижение (+300 🪙) — синхронно с логикой collector
+    await db.execute({
+      sql: "UPDATE users SET coins = coins + 300 WHERE user_id = ? AND guild_id = ?",
+      args: [userId, guildId],
+    });
     // Отправляем уведомление в Discord через webhook
     const embed = {
       embeds: [

@@ -142,7 +142,9 @@ export async function handleBossAttack(
         // Итоговый урон
         const finalDamage = Math.round(baseDamage * (1 + voiceBonus + prestigeBonus));
         // Фишка Мимика — выдача монет
-        if (bossType === 'goblin') {
+        // ИСПРАВЛЕНИЕ: было 'goblin' — такого типа босса нет в пресетах,
+        // из-за чего Мимик никогда не выбивал монеты при ударе.
+        if (bossType === 'mimic') {
           const randomCoins = Math.floor(Math.random() * 26) + 15;
           await db.execute({
             sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
