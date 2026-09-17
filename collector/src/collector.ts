@@ -1,5 +1,7 @@
 import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
-import { createClient } from '@libsql/client';
+// ВАЖНО: субпять /web обязателен для Termux Android — там нет нативных
+// glibc C++ бинарей libsql (иначе MODULE_NOT_FOUND в requireNative).
+import { createClient } from '@libsql/client/web';
 import 'dotenv/config';
 
 import http from 'node:http';
@@ -3203,6 +3205,178 @@ async function checkQuestsForVoice(db: any, userId: string, guildId: string, voi
   }
 }
 
+// ============================================
+// Еженедельная AI-газета (Хроника недели за 7 дней)
+// ============================================
+
+const GAZETTE_CHANNEL_ID = '1051085743839260694';
+const PROXYAPI_KEY = process.env.PROXYAPI_KEY || 'sk-7vNVmFz9SukzwvLQ7VEfd8ZLXG4O76iE';
+const PROXYAPI_URL = 'https://api.proxyapi.ru/v1/chat/completions';
+const PROXYAPI_MODEL = 'z-ai/glm-5.3-flash';
+
+const GAZETTE_PROMPT = `Ты — автор еженедельной газеты Discord-сервера. Твоя задача — прочитать ВСЮ переписку участников за прошедшие 7 дней из этого канала и написать живой, связный и забавный пересказ основных событий недели.
+Опирайся СТРОГО на реальный контекст переписки:
+- О чем спорили или увлеченно общались участники в разные дни?
+- Какие забавные диалоги, факапы или локальные события произошли?
+- Кто был самым активным и чем отличился?
+Пиши бодро, с легким серверным юмором, без клише.
+Формат:
+**ГАЗЕТА СЕРВЕРА: ХРОНИКА СОБЫТИЙ ЗА НЕДЕЛЮ**
+(связный рассказ о главных темах и приколах недели с цитатами и тегами участников через никнейм)`;
+
+/**
+ * Форматирует дату сообщения по времени Владивостока: "YYYY-MM-DD HH:mm"
+ */
+function formatVladivostokDateTime(timestamp: number): string {
+  const shifted = new Date(timestamp + 10 * 60 * 60 * 1000); // UTC+10
+  const dateStr = shifted.toISOString().slice(0, 10); // YYYY-MM-DD
+  const timeStr = shifted.toISOString().slice(11, 16); // HH:mm
+  return `${dateStr} ${timeStr}`;
+}
+
+/**
+ * Собирает хронологию ВСЕХ сообщений канала за последние 7 дней
+ * через цикл пагинации Discord (fetch + before)
+ */
+async function collectWeeklyChronology(channel: any): Promise<string[]> {
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const lines: string[] = [];
+  let lastId: string | undefined = undefined;
+
+  while (true) {
+    const fetchOptions: any = { limit: 100 };
+    if (lastId) fetchOptions.before = lastId;
+
+    const messages = await channel.messages.fetch(fetchOptions);
+    if (messages.size === 0) break;
+
+    let reachedCutoff = false;
+    for (const msg of messages.values()) {
+      if (msg.createdTimestamp < sevenDaysAgo) {
+        reachedCutoff = true;
+        break;
+      }
+      // Игнорируем ботов и сообщения без текста (вложения/стикеры)
+      if (msg.author.bot) continue;
+      const content = (msg.content || '').trim();
+      if (!content) continue;
+      lines.push(`${formatVladivostokDateTime(msg.createdTimestamp)} ${msg.author.username}: ${content}`);
+    }
+
+    if (reachedCutoff || messages.size < 100) break;
+    lastId = messages.last().id;
+  }
+
+  // Хронология от старых к новым
+  return lines.reverse();
+}
+
+/**
+ * Отправляет хронографию недели в ProxyAPI и получает текст газеты
+ */
+async function generateDigestWithAI(chronology: string[]): Promise<string> {
+  const response = await fetch(PROXYAPI_URL, {
+    method: 'POST', // Именно POST: GET на этом эндпоинте даёт "Method Not Allowed"
+    headers: {
+      'Authorization': `Bearer ${PROXYAPI_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: PROXYAPI_MODEL,
+      messages: [
+        { role: 'system', content: GAZETTE_PROMPT },
+        { role: 'user', content: `Хроника сообщений за последние 7 дней:\n\n${chronology.join('\n')}` },
+      ],
+      temperature: 0.8,
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(`ProxyAPI ${response.status}: ${errText.slice(0, 300)}`);
+  }
+
+  const data: any = await response.json();
+  const digest = data?.choices?.[0]?.message?.content;
+  if (!digest || typeof digest !== 'string') {
+    throw new Error('ProxyAPI вернул пустой ответ');
+  }
+  return digest.trim();
+}
+
+/**
+ * Публикует еженедельную AI-газету в канал ивентов
+ */
+async function runWeeklyDigest(guild: any): Promise<void> {
+  const channel = guild.channels.cache.get(GAZETTE_CHANNEL_ID);
+  if (!channel || channel.type !== 0) {
+    throw new Error(`Канал ${GAZETTE_CHANNEL_ID} не найден на сервере ${guild.id}`);
+  }
+
+  console.log(`[Gazeta] Collecting messages for guild ${guild.id}...`);
+  const chronology = await collectWeeklyChronology(channel);
+
+  if (chronology.length === 0) {
+    throw new Error('За последние 7 дней не найдено сообщений — выпуск отменён');
+  }
+
+  console.log(`[Gazeta] Collected ${chronology.length} messages, generating digest...`);
+  const digest = await generateDigestWithAI(chronology);
+
+  const embed = {
+    embeds: [{
+      title: '📰 Свежий выпуск: Хроника недели',
+      description: digest.slice(0, 4000), // Лимит описания Embed — 4096 символов
+      color: 0x5865F2,
+      footer: { text: 'Еженедельная AI-газета • События за последние 7 дней' },
+      timestamp: new Date().toISOString(),
+    }],
+  };
+
+  await channel.send(embed);
+  console.log(`[Gazeta] Weekly digest published to channel ${GAZETTE_CHANNEL_ID}`);
+}
+
+/**
+ * Планирует еженедельный запуск газеты: каждое воскресенье в 20:00 (Asia/Vladivostok)
+ */
+function scheduleWeeklyDigest(bot: Client): void {
+  const scheduleNext = () => {
+    const now = new Date();
+    // Владивосток: фиксированный UTC+10, без перевода часов
+    const vlad = new Date(now.getTime() + 10 * 60 * 60 * 1000);
+    const dayOfWeek = vlad.getUTCDay(); // 0 = воскресенье
+    const secondsOfDay = vlad.getUTCHours() * 3600 + vlad.getUTCMinutes() * 60 + vlad.getUTCSeconds();
+    const targetSeconds = 20 * 3600; // 20:00
+
+    let daysAhead = (7 - dayOfWeek) % 7;
+    if (daysAhead === 0 && secondsOfDay >= targetSeconds) {
+      // Сегодня воскресенье, но 20:00 уже прошло — ждём следующую неделю
+      daysAhead = 7;
+    }
+
+    const delayMs = daysAhead * 86400000 + (targetSeconds - secondsOfDay) * 1000 - now.getMilliseconds();
+
+    console.log(`[Gazeta] Next digest in ${Math.round(delayMs / 3600000)}h (Sunday 20:00 Vladivostok)`);
+
+    setTimeout(async () => {
+      try {
+        for (const guild of bot.guilds.cache.values()) {
+          try {
+            await runWeeklyDigest(guild as any);
+          } catch (err) {
+            console.error(`[Gazeta] Digest failed for guild ${guild.id}:`, err);
+          }
+        }
+      } finally {
+        scheduleNext(); // Планируем следующий выпуск
+      }
+    }, Math.max(delayMs, 1000));
+  };
+
+  scheduleNext();
+}
+
 client.on('ready', async () => {
   console.log(`[Collector] Starting migration...`);
   await migrateSchema();
@@ -3276,6 +3450,10 @@ client.on('ready', async () => {
       console.error('[WorldBoss] Interval check failed, collector продолжает работу:', err);
     }
   }, 10 * 60 * 1000); // Каждые 10 минут
+
+  // Еженедельная AI-газета (каждое воскресенье в 20:00 по Владивостоку)
+  console.log('[Gazeta] Starting weekly digest scheduler...');
+  scheduleWeeklyDigest(client);
 });
 
 client.on('messageCreate', async (message: Message) => {
@@ -3625,6 +3803,36 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
     }
   } catch (err) {
     console.error('[Error] voiceStateUpdate:', err);
+  }
+});
+
+// ============================================
+// Слэш-команда /test-gazet (только для администрации)
+// ============================================
+client.on('interactionCreate', async (interaction: any) => {
+  if (!interaction.isChatInputCommand?.()) return;
+  if (interaction.commandName !== 'test-gazet') return;
+
+  // Проверка прав: Administrator или ManageGuild
+  const perms = interaction.memberPermissions;
+  if (!perms || (!perms.has('Administrator') && !perms.has('ManageGuild'))) {
+    await interaction.reply({ content: '⛔ Эта команда доступна только администрации', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  try {
+    if (!interaction.guild) {
+      await interaction.editReply('❌ Команда доступна только на сервере.');
+      return;
+    }
+
+    await runWeeklyDigest(interaction.guild);
+    await interaction.editReply('✅ Выпуск газеты за неделю успешно опубликован в канале!');
+  } catch (err) {
+    console.error('[Gazeta] Error in /test-gazet:', err);
+    await interaction.editReply('❌ Не удалось выпустить газету. Подробности в логах коллектора.');
   }
 });
 
