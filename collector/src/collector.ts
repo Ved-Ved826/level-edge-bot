@@ -409,15 +409,13 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
     try {
       const guild = bot.guilds.cache.get(guildId);
       if (guild) {
-        // Если передан целевой канал, используем его (для messageCreate - message.channel, для voice - голосовой канал)
+        // Если передан целевой канал, используем его (для messageCreate - message.channel)
         let channel: any = targetChannel || null;
 
-        // Если целевой канал не передан или недоступен, ищем любой текстовый канал
-        if (!channel) {
-          channel = guild.channels.cache.find(c =>
-            c.type === 0 && // GuildText
-            c.permissionsFor(guild.members.me!)?.has('SendMessages')
-          );
+        // Если событие произошло в голосовом канале (не текстовый) или канал не определён —
+        // гарантированно отправляем золотой Embed в главный канал ивентов
+        if (!channel || channel.type !== 0) {
+          channel = getEventTargetChannel(guild);
         }
 
         if (channel) {
@@ -2085,10 +2083,8 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
           try {
             const guild = bot.guilds.cache.get(guildId);
             if (guild) {
-              const channel = guild.channels.cache.find(c =>
-                c.type === 0 && // GuildText
-                c.permissionsFor(guild.members.me!)?.has('SendMessages')
-              ) as any;
+              // Анонс Чемпиона Недели всегда публикуем в главном канале ивентов
+              const channel = getEventTargetChannel(guild) as any;
 
               if (channel) {
                 const embed = {
@@ -2141,8 +2137,6 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
 // Функция проверки дезертиров (Этап 12+)
 // ============================================
 
-const DESERTER_CHANNEL_ID = '1051085743839260694'; // Канал Мирового Босса
-
 /**
  * Проверяет пользователей на дезертирство (7 дней неактивности)
  * Вызывается каждые 6 часов
@@ -2184,14 +2178,8 @@ async function checkDeserters(db: any, bot: Client): Promise<void> {
       let systemChannel: any = null;
 
       if (guild) {
-        // Пытаемся найти системный канал через логику
-        systemChannel = guild.channels.cache.get(DESERTER_CHANNEL_ID);
-        if (!systemChannel) {
-          systemChannel = guild.channels.cache.find(c =>
-            c.type === 0 && // GuildText
-            c.permissionsFor(guild.members.me!)?.has('SendMessages')
-          );
-        }
+        // Анонсы о дезертирстве — строго в главный канал ивентов
+        systemChannel = getEventTargetChannel(guild);
       }
 
       for (const deseter of deserters) {
@@ -2409,23 +2397,32 @@ function renderVictoryEmbed(boss: any, topDamageers: Array<{ user_id: string; to
 }
 
 /**
- * Получает целевой канал для ивентов (закреплённый канал с fallback на системный)
+ * Получает целевой канал для всех игровых оповещений, анонсов и системных сообщений.
+ * Главный целевой канал — закреплённый '1051085743839260694'.
+ * Fallback на системный канал — только если закреплённый не найден или недоступен.
  */
 function getEventTargetChannel(guild: any): any | null {
-  const BOSS_CHANNEL_ID = '1051085743839260694';
+  const EVENT_CHANNEL_ID = '1051085743839260694';
 
-  // Пытаемся найти закреплённый канал
-  let channel = guild.channels.cache.get(BOSS_CHANNEL_ID);
-
-  if (!channel) {
-    // Fallback: ищем любой текстовый канал с правами отправки
-    channel = guild.channels.cache.find((c: any) =>
-      c.type === 0 && // GuildText
-      c.permissionsFor(guild.members.me!)?.has('SendMessages')
-    ) as any;
+  // 1. Закреплённый канал — строго главный целевой канал для всех анонсов
+  const pinned = guild.channels.cache.get(EVENT_CHANNEL_ID);
+  if (pinned && pinned.type === 0 && pinned.permissionsFor(guild.members.me!)?.has('SendMessages')) {
+    return pinned;
   }
 
-  return channel;
+  // 2. Fallback: системный канал гильдии (только если закреплённый не найден)
+  if (guild.systemChannelId) {
+    const system = guild.channels.cache.get(guild.systemChannelId);
+    if (system && system.type === 0 && system.permissionsFor(guild.members.me!)?.has('SendMessages')) {
+      return system;
+    }
+  }
+
+  // 3. Последний резерв: любой доступный текстовый канал с правами отправки
+  return (guild.channels.cache.find((c: any) =>
+    c.type === 0 && // GuildText
+    c.permissionsFor(guild.members.me!)?.has('SendMessages')
+  ) as any) || null;
 }
 
 /**
