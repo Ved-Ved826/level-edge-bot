@@ -774,9 +774,14 @@ async function checkFBKInvestigation(db: any, userId: string, guildId: string): 
 async function checkFBKPRB(db: any, userId: string, guildId: string): Promise<boolean> {
   const today = getVladivostokDate();
   try {
+    // ИСПРАВЛЕНИЕ: учитываем только квесты, закрытые СЕГОДНЯ (фильтр по active_date),
+    // как в getUserStreakData — иначе достижимость давних квестов портила проверку.
     const result = await db.execute({
-      sql: 'SELECT COUNT(*) as completed FROM user_quest_progress WHERE user_id = ? AND guild_id = ? AND completed_at IS NOT NULL',
-      args: [userId, guildId],
+      sql: `SELECT COUNT(*) as completed
+            FROM user_quest_progress uqp
+            JOIN quests_daily qd ON uqp.quest_daily_id = qd.id
+            WHERE uqp.user_id = ? AND uqp.guild_id = ? AND uqp.completed_at IS NOT NULL AND qd.active_date = ?`,
+      args: [userId, guildId, today],
     });
     return (result.rows[0]?.completed as number) >= 3;
   } catch (err) {
@@ -3279,6 +3284,10 @@ client.on('ready', async () => {
 client.on('messageCreate', async (message: Message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
+
+  // Пропускаем системные сообщения и вызовы слэш-команд,
+  // чтобы вызовы команд не накручивали счётчик сообщений за день
+  if (message.interaction || message.type !== 0) return;
 
   const { author, guild } = message;
   const guildId = guild.id;
