@@ -1237,6 +1237,10 @@ export default {
 
       if (inter.type === 2 && inter.data?.name === "settings") { return handleSettings(inter as CommandInteraction, env, ctx); }
 
+      // 29. Слэш-команда /test-gazeta (только для администрации)
+
+      if (inter.type === 2 && inter.data?.name === "test-gazeta") { return handleTestGazeta(inter as CommandInteraction, env, ctx); }
+
 
 
       return Response.json({ error: "Unknown interaction" }, { status: 400 });
