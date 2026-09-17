@@ -6,7 +6,7 @@ import { CommandInteraction, Env, ExecutionContext } from "../types";
 
 const GAZETTA_CHANNEL_ID = "1051085743839260694";
 
-const PROXYAPI_URL = "https://api.proxyapi.ru/openai/v1/chat/completions";
+const PROXYAPI_URL = "https://api.proxyapi.ru/v1/chat/completions";
 const PROXYAPI_API_KEY = "sk-7vNVmFz9SukzwvLQ7VEfd8ZLXG4O76iE";
 const PROXYAPI_MODEL = "z-ai/glm-5.3-flash";
 
