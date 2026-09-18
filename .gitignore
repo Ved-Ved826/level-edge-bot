@@ -7,3 +7,5 @@ dist/
 .wrangler/
 register.js
 .aider*
+
+config.yaml

@@ -17,3 +17,7 @@ fallthrough = false
 type = "Data"
 globs = ["**/*.ttf"]
 fallthrough = false
+[[rules]]
+type = "Text"
+globs = ["**/*.md", "../**/*.md"]
+fallthrough = true

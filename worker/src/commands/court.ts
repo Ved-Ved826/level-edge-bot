@@ -1,4 +1,4 @@
-import { createClient } from "@libsql/client";
+﻿import { createClient } from "@libsql/client";
 
 import { CommandInteraction, Env, ExecutionContext } from "../types";
 
@@ -145,7 +145,6 @@ function buildJudgePrompt(lore: string, reason: string, plaintiffName: string, t
 
 async function askJudge(env: CourtEnv, reason: string, plaintiffName: string, targetName: string, transcript: string): Promise<CourtVerdict> {
   const apiKey = env.PROXYAPI_KEY;
-  if (!apiKey) throw new Error("PROXYAPI_KEY не настроен");
 
   const lore = (typeof loreMd === "string" ? loreMd : "").trim() || DEFAULT_LORE;
   const { system, user } = buildJudgePrompt(lore, reason, plaintiffName, targetName, transcript);
@@ -266,7 +265,7 @@ interface TrialContext {
 
 async function runTrial(t: TrialContext): Promise<void> {
   try {
-    const messages = await fetchRecentMessages(t.channelId, t.env.DISCORD_BOT_TOKEN, MESSAGES_TO_FETCH);
+    const messages = await fetchRecentMessages(t.channelId, (t.env.DISCORD_BOT_TOKEN || t.env.DISCORD_TOKEN || ""), MESSAGES_TO_FETCH);
     if (messages.length < MIN_MESSAGES_FOR_TRIAL) {
       await patchOriginal(t.interaction, t.env, { content: "⚖️ В канале слишком мало сообщений для судебного разбирательства. Дело закрыто за отсутствием события." });
       return;
@@ -362,3 +361,6 @@ export async function handleCourt(interaction: CommandInteraction, env: Env, ctx
   // Отложенный публичный ответ: разбирательство может занять до минуты
   return Response.json({ type: 5 });
 }
+
+
+
