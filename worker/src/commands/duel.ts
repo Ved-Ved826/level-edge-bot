@@ -4,6 +4,7 @@ import { createClient } from "@libsql/client";
 import { calculateLevel } from "@shared/types";
 import { ButtonInteraction, CommandInteraction, Env, ExecutionContext } from "../types";
 import { checkUserExists, createDuelRecord, expireDuelById, getDuelById, getExpiredDuels, getUserCoins, getUserXp, unlockAchievement, updateCoins, updateDuelStatus, updateXpAndLevel } from "../db/queries";
+import { claimBounties } from "./bounty";
 
 const DUEL_TIMEOUT_SECONDS = 300; // 5 минут
 
@@ -65,9 +66,13 @@ export function buildDuelDeclineEmbed(challengerId: string, opponentId: string) 
   };
 }
 
-export function buildDuelResultEmbed(challengerId: string, opponentId: string, winnerId: string, loserId: string, roll1: number, roll2: number, bet: number, tax: number, winnerProfit: number, currency: string = 'xp') {
+export function buildDuelResultEmbed(challengerId: string, opponentId: string, winnerId: string, loserId: string, roll1: number, roll2: number, bet: number, tax: number, winnerProfit: number, currency: string = 'xp', bountyAmount: number = 0) {
   const isCoins = currency === 'coins';
   const currencyLabel = isCoins ? '🪙' : 'XP';
+  // Награда за голову: если на проигравшего была активная баунти — победитель забрал банк
+  const bountyLine = bountyAmount > 0
+    ? `\n\n🎯 **НАГРАДА ЗА ГОЛОВУ:** <@${winnerId}> забирает банк **${bountyAmount.toLocaleString()} 🪙** за голову <@${loserId}>!`
+    : '';
   return {
     embeds: [
       {
@@ -79,7 +84,8 @@ export function buildDuelResultEmbed(challengerId: string, opponentId: string, w
           `💰 Результат:\n` +
           `• <@${winnerId}> получает: **+${winnerProfit.toLocaleString()} ${currencyLabel}**\n` +
           `• <@${loserId}> теряет: **-${bet.toLocaleString()} ${currencyLabel}**\n` +
-          `• Сервер сжёг налог 26%: **${tax.toLocaleString()} ${currencyLabel}**`,
+          `• Сервер сжёг налог 26%: **${tax.toLocaleString()} ${currencyLabel}**` +
+          bountyLine,
         color: 0xFEE75C,
       },
     ],
@@ -404,7 +410,10 @@ export async function handleDuelButtons(
       // Начисляем выигрыши и обновляем уровни
       await updateXpAndLevel(db, winnerId, guildId, winnerProfit);
     }
-    const result = buildDuelResultEmbed(challengerId, opponentId, winnerId, loserId, roll1, roll2, bet, tax, winnerProfit, currency);
+    // Награда за голову: победитель автоматически забирает весь банк баунти за проигравшего
+    // (выплата в монетах независимо от валюты дуэли; вызов после успешного завершения дуэли)
+    const bountyClaim = await claimBounties(db, guildId, winnerId, loserId);
+    const result = buildDuelResultEmbed(challengerId, opponentId, winnerId, loserId, roll1, roll2, bet, tax, winnerProfit, currency, bountyClaim.total);
     // Проверка достижений дуэли (Этап 6)
     const winnerLevel = calculateLevel((await getUserXp(db, winnerId, guildId)));
     const loserLevel = calculateLevel((await getUserXp(db, loserId, guildId)));
