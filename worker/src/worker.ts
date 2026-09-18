@@ -1243,6 +1243,9 @@ export default {
 
       if (inter.type === 2 && inter.data?.name === "test-gazeta") { return handleTestGazeta(inter as CommandInteraction, env, ctx); }
 
+      // 30. Слэш-команда /court target:@user reason:text (ИИ-суд по последним сообщениям канала)
+      if (inter.type === 2 && inter.data?.name === "court") { return handleCourt(inter as CommandInteraction, env, ctx); }
+
 
 
       return Response.json({ error: "Unknown interaction" }, { status: 400 });
