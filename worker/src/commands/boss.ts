@@ -245,12 +245,17 @@ export async function handleBossAttack(
             args: [bossId, gid],
           });
           if (statusSwitch.rowsAffected) {
-            // Участники с их суммарным уроном
-            const participantsResult = await db.execute({
-              sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
-              args: [bossId],
-            });
-            const participants = participantsResult.rows || [];
+            // Участники с их суммарным уроном (fail-safe: сбой запроса не должен ломать победу)
+            let participants: any[] = [];
+            try {
+              const participantsResult = await db.execute({
+                sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
+                args: [bossId],
+              });
+              participants = (participantsResult.rows || []) as any[];
+            } catch (partErr) {
+              console.error('[WorldBoss] Failed to load boss participants:', partErr);
+            }
 
             // Банк босса делится строго пропорционально нанесённому урону:
             // выплата = Math.round(банк * (урон_игрока / max_hp))
@@ -281,42 +286,62 @@ export async function handleBossAttack(
 
             const batchOps = payouts.map((p) => ({
               sql: 'UPDATE users SET xp = xp + ?, coins = coins + ? WHERE user_id = ? AND guild_id = ?',
-              args: [p.xp, p.coins, p.userId, p.guildId],
+              // ИСПРАВЛЕНИЕ: у payouts нет поля guildId (было undefined) — используем gid текущей гильдии
+              args: [p.xp, p.coins, p.userId, gid],
             }));
             if (batchOps.length > 0) {
-              await db.batch(batchOps);
+              // fail-safe: ошибка начисления наград не должна ломать победное сообщение
+              try {
+                await db.batch(batchOps);
+              } catch (rewardErr) {
+                console.error('[WorldBoss] Failed to pay out victory rewards:', rewardErr);
+              }
             }
 
             // Редкий следующий спавн: now + случайные 60-120 часов (2.5-5 дней)
-            await scheduleNextBossSpawn(db, gid);
+            try {
+              await scheduleNextBossSpawn(db, gid);
+            } catch (spawnErr) {
+              console.error('[WorldBoss] Failed to schedule next boss spawn:', spawnErr);
+            }
             // Хардкорный дроп экипировки: Топ-1 дамагер — 5%, остальные участники — 3%
-            const sortedParticipants = [...participants].sort((a: any, b: any) => (b.total_dmg as number) - (a.total_dmg as number));
-            const topDamagerUserId = sortedParticipants.length > 0 ? (sortedParticipants[0].user_id as string) : null;
-            for (const p of sortedParticipants) {
-              const participantUserId = p.user_id as string;
-              const participantGuildId = p.guild_id as string;
-              const isTopDamager = participantUserId === topDamagerUserId;
-              const dropChance = isTopDamager ? 0.05 : 0.03;
-              if (Math.random() < dropChance) {
-                const candidate = UNIQUE_ITEMS[Math.floor(Math.random() * UNIQUE_ITEMS.length)];
-                const isUnique = await isItemUniqueOnServer(db, candidate.item_id, participantGuildId);
-                if (isUnique) {
-                  const dropNow = Math.floor(Date.now() / 1000);
-                  await db.execute({
-                    sql: 'INSERT INTO user_inventory (user_id, guild_id, item_name, item_id, item_type, rarity, slot, atk_bonus, def_bonus, crit_bonus, coin_bonus, is_equipped, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
-                    args: [participantUserId, participantGuildId, candidate.name, candidate.item_id, 'relic', candidate.rarity, candidate.slot, candidate.atk, candidate.def, candidate.crit, candidate.coin, candidate.description, dropNow],
-                  });
-                  droppedLoot.push({ userId: participantUserId, itemName: candidate.name, rarity: candidate.rarity });
+            // (fail-safe: ошибка дропа реликвий не должна ломать победное сообщение)
+            try {
+              const sortedParticipants = [...participants].sort((a: any, b: any) => (b.total_dmg as number) - (a.total_dmg as number));
+              const topDamagerUserId = sortedParticipants.length > 0 ? (sortedParticipants[0].user_id as string) : null;
+              for (const p of sortedParticipants) {
+                const participantUserId = p.user_id as string;
+                const participantGuildId = p.guild_id as string;
+                const isTopDamager = participantUserId === topDamagerUserId;
+                const dropChance = isTopDamager ? 0.05 : 0.03;
+                if (Math.random() < dropChance) {
+                  const candidate = UNIQUE_ITEMS[Math.floor(Math.random() * UNIQUE_ITEMS.length)];
+                  const isUnique = await isItemUniqueOnServer(db, candidate.item_id, participantGuildId);
+                  if (isUnique) {
+                    const dropNow = Math.floor(Date.now() / 1000);
+                    await db.execute({
+                      sql: 'INSERT INTO user_inventory (user_id, guild_id, item_name, item_id, item_type, rarity, slot, atk_bonus, def_bonus, crit_bonus, coin_bonus, is_equipped, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
+                      args: [participantUserId, participantGuildId, candidate.name, candidate.item_id, 'relic', candidate.rarity, candidate.slot, candidate.atk, candidate.def, candidate.crit, candidate.coin, candidate.description, dropNow],
+                    });
+                    droppedLoot.push({ userId: participantUserId, itemName: candidate.name, rarity: candidate.rarity });
+                  }
                 }
               }
+            } catch (lootErr) {
+              console.error('[WorldBoss] Failed to process relic drops:', lootErr);
             }
           }
-          // Топ-3 дамагеров
-          const topDamageersResult = await db.execute({
-            sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
-            args: [bossId],
-          });
-          const topDamageers = topDamageersResult.rows || [];
+          // Топ-3 дамагеров (fail-safe: при сбое просто не показываем топ в победном эмбеде)
+          let topDamageers: any[] = [];
+          try {
+            const topDamageersResult = await db.execute({
+              sql: 'SELECT user_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id ORDER BY total_dmg DESC LIMIT 3',
+              args: [bossId],
+            });
+            topDamageers = (topDamageersResult.rows || []) as any[];
+          } catch (topErr) {
+            console.error('[WorldBoss] Failed to load top damagers:', topErr);
+          }
           // Редактируем Embed в канале через Discord Bot API (не через webhook!)
           const victoryMessageId = (updatedBoss.message_id as string) || (boss.message_id as string);
           const editUrl = `https://discord.com/api/v10/channels/${bossChannelId}/messages/${victoryMessageId}`;
@@ -437,13 +462,15 @@ export async function handleBossAttack(
           }),
         });
       } catch (err) {
-        console.error('[WorldBoss] Error in waitUntil:', err);
+        // Подробный вывод: реальный текст ошибки и в лог, и в ответ игроку
+        const errText = (err as any)?.message || String(err);
+        console.error('[WorldBoss] Error in waitUntil:', errText, err);
         try {
           await fetch(webhookUrl, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              content: '❌ Произошла ошибка при обработке атаки босса. Попробуйте позже.',
+              content: `❌ Произошла ошибка при обработке атаки босса: ${errText}. Попробуйте позже.`,
             }),
           });
         } catch (notifyErr) {
