@@ -124,30 +124,6 @@ export async function handleBossAttack(
       data: { content: "🔒 Ультимативная способность откроется на 50 уровне!", flags: 64 },
     });
   }
-  // 8. ПОДЛЯНКА: 8% шанс осечки — урон 0, штраф 2-3 монеты, шуточный ответ.
-  // Попытка атаки состоялась, поэтому кулдаун фиксируется как при обычном ударе.
-  if (Math.random() < 0.08) {
-    const missFee = Math.floor(Math.random() * 2) + 2; // 2-3 монеты
-
-    // Фиксируем кулдаун и списываем штраф (без ухода в минус)
-    await db.execute({
-      sql: 'UPDATE users SET last_boss_attack_at = ?, coins = MAX(0, coins - ?) WHERE user_id = ? AND guild_id = ?',
-      args: [now, missFee, uid, gid],
-    });
-
-    const missJokes = [
-      `🤡 Осечка! Оружие скулит от жалости, а кузнец взял за осмотр ${missFee} 🪙`,
-      `😵 Подскользнулись на банке из-под туши. Урон: 0. Пластырь: ${missFee} 🪙`,
-      `🌬️ Ударили по ветру с Японского моря. Ветер даже не заметил. Моральный ущерб: ${missFee} 🪙`,
-      `🐒 Рука дрогнула — меч ушёл в соседнюю скалу. Достать его стоит ${missFee} 🪙`,
-    ];
-    const joke = missJokes[Math.floor(Math.random() * missJokes.length)];
-
-    return Response.json({
-      type: 4,
-      data: { content: `${joke}\n💥 Урон: **0**. Следующая попытка через ${Math.ceil(baseCooldown / 60000)} мин.`, flags: 64 },
-    });
-  }
   // ============================================
   // ЕДИНСТВЕННЫЙ DEFER (type: 5) — после всех быстрых проверок
   // Всё, что ниже — тяжёлая работа с БД, уходит в ctx.waitUntil
