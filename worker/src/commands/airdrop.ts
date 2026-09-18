@@ -56,6 +56,34 @@ export async function handleAirdropClaim(
       data: { content: "❌ Этот дроп уже успел забрать кто-то другой!", flags: 64 },
     });
   }
+  // Редактируем исходное сообщение с дропом: убираем кнопки и показываем победителя.
+  const botToken = env.DISCORD_TOKEN || env.DISCORD_BOT_TOKEN;
+  const dropMessageId = inter.message?.id;
+  if (inter.channel_id && dropMessageId) {
+    const rewardLine = rewardType === "freeze"
+      ? "🧊 Награда: **1 Заморозка стрика!**"
+      : `💰 Награда: **+${rewardXp} XP**`;
+    ctx.waitUntil(
+      fetch(`https://discord.com/api/v10/channels/${inter.channel_id}/messages/${dropMessageId}`, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bot ${botToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          components: [],
+          embeds: [
+            {
+              title: "📦 Контейнер успешно вскрыт!",
+              description: `Лут забрал: <@${clickedUserId}>\n${rewardLine}`,
+              color: 0x2ecc71,
+              footer: { text: "Кто успел — тот и забрал!" },
+            },
+          ],
+        }),
+      }).catch((e) => console.error("[AirDrop] Failed to edit drop message:", e))
+    );
+  }
   // Выдаём награду
   if (rewardType === 'freeze') {
     // Заморозка стрика

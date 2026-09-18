@@ -6,6 +6,8 @@ export interface Env {
   DISCORD_PUBLIC_KEY: string;
   DISCORD_APPLICATION_ID: string;
   DISCORD_BOT_TOKEN: string;
+  /** Bot token для прямых вызовов Discord API (например, PATCH сообщений). */
+  DISCORD_TOKEN?: string;
 }
 
 export interface ExecutionContext {
@@ -36,7 +38,7 @@ export interface DiscordInteraction {
     permissions?: string;
   };
   guild_id?: string;
-  message?: { components?: any[]; embeds?: any[] };
+  message?: { id: string; components?: any[]; embeds?: any[] };
 }
 
 /** Данные интеракции (роутер уже проверил их наличие перед вызовом обработчика). */
