@@ -922,6 +922,18 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 021: Колонка next_boss_spawn_at для редкого спавна боссов
+    // (интервал между появлениями Мирового Босса: 60-120 часов после поражения/побега)
+    // ============================================
+    if (!columns.includes('next_boss_spawn_at')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN next_boss_spawn_at INTEGER DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: next_boss_spawn_at');
+    }
+
+    // ============================================
     // Миграция 012: Колонки для годовой активности и максимального стрика (Этап 8)
     // ============================================
     if (!columns.includes('online_seconds')) {
@@ -2427,6 +2439,56 @@ function getEventTargetChannel(guild: any): any | null {
   ) as any) || null;
 }
 
+// ============================================
+// Редкий спавн Мирового Босса: расписание 60-120 часов между появлениями
+// ============================================
+
+/**
+ * Планирует следующий спавн босса: now + случайные 60-120 часов (2.5-5 дней).
+ * Время хранится в служебной записи users (user_id = guild_id), колонка next_boss_spawn_at.
+ */
+async function scheduleNextBossSpawn(db: any, guildId: string): Promise<number> {
+  const delayHours = 60 + Math.random() * 60; // 60-120 часов
+  const nextSpawnAt = Date.now() + Math.round(delayHours * 3600 * 1000);
+
+  try {
+    const updateResult = await db.execute({
+      sql: 'UPDATE users SET next_boss_spawn_at = ? WHERE user_id = ? AND guild_id = ?',
+      args: [nextSpawnAt, guildId, guildId],
+    });
+
+    if (!updateResult.rowsAffected || updateResult.rowsAffected === 0) {
+      // Служебной записи ещё нет — создаём её (как в checkWeeklyReset)
+      await db.execute({
+        sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, next_boss_spawn_at)
+              VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
+        args: [guildId, guildId, Date.now(), nextSpawnAt],
+      });
+    }
+
+    console.log(`[WorldBoss] Guild ${guildId}: next boss spawn in ~${Math.round(delayHours)}h (${new Date(nextSpawnAt).toISOString()})`);
+  } catch (err) {
+    console.error(`[WorldBoss] Guild ${guildId}: Failed to schedule next boss spawn:`, err);
+  }
+
+  return nextSpawnAt;
+}
+
+/**
+ * Возвращает запланированное время следующего спавна босса (0 — спавн разрешён сразу)
+ */
+async function getNextBossSpawnAt(db: any, guildId: string): Promise<number> {
+  try {
+    const result = await db.execute({
+      sql: 'SELECT next_boss_spawn_at FROM users WHERE user_id = ? AND guild_id = ?',
+      args: [guildId, guildId],
+    });
+    return (result.rows[0]?.next_boss_spawn_at as number) || 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
 /**
  * Проверяет и спавнит Мирового Босса для одной гильдии
  */
@@ -2458,6 +2520,9 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
           args: ['escaped', guildId, boss.id],
         });
 
+        // Планируем редкий следующий спавн: now + 60-120 часов (2.5-5 дней)
+        await scheduleNextBossSpawn(db, guildId);
+
         // Редактируем сообщение в канале
         const channelId = boss.channel_id as string;
         const messageId = boss.message_id as string;
@@ -2487,7 +2552,17 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
         }
       }
     } else {
-      // Нет активного босса - спавним нового
+      // Нет активного босса - проверяем расписание редкого спавна.
+      // Спавн ТОЛЬКО если вышло окно ожидания next_boss_spawn_at (60-120 ч после
+      // поражения/побега прошлого босса). Разрешённое время ивентов (17:00-22:00 Влд)
+      // уже проверено через isEventTimeAllowed в начале функции.
+      const nextSpawnAt = await getNextBossSpawnAt(db, guildId);
+      if (Date.now() < nextSpawnAt) {
+        const hoursLeft = Math.ceil((nextSpawnAt - Date.now()) / 3600000);
+        console.log(`[WorldBoss] Guild ${guildId}: Spawn skipped - редкий спавн, следующий босс через ~${hoursLeft} ч.`);
+        return;
+      }
+
       const preset = WORLD_BOSS_PRESETS[Math.floor(Math.random() * WORLD_BOSS_PRESETS.length)];
       const spawnedAt = now;
       const expiresAt = now + preset.hours * 3600 * 1000;

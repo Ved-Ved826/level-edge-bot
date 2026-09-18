@@ -7,6 +7,40 @@ import { UNIQUE_ITEMS, getRarityEmoji } from "../itemsCatalog";
 import { getUserGear, isItemUniqueOnServer } from "../db/queries";
 import { getVladivostokDate } from "../utils/formatters";
 
+// ============================================
+// Редкий спавн Мирового Босса: расписание 60-120 часов между появлениями
+// (логика дублируется из collector — кросс-пакетные импорты worker<->collector не используются)
+// ============================================
+
+/**
+ * Планирует следующий спавн босса: now + случайные 60-120 часов (2.5-5 дней).
+ * Время хранится в служебной записи users (user_id = guild_id), колонка next_boss_spawn_at.
+ */
+async function scheduleNextBossSpawn(db: any, guildId: string): Promise<void> {
+  const delayHours = 60 + Math.random() * 60; // 60-120 часов
+  const nextSpawnAt = Date.now() + Math.round(delayHours * 3600 * 1000);
+
+  try {
+    const updateResult = await db.execute({
+      sql: 'UPDATE users SET next_boss_spawn_at = ? WHERE user_id = ? AND guild_id = ?',
+      args: [nextSpawnAt, guildId, guildId],
+    });
+
+    if (!updateResult.rowsAffected || updateResult.rowsAffected === 0) {
+      // Служебной записи ещё нет — создаём её (как в checkWeeklyReset в collector)
+      await db.execute({
+        sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, next_boss_spawn_at)
+              VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
+        args: [guildId, guildId, Date.now(), nextSpawnAt],
+      });
+    }
+
+    console.log(`[WorldBoss] Guild ${guildId}: next boss spawn in ~${Math.round(delayHours)}h (${new Date(nextSpawnAt).toISOString()})`);
+  } catch (err) {
+    console.error(`[WorldBoss] Guild ${guildId}: Failed to schedule next boss spawn:`, err);
+  }
+}
+
 export async function handleBossAttack(
   inter: ButtonInteraction,
   env: Env,
@@ -88,6 +122,30 @@ export async function handleBossAttack(
     return Response.json({
       type: 4,
       data: { content: "🔒 Ультимативная способность откроется на 50 уровне!", flags: 64 },
+    });
+  }
+  // 8. ПОДЛЯНКА: 8% шанс осечки — урон 0, штраф 2-3 монеты, шуточный ответ.
+  // Попытка атаки состоялась, поэтому кулдаун фиксируется как при обычном ударе.
+  if (Math.random() < 0.08) {
+    const missFee = Math.floor(Math.random() * 2) + 2; // 2-3 монеты
+
+    // Фиксируем кулдаун и списываем штраф (без ухода в минус)
+    await db.execute({
+      sql: 'UPDATE users SET last_boss_attack_at = ?, coins = MAX(0, coins - ?) WHERE user_id = ? AND guild_id = ?',
+      args: [now, missFee, uid, gid],
+    });
+
+    const missJokes = [
+      `🤡 Осечка! Оружие скулит от жалости, а кузнец взял за осмотр ${missFee} 🪙`,
+      `😵 Подскользнулись на банке из-под туши. Урон: 0. Пластырь: ${missFee} 🪙`,
+      `🌬️ Ударили по ветру с Японского моря. Ветер даже не заметил. Моральный ущерб: ${missFee} 🪙`,
+      `🐒 Рука дрогнула — меч ушёл в соседнюю скалу. Достать его стоит ${missFee} 🪙`,
+    ];
+    const joke = missJokes[Math.floor(Math.random() * missJokes.length)];
+
+    return Response.json({
+      type: 4,
+      data: { content: `${joke}\n💥 Урон: **0**. Следующая попытка через ${Math.ceil(baseCooldown / 60000)} мин.`, flags: 64 },
     });
   }
   // ============================================
@@ -202,6 +260,8 @@ export async function handleBossAttack(
         if (newCurrentHp <= 0) {
           // Список выпавших реликвий для отображения в victory embed
           const droppedLoot: { userId: string; itemName: string; rarity: string }[] = [];
+          // Персональные выплаты (пропорционально урону) для victory embed
+          const payouts: Array<{ userId: string; xp: number; coins: number }> = [];
           // Атомарное переключение статуса: только если он ещё 'active'.
           // Защищает от повторного начисления наград при гонке/дублирующемся клике.
           const statusSwitch = await db.execute({
@@ -209,19 +269,50 @@ export async function handleBossAttack(
             args: [bossId, gid],
           });
           if (statusSwitch.rowsAffected) {
-            // Начисляем награду всем участникам через batch
+            // Участники с их суммарным уроном
             const participantsResult = await db.execute({
               sql: 'SELECT user_id, guild_id, SUM(damage) as total_dmg FROM boss_damage_logs WHERE boss_id = ? GROUP BY user_id, guild_id',
               args: [bossId],
             });
             const participants = participantsResult.rows || [];
-            const batchOps = participants.map((p: any) => ({
+
+            // Банк босса делится строго пропорционально нанесённому урону:
+            // выплата = Math.round(банк * (урон_игрока / max_hp))
+            for (const p of participants) {
+              const pUserId = p.user_id as string;
+              const pGuildId = p.guild_id as string;
+              const damageShare = ((p.total_dmg as number) || 0) / maxHp;
+
+              let shareXp: number;
+              let shareCoins: number;
+              if (damageShare < 0.15) {
+                // Защита от неактивности: <15% урона — только 10 XP и 0 монет
+                shareXp = 10;
+                shareCoins = 0;
+              } else {
+                shareXp = Math.round(xpReward * damageShare);
+                shareCoins = Math.round(coinsReward * damageShare);
+              }
+
+              // Добивающий удар (Last Hit): фиксированный бонус +50 XP и +20 монет
+              if (pUserId === uid) {
+                shareXp += 50;
+                shareCoins += 20;
+              }
+
+              payouts.push({ userId: pUserId, xp: shareXp, coins: shareCoins });
+            }
+
+            const batchOps = payouts.map((p) => ({
               sql: 'UPDATE users SET xp = xp + ?, coins = coins + ? WHERE user_id = ? AND guild_id = ?',
-              args: [xpReward, coinsReward, p.user_id as string, p.guild_id as string],
+              args: [p.xp, p.coins, p.userId, p.guildId],
             }));
             if (batchOps.length > 0) {
               await db.batch(batchOps);
             }
+
+            // Редкий следующий спавн: now + случайные 60-120 часов (2.5-5 дней)
+            await scheduleNextBossSpawn(db, gid);
             // Хардкорный дроп экипировки: Топ-1 дамагер — 5%, остальные участники — 3%
             const sortedParticipants = [...participants].sort((a: any, b: any) => (b.total_dmg as number) - (a.total_dmg as number));
             const topDamagerUserId = sortedParticipants.length > 0 ? (sortedParticipants[0].user_id as string) : null;
@@ -257,13 +348,17 @@ export async function handleBossAttack(
           if (droppedLoot.length > 0) {
             lootText = '\n\n**💎 Выпала реликвия:**\n' + droppedLoot.map((l) => `🎁 <@${l.userId}> получил **${l.itemName}** (${getRarityEmoji(l.rarity)} ${l.rarity})!`).join('\n');
           }
+          // Персональные награды (пропорционально урону) — список для эмбеда
+          const rewardsText = payouts
+            .map((p) => `<@${p.userId}> — **+${p.xp} XP** / **+${p.coins} 🪙**`)
+            .join('\n') || '*Награда не распределена*';
+
           const victoryEmbed = {
             embeds: [{
               title: `🎉 МИРОВОЙ БОСС ${bossName} ПОВЕРЖЕН!`,
               description: `Победа! Босс повержен!\n\n` +
-                `**Награда каждому участнику:**\n` +
-                `• 🎯 **+${xpReward} XP**\n` +
-                `• 🪙 **+${coinsReward} монет**\n\n` +
+                `**Награда (пропорционально урону):**\n${rewardsText}\n\n` +
+                `Добивающий удар: <@${uid}> (+20 монет)\n\n` +
                 `**Топ дамагеров:**\n` +
                 (topDamageers.map((d: any, i: number) => {
                   const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
