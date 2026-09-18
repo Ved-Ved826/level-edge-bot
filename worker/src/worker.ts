@@ -56,6 +56,7 @@ import { handleSettings } from "./commands/settings";
 import { handleCardCustomize, handleCardSelectTheme, handleShop } from "./commands/shop";
 import { handleGiveRelic, handleTrade } from "./commands/trade";
 import { handleTestGazeta } from "./commands/gazeta";
+import { handleCourt } from "./commands/court";
 
 
 
