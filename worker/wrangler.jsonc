@@ -1,5 +1,18 @@
 {
   "name": "level-edge",
-  "main": "src/index.ts",
-  "compatibility_date": "2025-01-01"
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.md"],
+      "fallthrough": true
+    },
+    {
+      "type": "Data",
+      "globs": ["**/*.ttf", "**/*.wasm"],
+      "fallthrough": true
+    }
+  ]
 }
