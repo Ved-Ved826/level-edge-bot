@@ -8,11 +8,10 @@ import { createClient } from "@libsql/client/web";
 const GAZETTA_CHANNEL_ID = "1051085743839260694";
 
 const PROXYAPI_URL = "https://api.proxyapi.ru/v1/chat/completions";
-const PROXYAPI_API_KEY = "sk-7vNVmFz9SukzwvLQ7VEfd8ZLXG4O76iE";
+// Ключ LLM берётся ТОЛЬКО из env.PROXYAPI_KEY — никаких захардкоженных fallback'ов
 const PRIMARY_MODEL = "z-ai/glm-5.3-flash";
 const FALLBACK_MODEL = "google/gemini-2.5-flash-lite";
 
-let DEFAULT_DISCORD_TOKEN = "";
 const DEFAULT_DB_URL = "libsql://disbot-db-zomka.aws-ap-northeast-1.turso.io";
 const DEFAULT_DB_AUTH_TOKEN =
   "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODg3Nzg0MjIsImlkIjoiMDFhMDdiODAtMTEwMS03YzE5LThjMDEtMDcxZTdhMWYwYjZiIiwia2lkIjoicWRTQWJDRkRlemFtRlFhVFh6aGpyRjM0dTlnV1FVWVdJLWdGVGNtLUJsRSIsInJpZCI6IjQzY2M3MDIwLTJhMTMtNDg3NS1hODliLTg2MjkzNmZlMDVjZSJ9.oHijFr0xv2Y3RoZIulA09s5Whba6hsf6o8I3btCkJypeuXNph5aEvDbVNC5_zSoePMHhylfXC4xCAHz1GdkyBg";
@@ -73,8 +72,6 @@ async function saveServerLore(db: any, newFacts: string[]): Promise<void> {
 }
 
 export async function handleTestGazeta(inter: CommandInteraction, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const DISCORD_BOT_TOKEN = env.DISCORD_BOT_TOKEN || env.DISCORD_TOKEN || "";
-  const BOT_TOKEN = env.DISCORD_BOT_TOKEN || env.DISCORD_TOKEN || "";
   const permissions = BigInt(((inter.member as any)?.permissions as string | number | undefined) ?? "0");
   const isAdmin = (permissions & PERMISSION_ADMINISTRATOR) !== 0n || (permissions & PERMISSION_MANAGE_GUILD) !== 0n;
 
@@ -87,8 +84,12 @@ export async function handleTestGazeta(inter: CommandInteraction, env: Env, ctx:
 
   const sourceChannelId = (inter as any).channel_id || (inter as any).channel?.id || GAZETTA_CHANNEL_ID;
 
+  // Вся тяжёлая работа (сбор сообщений, запрос к LLM, публикация) — через ctx.waitUntil,
+  // вне 3-секундного окна Discord. Финальный статус доставляется PATCH'ем на
+  // https://discord.com/api/v10/webhooks/{DISCORD_APPLICATION_ID}/{token}/messages/@original
   ctx.waitUntil(publishWeeklyGazette(env, inter.token, sourceChannelId));
 
+  // Мгновенный deferred-ответ (type 5, ephemeral) — укладываемся в таймаут Discord
   return Response.json({
     type: 5,
     data: { flags: 64 },
@@ -96,11 +97,17 @@ export async function handleTestGazeta(inter: CommandInteraction, env: Env, ctx:
 }
 
 async function publishWeeklyGazette(env: Env, token: string, sourceChannelId: string): Promise<void> {
-  const botToken = (env as any).DISCORD_TOKEN || (env as any).DISCORD_BOT_TOKEN || DEFAULT_DISCORD_TOKEN;
-  const appId = (env as any).DISCORD_APPLICATION_ID || "939777923320283176";
+  // Только env: никаких захардкоженных fallback'ов для appId / токена / ключа LLM
+  const appId = (env as any).DISCORD_APPLICATION_ID || "";
+  const botToken = (env as any).DISCORD_TOKEN || (env as any).DISCORD_BOT_TOKEN || "";
+  const apiKey = (env as any).PROXYAPI_KEY || "";
   const db = getDb(env);
 
   try {
+    if (!appId) throw new Error("DISCORD_APPLICATION_ID не настроен в окружении воркера");
+    if (!botToken) throw new Error("DISCORD_TOKEN/DISCORD_BOT_TOKEN не настроен в окружении воркера");
+    if (!apiKey) throw new Error("PROXYAPI_KEY не настроен в окружении воркера");
+
     const messages = await fetchLastWeekMessages(botToken, sourceChannelId);
 
     if (messages.length === 0) {
@@ -109,7 +116,7 @@ async function publishWeeklyGazette(env: Env, token: string, sourceChannelId: st
     }
 
     const loreList = await loadServerLore(db);
-    const { digestText, newLoreFacts } = await generateGazetteText(messages, loreList);
+    const { digestText, newLoreFacts } = await generateGazetteText(apiKey, messages, loreList);
 
     if (newLoreFacts.length > 0) {
       await saveServerLore(db, newLoreFacts);
@@ -120,7 +127,9 @@ async function publishWeeklyGazette(env: Env, token: string, sourceChannelId: st
   } catch (err: any) {
     console.error("[Error] test-gazeta cmd:", err);
     const msg = err?.name === "TimeoutError" ? "Превышено время ожидания LLM" : (err?.message || String(err));
-    await editOriginalResponse(appId, token, `?? Ошибка выпуска: ${msg.slice(0, 1500)}`);
+    if (appId) {
+      await editOriginalResponse(appId, token, `?? Ошибка выпуска: ${msg.slice(0, 1500)}`);
+    }
   }
 }
 
@@ -219,7 +228,7 @@ function buildWeeklyTranscript(messages: CollectedMessage[]): string {
 }
 
 // Запрос к LLM
-async function callProxyApi(model: string, systemPrompt: string, userPrompt: string, timeoutMs: number): Promise<string> {
+async function callProxyApi(apiKey: string, model: string, systemPrompt: string, userPrompt: string, timeoutMs: number): Promise<string> {
   const bodyPayload: any = {
     model,
     messages: [
@@ -235,7 +244,7 @@ async function callProxyApi(model: string, systemPrompt: string, userPrompt: str
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${PROXYAPI_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(bodyPayload),
     signal: AbortSignal.timeout(timeoutMs),
@@ -254,6 +263,7 @@ async function callProxyApi(model: string, systemPrompt: string, userPrompt: str
 }
 
 async function generateGazetteText(
+  apiKey: string,
   messages: CollectedMessage[],
   loreList: string[]
 ): Promise<{ digestText: string; newLoreFacts: string[] }> {
@@ -300,10 +310,10 @@ async function generateGazetteText(
 
   let rawOutput = "";
   try {
-    rawOutput = await callProxyApi(PRIMARY_MODEL, systemPrompt, userPrompt, 13000);
+    rawOutput = await callProxyApi(apiKey, PRIMARY_MODEL, systemPrompt, userPrompt, 13000);
   } catch (err) {
     console.warn(`[Gazeta] Primary model failed, falling back to ${FALLBACK_MODEL}:`, err);
-    rawOutput = await callProxyApi(FALLBACK_MODEL, systemPrompt, userPrompt, 9000);
+    rawOutput = await callProxyApi(apiKey, FALLBACK_MODEL, systemPrompt, userPrompt, 9000);
   }
 
   const newLoreFacts: string[] = [];
@@ -379,6 +389,10 @@ async function publishGazetteEmbeds(botToken: string, fullText: string): Promise
 }
 
 async function editOriginalResponse(appId: string, token: string, content: string): Promise<void> {
+  if (!appId || !token) {
+    console.error("[Gazeta] Cannot edit original response: нет DISCORD_APPLICATION_ID или interaction token");
+    return;
+  }
   await fetch(`${DISCORD_API}/webhooks/${appId}/${token}/messages/@original`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

@@ -3811,12 +3811,19 @@ client.on('ready', async () => {
   await ensureQuestsPool(db);
 
   // ============================================
-  // Автоматическая регистрация слэш-команды test-gazeta
+  // Автоматическая регистрация слэш-команд: газета + биржа
   // (guild.commands.create — мгновенная гильдейская регистрация,
   // появляется в Discord СРАЗУ, без ожидания глобальной синхронизации)
   // ============================================
   try {
     for (const [, guild] of client.guilds.cache) {
+      // Обновляем кэш команд гильдии, чтобы проверка на дубликаты была валидной
+      try {
+        await guild.commands.fetch();
+      } catch (fetchErr) {
+        console.warn(`[Commands] Failed to fetch commands cache for guild ${guild.id}:`, fetchErr);
+      }
+
       const existing = guild.commands.cache.find((cmd: any) => cmd.name === 'test-gazeta');
       if (!existing) {
         await guild.commands.create({
@@ -3824,6 +3831,51 @@ client.on('ready', async () => {
           description: 'Сгенерировать и выпустить AI-газету за неделю (только для администрации)',
         });
         console.log(`[Gazeta] Slash command test-gazeta registered in guild ${guild.id}`);
+      }
+
+      // ============================================
+      // Слэш-команды биржи (мгновенная гильдейская регистрация)
+      // type 3 = STRING, type 4 = INTEGER
+      // ============================================
+      const exchangeCommands: any[] = [
+        { name: 'stocks', description: 'Котировки акций компаний сервера' },
+        { name: 'portfolio', description: 'Ваш инвестиционный портфель акций' },
+        {
+          name: 'company-create',
+          description: 'Создать компанию на бирже',
+          options: [
+            { name: 'name', description: 'Название компании', type: 3, required: true },
+            { name: 'description', description: 'Описание компании', type: 3, required: true },
+          ],
+        },
+        {
+          name: 'invest',
+          description: 'Купить акции компании',
+          options: [
+            { name: 'company', description: 'Тикер или название компании', type: 3, required: true },
+            { name: 'amount', description: 'Количество акций', type: 4, required: true },
+          ],
+        },
+        {
+          name: 'divest',
+          description: 'Продать акции компании',
+          options: [
+            { name: 'company', description: 'Тикер или название компании', type: 3, required: true },
+            { name: 'amount', description: 'Количество акций', type: 4, required: true },
+          ],
+        },
+      ];
+
+      for (const cmd of exchangeCommands) {
+        try {
+          const existingCmd = guild.commands.cache.find((c: any) => c.name === cmd.name);
+          if (!existingCmd) {
+            await guild.commands.create(cmd);
+            console.log(`[Exchange] Slash command ${cmd.name} registered in guild ${guild.id}`);
+          }
+        } catch (cmdErr) {
+          console.error(`[Exchange] Failed to register slash command ${cmd.name} in guild ${guild.id}:`, cmdErr);
+        }
       }
     }
   } catch (err) {
