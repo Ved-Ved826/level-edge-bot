@@ -905,6 +905,19 @@ async function migrateSchema() {
     }
 
     // ============================================
+    // Миграция 023: Колонка last_season_reset — отметка завершения сезона.
+    // Маркер хранится ПО ГИЛЬДИЯМ в служебной записи users (user_id = guild_id)
+    // и обновляется СТРОГО после успешного коммита сезонной ликвидации компаний.
+    // ============================================
+    if (!columns.includes('last_season_reset')) {
+      await db.execute({
+        sql: 'ALTER TABLE users ADD COLUMN last_season_reset TEXT DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: last_season_reset');
+    }
+
+    // ============================================
     // Миграция 019: Колонка weekly_reset_week (безопасное добавление, фикс стабильности)
     // ============================================
     try {
@@ -3637,6 +3650,159 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
   }
 }
 
+// ============================================
+// Сезонная ликвидация компаний (Биржа)
+// ============================================
+
+/**
+ * Пропорциональная ликвидация компаний при смене сезона (раз в 3 месяца).
+ *
+ * Маркер сезона last_season_reset хранится ПО ГИЛЬДИЯМ — в служебной записи
+ * users (user_id = guild_id), как last_week_reset и next_boss_spawn_at.
+ *
+ * Гарантии:
+ * 1. Ликвидация выполняется в отдельной транзакции на гильдию; ошибка в одной
+ *    гильдии только логируется и не прерывает обработку остальных.
+ * 2. Отметка о завершении сезона ставится СТРОГО после успешного tx.commit():
+ *    при сбое транзакция откатывается целиком, маркер остаётся старым, и
+ *    ликвидация будет повторена на следующем тике — компании не останутся
+ *    брошенными без выплат.
+ * 3. Первый запуск (маркер NULL) только инициализирует маркер текущим сезоном
+ *    БЕЗ ликвидации, чтобы деплой в середине сезона не уничтожал компании
+ *    вне границы сезона.
+ */
+async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
+  const currentSeasonId = getSeasonId();
+
+  try {
+    // Все гильдии (как в checkWeeklyReset): маркер ставится и гильдиям без компаний,
+    // чтобы их будущие компании корректно ликвидировались на следующей границе сезона
+    const guildsResult = await db.execute({
+      sql: 'SELECT DISTINCT guild_id FROM users',
+      args: [],
+    });
+    const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
+
+    for (const guildId of guildIds) {
+      try {
+        // Маркер сезона читается заново для КАЖДОЙ гильдии
+        const markerResult = await db.execute({
+          sql: 'SELECT last_season_reset FROM users WHERE user_id = ? AND guild_id = ?',
+          args: [guildId, guildId],
+        });
+        const lastSeasonId = (markerResult.rows[0]?.last_season_reset as string | null) || null;
+
+        if (lastSeasonId === currentSeasonId) {
+          continue; // Сезон не менялся — ликвидация не требуется
+        }
+
+        if (lastSeasonId === null) {
+          // Первая инициализация маркера: фиксируем текущий сезон БЕЗ ликвидации
+          const initResult = await db.execute({
+            sql: 'UPDATE users SET last_season_reset = ? WHERE user_id = ? AND guild_id = ?',
+            args: [currentSeasonId, guildId, guildId],
+          });
+          if (!initResult.rowsAffected || initResult.rowsAffected === 0) {
+            await db.execute({
+              sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, last_season_reset)
+                    VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
+              args: [guildId, guildId, Date.now(), currentSeasonId],
+            });
+          }
+          console.log(`[Liquidation] Guild ${guildId}: season marker initialized to ${currentSeasonId} (no liquidation on first run)`);
+          continue;
+        }
+
+        console.log(`[Liquidation] Season changed for guild ${guildId}: ${lastSeasonId} -> ${currentSeasonId}, liquidating companies...`);
+
+        const tx = await db.transaction('write');
+        let committed = false;
+        try {
+          // Компании гильдии
+          const companiesResult = await tx.execute({
+            sql: 'SELECT * FROM companies WHERE guild_id = ?',
+            args: [guildId],
+          });
+          const companies = companiesResult.rows || [];
+
+          for (const comp of companies) {
+            const circulating = 100 - Number(comp.available_shares);
+            const treasury = Number(comp.treasury);
+            let distributed = 0;
+
+            if (circulating > 0 && treasury > 0) {
+              // Держатели акций компании
+              const holdersResult = await tx.execute({
+                sql: 'SELECT user_id, shares_count FROM company_shares WHERE company_id = ?',
+                args: [comp.id],
+              });
+
+              for (const s of holdersResult.rows || []) {
+                const payout = Math.floor(Number(s.shares_count) * treasury / circulating);
+                if (payout > 0) {
+                  const userUpd = await tx.execute({
+                    sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+                    args: [payout, String(s.user_id), guildId],
+                  });
+                  if (userUpd.rowsAffected === 1) {
+                    distributed += payout;
+                  }
+                }
+              }
+            }
+
+            // Остаток от floor-округления и невыплаченные суммы — в резерв сервера
+            const remainder = treasury - distributed;
+            if (remainder > 0) {
+              await tx.execute({
+                sql: 'INSERT INTO server_reserve (guild_id, balance) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET balance = balance + ?',
+                args: [guildId, remainder, remainder],
+              });
+            }
+          }
+
+          // Очистка таблиц компаний гильдии.
+          // server_reserve НЕ обнуляем — баланс резерва переходит в новый сезон.
+          await tx.execute({ sql: 'DELETE FROM company_crises WHERE guild_id = ?', args: [guildId] });
+          await tx.execute({ sql: 'DELETE FROM company_shares WHERE guild_id = ?', args: [guildId] });
+          await tx.execute({ sql: 'DELETE FROM companies WHERE guild_id = ?', args: [guildId] });
+
+          await tx.commit();
+          committed = true;
+          console.log(`[Liquidation] Guild ${guildId}: companies liquidated, tx committed`);
+        } catch (e) {
+          await tx.rollback().catch(() => {});
+          console.error('[Liquidation] Error in guild', guildId, e);
+          // Маркер НЕ обновляем — ликвидация будет повторена на следующем тике
+        } finally {
+          tx.close();
+        }
+
+        // Отметка о завершении сезона — СТРОГО после успешного tx.commit()
+        if (committed) {
+          const markerUpdate = await db.execute({
+            sql: 'UPDATE users SET last_season_reset = ? WHERE user_id = ? AND guild_id = ?',
+            args: [currentSeasonId, guildId, guildId],
+          });
+          if (!markerUpdate.rowsAffected || markerUpdate.rowsAffected === 0) {
+            // Служебной записи ещё нет — создаём её (как в checkWeeklyReset)
+            await db.execute({
+              sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, last_season_reset)
+                    VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
+              args: [guildId, guildId, Date.now(), currentSeasonId],
+            });
+          }
+        }
+      } catch (guildErr) {
+        // Ошибка в одной гильдии не прерывает обработку остальных гильдий
+        console.error('[Liquidation] Error processing guild', guildId, guildErr);
+      }
+    }
+  } catch (err) {
+    console.error('[Liquidation] Error in liquidateCompaniesOnSeasonChange:', err);
+  }
+}
+
 client.on('ready', async () => {
   console.log(`[Collector] Starting migration...`);
   await migrateSchema();
@@ -3747,6 +3913,25 @@ client.on('ready', async () => {
       console.error('[Growth] Interval error:', e);
     }
   }, 10 * 60 * 1000); // Каждые 10 минут
+
+  // ============================================
+  // Сезонная ликвидация компаний (проверка смены сезона раз в час).
+  // Отдельный таймер — НЕ часть еженедельного сброса Чемпиона Недели:
+  // срабатывание строго при смене сезона (раз в 3 месяца).
+  // ============================================
+  console.log('[Liquidation] Starting season change checker...');
+  try {
+    await liquidateCompaniesOnSeasonChange(db); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[Liquidation] Startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await liquidateCompaniesOnSeasonChange(db);
+    } catch (e) {
+      console.error('[Liquidation] Interval error:', e);
+    }
+  }, 60 * 60 * 1000); // Каждый час
 
   // Еженедельная AI-газета (каждое воскресенье в 20:00 по Владивостоку)
   console.log('[Gazeta] Starting weekly digest scheduler...');
