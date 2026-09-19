@@ -58,6 +58,7 @@ import { handleGiveRelic, handleTrade } from "./commands/trade";
 import { handleTestGazeta } from "./commands/gazeta";
 import { handleCourt } from "./commands/court";
 import { handleCompanyCreate } from "./commands/company";
+import { handlePortfolio, handleStocks } from "./commands/stocks";
 
 
 
@@ -1249,6 +1250,12 @@ export default {
 
       // 31. Слэш-команда /company-create name:text ticker:text [description:text] (Биржа компаний)
       if (inter.type === 2 && inter.data?.name === "company-create") { return handleCompanyCreate(inter as CommandInteraction, env, ctx); }
+
+      // 32. Слэш-команда /stocks (Биржа компаний — список компаний, read-only)
+      if (inter.type === 2 && inter.data?.name === "stocks") { return handleStocks(inter as CommandInteraction, env, ctx); }
+
+      // 33. Слэш-команда /portfolio (Биржа компаний — портфель игрока, read-only)
+      if (inter.type === 2 && inter.data?.name === "portfolio") { return handlePortfolio(inter as CommandInteraction, env, ctx); }
 
 
 
