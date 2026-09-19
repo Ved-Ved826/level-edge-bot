@@ -3532,6 +3532,111 @@ function scheduleWeeklyDigest(bot: Client): void {
   scheduleNext();
 }
 
+// ============================================
+// Идемпотентный суточный рост казны компаний (Биржа)
+// ============================================
+
+/**
+ * Раз в сутки начисляет компаниям рост казны из резерва сервера.
+ * Идемпотентность: компания обрабатывается только если last_growth_day
+ * пуст или меньше сегодняшней даты (Владивосток). Компании выбираются
+ * в случайном порядке (ORDER BY RANDOM()), каждая — в своей транзакции.
+ */
+async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
+  const todayStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Vladivostok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+
+  try {
+    // Гильдии, в которых есть компании
+    const guildsResult = await db.execute({
+      sql: 'SELECT DISTINCT guild_id FROM companies',
+      args: [],
+    });
+    const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
+
+    for (const guildId of guildIds) {
+      // Компании, готовые к росту, строго в случайном порядке
+      const companiesResult = await db.execute({
+        sql: 'SELECT id FROM companies WHERE guild_id = ? AND (last_growth_day IS NULL OR last_growth_day < ?) ORDER BY RANDOM()',
+        args: [guildId, todayStr],
+      });
+      const companies = companiesResult.rows || [];
+
+      if (companies.length === 0) {
+        continue;
+      }
+
+      for (const it of companies) {
+        const tx = await db.transaction('write');
+        try {
+          // Перечитываем свежие данные компании внутри транзакции
+          const companyResult = await tx.execute({
+            sql: 'SELECT treasury FROM companies WHERE id = ?',
+            args: [it.id],
+          });
+          if (companyResult.rows.length === 0) {
+            await tx.commit();
+            continue;
+          }
+          const freshTreasury = companyResult.rows[0].treasury;
+
+          // Перечитываем свежий баланс резерва (0, если строки нет)
+          const reserveResult = await tx.execute({
+            sql: 'SELECT balance FROM server_reserve WHERE guild_id = ?',
+            args: [guildId],
+          });
+          const reserveBalance = reserveResult.rows.length > 0 ? reserveResult.rows[0].balance : 0;
+
+          // Желаемый рост: 1% от казны, но не более 100
+          const desired = Math.min(Math.floor(Number(freshTreasury) * 0.01), 100);
+          const grant = Math.min(desired, Number(reserveBalance));
+
+          if (grant > 0) {
+            // Сперва атомарно списываем из резерва (только если средств хватает)
+            const deductResult = await tx.execute({
+              sql: 'UPDATE server_reserve SET balance = balance - ? WHERE guild_id = ? AND balance >= ?',
+              args: [grant, guildId, grant],
+            });
+
+            if (deductResult.rowsAffected === 1) {
+              await tx.execute({
+                sql: 'UPDATE companies SET treasury = treasury + ?, last_growth_day = ? WHERE id = ?',
+                args: [grant, todayStr, it.id],
+              });
+              console.log(`[Growth] Company ${it.id} in guild ${guildId}: treasury +${grant}`);
+            } else {
+              // Резерв изменился параллельно — только фиксируем дату роста
+              await tx.execute({
+                sql: 'UPDATE companies SET last_growth_day = ? WHERE id = ?',
+                args: [todayStr, it.id],
+              });
+            }
+          } else {
+            // Резерв пуст или рост 0 — идемпотентно фиксируем дату
+            await tx.execute({
+              sql: 'UPDATE companies SET last_growth_day = ? WHERE id = ?',
+              args: [todayStr, it.id],
+            });
+          }
+
+          await tx.commit();
+        } catch (e) {
+          await tx.rollback().catch(() => {});
+          console.error('[Growth] Error processing company', it.id, e);
+        } finally {
+          tx.close();
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Growth] Error in processDailyCompanyGrowth:', err);
+  }
+}
+
 client.on('ready', async () => {
   console.log(`[Collector] Starting migration...`);
   await migrateSchema();
@@ -3623,6 +3728,23 @@ client.on('ready', async () => {
       await checkAndSpawnWorldBoss(db, client);
     } catch (err) {
       console.error('[WorldBoss] Interval check failed, collector продолжает работу:', err);
+    }
+  }, 10 * 60 * 1000); // Каждые 10 минут
+
+  // ============================================
+  // Суточный рост казны компаний (идемпотентно, проверка каждые 10 минут)
+  // ============================================
+  console.log('[Growth] Starting company treasury growth ticker...');
+  try {
+    await processDailyCompanyGrowth(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[Growth] Startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processDailyCompanyGrowth(db, client);
+    } catch (e) {
+      console.error('[Growth] Interval error:', e);
     }
   }, 10 * 60 * 1000); // Каждые 10 минут
 
