@@ -43,7 +43,7 @@ import { handleAirdropClaim } from "./commands/airdrop";
 import { handleBoss, handleBossAttack, handleBossSpawn } from "./commands/boss";
 import { handleClass, handleClassPick } from "./commands/class";
 import { handleDuel, handleDuelButtons } from "./commands/duel";
-import { handleExport, handleExportLegacy } from "./commands/export";
+import { handleExport } from "./commands/export";
 import { handleForge } from "./commands/forge";
 import { handleRecap, handleServerKings } from "./commands/hall-of-fame";
 import { handleEquip, handleGear, handleInventory, handleUnequip } from "./commands/inventory";
@@ -1004,11 +1004,9 @@ function buildDuelResultEmbed(challengerId: string, opponentId: string, winnerId
 
 
 
-export default {
+async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-
-    const url = new URL(request.url);
+  const url = new URL(request.url);
 
 
 
@@ -1208,9 +1206,6 @@ export default {
 
 
 
-      // 16. Слэш-команда /export (Этап 10 - CSV-экспорт аналитики)
-
-      if (inter.type === 2 && inter.data?.name === "export") { return handleExportLegacy(inter as CommandInteraction, env, ctx); }
 
 
 
@@ -1275,6 +1270,28 @@ export default {
     if (url.pathname === "/health") return new Response("OK");
 
     return new Response("Not Found", { status: 404 });
+
+}
+
+export default {
+
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+
+    // Глобальная страховка: любой неперехваченный сбой возвращает Discord
+    // валидный type 4 с текстом ошибки вместо пустого таймаута/500.
+    try {
+
+      return await handleRequest(request, env, ctx);
+
+    } catch (e) {
+
+      console.error("[Worker] Unhandled interaction error:", e);
+
+      const msg = e instanceof Error && e.message ? e.message : String(e);
+
+      return Response.json({ type: 4, data: { content: `Ошибка выполнения команды: ${msg}`, flags: 64 } });
+
+    }
 
   },
 
