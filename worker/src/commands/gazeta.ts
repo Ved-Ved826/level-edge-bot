@@ -1,8 +1,8 @@
-п»їimport { CommandInteraction, Env, ExecutionContext } from "../types";
+import { CommandInteraction, Env, ExecutionContext } from "../types";
 import { createClient } from "@libsql/client/web";
 
 // ============================================
-// /test-gazeta вЂ” РµР¶РµРЅРµРґРµР»СЊРЅР°СЏ AI-РіР°Р·РµС‚Р° СЃРµСЂРІРµСЂР°
+// /test-gazeta — еженедельная AI-газета сервера
 // ============================================
 
 const GAZETTA_CHANNEL_ID = "1051085743839260694";
@@ -37,7 +37,7 @@ function getDb(env: Env) {
   });
 }
 
-// Р—Р°РіСЂСѓР·РєР° РЅР°РєРѕРїР»РµРЅРЅРѕРіРѕ Р»РѕСЂР° РёР· Р‘Р”
+// Загрузка накопленного лора из БД
 async function loadServerLore(db: any): Promise<string[]> {
   try {
     await db.execute(`
@@ -55,11 +55,11 @@ async function loadServerLore(db: any): Promise<string[]> {
   }
 }
 
-// РЎРѕС…СЂР°РЅРµРЅРёРµ РЅРѕРІС‹С… С„Р°РєС‚РѕРІ РІ Р»РѕСЂ
+// Сохранение новых фактов в лор
 async function saveServerLore(db: any, newFacts: string[]): Promise<void> {
   if (newFacts.length === 0) return;
   for (const fact of newFacts) {
-    const clean = fact.replace(/^[-*вЂў\s]+/, "").trim();
+    const clean = fact.replace(/^[-*•\s]+/, "").trim();
     if (!clean || clean.length < 5) continue;
     try {
       await db.execute({
@@ -73,15 +73,15 @@ async function saveServerLore(db: any, newFacts: string[]): Promise<void> {
 }
 
 export async function handleTestGazeta(inter: CommandInteraction, env: Env, ctx: ExecutionContext): Promise<Response> {
-  DISCORD_BOT_TOKEN = env.DISCORD_BOT_TOKEN || env.DISCORD_TOKEN || "";
-  BOT_TOKEN = env.DISCORD_BOT_TOKEN || env.DISCORD_TOKEN || "";
+  const DISCORD_BOT_TOKEN = env.DISCORD_BOT_TOKEN || env.DISCORD_TOKEN || "";
+  const BOT_TOKEN = env.DISCORD_BOT_TOKEN || env.DISCORD_TOKEN || "";
   const permissions = BigInt(((inter.member as any)?.permissions as string | number | undefined) ?? "0");
   const isAdmin = (permissions & PERMISSION_ADMINISTRATOR) !== 0n || (permissions & PERMISSION_MANAGE_GUILD) !== 0n;
 
   if (!isAdmin) {
     return Response.json({
       type: 4,
-      data: { content: "рџљ« Р­С‚Р° РєРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ Р°РґРјРёРЅРёСЃС‚СЂР°С†РёРё", flags: 64 },
+      data: { content: "?? Эта команда доступна только администрации", flags: 64 },
     });
   }
 
@@ -104,7 +104,7 @@ async function publishWeeklyGazette(env: Env, token: string, sourceChannelId: st
     const messages = await fetchLastWeekMessages(botToken, sourceChannelId);
 
     if (messages.length === 0) {
-      await editOriginalResponse(appId, token, "рџ“° Р—Р° РїРѕСЃР»РµРґРЅРёРµ 7 РґРЅРµР№ РІ СЌС‚РѕРј РєР°РЅР°Р»Рµ РЅРµ РЅР°С€Р»РѕСЃСЊ СЃРѕРѕР±С‰РµРЅРёР№ СѓС‡Р°СЃС‚РЅРёРєРѕРІ.");
+      await editOriginalResponse(appId, token, "?? За последние 7 дней в этом канале не нашлось сообщений участников.");
       return;
     }
 
@@ -116,15 +116,15 @@ async function publishWeeklyGazette(env: Env, token: string, sourceChannelId: st
     }
 
     await publishGazetteEmbeds(botToken, digestText);
-    await editOriginalResponse(appId, token, "вњ… РЎРІРµР¶РёР№ РІС‹РїСѓСЃРє РіР°Р·РµС‚С‹ СѓСЃРїРµС€РЅРѕ РѕРїСѓР±Р»РёРєРѕРІР°РЅ РІ РєР°РЅР°Р»Рµ!");
+    await editOriginalResponse(appId, token, "? Свежий выпуск газеты успешно опубликован в канале!");
   } catch (err: any) {
     console.error("[Error] test-gazeta cmd:", err);
-    const msg = err?.name === "TimeoutError" ? "РџСЂРµРІС‹С€РµРЅРѕ РІСЂРµРјСЏ РѕР¶РёРґР°РЅРёСЏ LLM" : (err?.message || String(err));
-    await editOriginalResponse(appId, token, `рџљ« РћС€РёР±РєР° РІС‹РїСѓСЃРєР°: ${msg.slice(0, 1500)}`);
+    const msg = err?.name === "TimeoutError" ? "Превышено время ожидания LLM" : (err?.message || String(err));
+    await editOriginalResponse(appId, token, `?? Ошибка выпуска: ${msg.slice(0, 1500)}`);
   }
 }
 
-// РЎР±РѕСЂ РґРѕ 300 СЃРѕРѕР±С‰РµРЅРёР№ РЅР°Р·Р°Рґ РѕС‚ С‚РµРєСѓС‰РµР№ СЃРµРєСѓРЅРґС‹ (РѕС…РІР°С‚С‹РІР°РµС‚ Рё СЃРµРіРѕРґРЅСЏ, Рё РІСЃСЋ РЅРµРґРµР»СЋ)
+// Сбор до 300 сообщений назад от текущей секунды (охватывает и сегодня, и всю неделю)
 async function fetchLastWeekMessages(botToken: string, channelId: string): Promise<CollectedMessage[]> {
   const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
   let beforeId: string | undefined = undefined;
@@ -152,7 +152,7 @@ async function fetchLastWeekMessages(botToken: string, channelId: string): Promi
       if (m.author?.bot) continue;
 
       const text = (m.content || "").trim();
-      // РџСЂРѕРїСѓСЃРєР°РµРј РІС‹Р·РѕРІС‹ РєРѕРјР°РЅРґ Рё РїСѓСЃС‚РѕС‚Сѓ
+      // Пропускаем вызовы команд и пустоту
       if (!text || text.startsWith("/") || text.startsWith("!")) continue;
 
       const reactionsCount = Array.isArray(m.reactions)
@@ -175,9 +175,9 @@ async function fetchLastWeekMessages(botToken: string, channelId: string): Promi
   return all;
 }
 
-// РЈРјРЅР°СЏ РіСЂСѓРїРїРёСЂРѕРІРєР° РїРѕ РґРЅСЏРј РЅРµРґРµР»Рё СЃ РїСЂРёРѕСЂРёС‚РµС‚РѕРј СЃРѕРѕР±С‰РµРЅРёР№ СЃ СЂРµР°РєС†РёСЏРјРё
+// Умная группировка по дням недели с приоритетом сообщений с реакциями
 function buildWeeklyTranscript(messages: CollectedMessage[]): string {
-  // РЎРѕСЂС‚РёСЂСѓРµРј РѕС‚ СЃС‚Р°СЂС‹С… Рє РЅРѕРІС‹Рј РґР»СЏ РЅРѕСЂРјР°Р»СЊРЅРѕР№ С…СЂРѕРЅРѕР»РѕРіРёРё
+  // Сортируем от старых к новым для нормальной хронологии
   messages.sort((a, b) => a.timestamp - b.timestamp);
 
   const daysMap = new Map<string, CollectedMessage[]>();
@@ -194,21 +194,21 @@ function buildWeeklyTranscript(messages: CollectedMessage[]): string {
   for (const [dayKey, dayMsgs] of daysMap.entries()) {
     const isToday = dayKey === todayStr;
     const [, mm, dd] = dayKey.split("-");
-    const header = isToday ? `рџ“… ${dd}.${mm} (РЎР•Р“РћР”РќРЇ / РџРћРЎР›Р•Р”РќРР• РЎРћР‘Р«РўРРЇ):` : `рџ“… ${dd}.${mm}:`;
+    const header = isToday ? `?? ${dd}.${mm} (СЕГОДНЯ / ПОСЛЕДНИЕ СОБЫТИЯ):` : `?? ${dd}.${mm}:`;
 
-    // Р’С‹Р±РёСЂР°РµРј РґРѕ 20 СЃР°РјС‹С… Р·Р°РјРµС‚РЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№ Р·Р° РєР°Р¶РґС‹Р№ РґРµРЅСЊ
+    // Выбираем до 20 самых заметных сообщений за каждый день
     let chosen = dayMsgs;
     if (dayMsgs.length > 20) {
       const withReactions = dayMsgs.filter((m) => m.reactionsCount > 0);
       const normal = dayMsgs.filter((m) => m.reactionsCount === 0);
-      // Р‘РµСЂС‘Рј СЃРѕРѕР±С‰РµРЅРёСЏ СЃ СЂРµР°РєС†РёСЏРјРё + СЂР°РІРЅРѕРјРµСЂРЅС‹Р№ СЃСЂРµР· РѕР±С‹С‡РЅС‹С…
+      // Берём сообщения с реакциями + равномерный срез обычных
       const step = Math.max(1, Math.floor(normal.length / 12));
       const sampled = normal.filter((_, idx) => idx % step === 0);
       chosen = [...withReactions, ...sampled].sort((a, b) => a.timestamp - b.timestamp).slice(0, 22);
     }
 
     const lines = chosen.map((m) => {
-      const star = m.reactionsCount > 0 ? ` [рџ”Ґx${m.reactionsCount}]` : "";
+      const star = m.reactionsCount > 0 ? ` [??x${m.reactionsCount}]` : "";
       return `${m.author}: ${m.content.replace(/\s+/g, " ").slice(0, 180)}${star}`;
     });
 
@@ -218,7 +218,7 @@ function buildWeeklyTranscript(messages: CollectedMessage[]): string {
   return sections.join("\n\n").slice(0, 9500);
 }
 
-// Р—Р°РїСЂРѕСЃ Рє LLM
+// Запрос к LLM
 async function callProxyApi(model: string, systemPrompt: string, userPrompt: string, timeoutMs: number): Promise<string> {
   const bodyPayload: any = {
     model,
@@ -248,7 +248,7 @@ async function callProxyApi(model: string, systemPrompt: string, userPrompt: str
 
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
   const text = data?.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error("РџСѓСЃС‚РѕР№ РѕС‚РІРµС‚ РѕС‚ РЅРµР№СЂРѕСЃРµС‚Рё");
+  if (!text) throw new Error("Пустой ответ от нейросети");
 
   return text;
 }
@@ -260,43 +260,43 @@ async function generateGazetteText(
   const now = new Date();
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const formatDate = (d: Date) => `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}`;
-  const dateRange = `${formatDate(weekAgo)} вЂ” ${formatDate(now)}`;
+  const dateRange = `${formatDate(weekAgo)} — ${formatDate(now)}`;
 
   const transcript = buildWeeklyTranscript(messages);
 
   const loreBlock =
     loreList.length > 0
-      ? `\n\nРџРђРњРЇРўР¬ Р Р›РћР  РЎР•Р Р’Р•Р Рђ (С‡С‚Рѕ С‚С‹ СѓР¶Рµ Р·РЅР°РµС€СЊ Рѕ С‡РµР»Р°С… РёР· РїСЂРѕС€Р»С‹С… РІС‹РїСѓСЃРєРѕРІ, РёСЃРїРѕР»СЊР·СѓР№ РґР»СЏ РїРѕРґРєРѕР»РѕРІ Рё СЃРІСЏР·РЅРѕСЃС‚Рё):\n${loreList
-          .map((f) => `вЂў ${f}`)
+      ? `\n\nПАМЯТЬ И ЛОР СЕРВЕРА (что ты уже знаешь о челах из прошлых выпусков, используй для подколов и связности):\n${loreList
+          .map((f) => `• ${f}`)
           .join("\n")}`
       : "";
 
-  const systemPrompt = `РўС‹ вЂ” С†РёРЅРёС‡РЅС‹Р№, СЃР°СЂРєР°СЃС‚РёС‡РЅС‹Р№ Р»РµС‚РѕРїРёСЃРµС† Discord-СЃРµСЂРІРµСЂР°. РўРІРѕСЏ Р·Р°РґР°С‡Р° вЂ” РЅР°РїРёСЃР°С‚СЊ СЃРѕС‡РЅС‹Р№ РґР°Р№РґР¶РµСЃС‚ СЃРѕР±С‹С‚РёР№ Р·Р° РЅРµРґРµР»СЋ (${dateRange}).
+  const systemPrompt = `Ты — циничный, саркастичный летописец Discord-сервера. Твоя задача — написать сочный дайджест событий за неделю (${dateRange}).
 
-РљРђРљ Р’Р«Р‘РР РђРўР¬, Р§РўРћ РџРћРџРђР”РЃРў Р’ Р’Р«РџРЈРЎРљ (СЌС‚Рѕ РіР»Р°РІРЅРѕРµ вЂ” РЅРµ РїРµСЂРµСЃРєР°Р·С‹РІР°Р№ РїРѕРґСЂСЏРґ, Р° РѕС‚Р±РёСЂР°Р№):
-1. РЎРЅР°С‡Р°Р»Р° РјС‹СЃР»РµРЅРЅРѕ РѕС†РµРЅРё РљРђР–Р”РЈР® С‚РµРјСѓ/РїРµСЂРµРїРёСЃРєСѓ РІ С…СЂРѕРЅРёРєРµ РїРѕ С€РєР°Р»Рµ "СЌС‚Рѕ СЂРµР°Р»СЊРЅРѕ СЃРјРµС€РЅРѕ, РґРёРєРѕ, РґСЂР°РјР°С‚РёС‡РЅРѕ РёР»Рё СЃС‚СЂР°РЅРЅРѕ" вЂ” Рё РѕСЃС‚Р°РІР»СЏР№ С‚РѕР»СЊРєРѕ С‚Рѕ, С‡С‚Рѕ РЅР°Р±СЂР°Р»Рѕ РІС‹СЃРѕРєРёР№ Р±Р°Р»Р». РџСЂРѕС…РѕРґРЅРѕР№, Р±С‹С‚РѕРІРѕР№ С‚СЂС‘Рї (РєРѕСЂРѕС‚РєРёРµ СЂРµРїР»РёРєРё Р±РµР· РїР°РЅС‡Р°, С‚РµС…РЅРёС‡РµСЃРєР°СЏ РїРµСЂРµРїРёСЃРєР°, "+1", СѓС‚РѕС‡РЅРµРЅРёСЏ) вЂ” РЅРµ С‚РµРјР° РґР»СЏ РіР°Р·РµС‚С‹, РїСЂРѕРїСѓСЃРєР°Р№.
-2. РџРѕРјРµС‚РєР° [рџ”ҐxN] вЂ” СЃРёР»СЊРЅС‹Р№ СЃРёРіРЅР°Р», С‡С‚Рѕ С‚СѓС‚ Р±С‹Р» РґРІРёР¶, РЅРѕ РЅРµ РїСЂРёРіРѕРІРѕСЂ: РµСЃР»Рё СЂРµР°РєС†РёСЏ РЅР°Р±РµР¶Р°Р»Р° РЅР° СЃРєСѓС‡РЅРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ (РЅР°РїСЂРёРјРµСЂ, РІСЃРµ РїСЂРѕСЃС‚Рѕ СЃРѕРіР»Р°С€Р°СЋС‚СЃСЏ), РЅРµ С‚СЏРЅРё СЌС‚Рѕ РІ РЅРѕРјРµСЂ С‚РѕР»СЊРєРѕ РёР·-Р·Р° С†РёС„СЂС‹. Р РЅР°РѕР±РѕСЂРѕС‚ вЂ” РїРѕ-РЅР°СЃС‚РѕСЏС‰РµРјСѓ СѓРіР°СЂРЅР°СЏ СЂРµРїР»РёРєР° Р±РµР· СЂРµР°РєС†РёР№ РґРѕСЃС‚РѕР№РЅР° РјРµСЃС‚Р°, РµСЃР»Рё РѕРЅР° СЂРµР°Р»СЊРЅРѕ СЃРјРµС€РЅР°СЏ РёР»Рё Р°Р±СЃСѓСЂРґРЅР°СЏ.
-3. РџСЂРёРѕСЂРёС‚РµС‚ С‚РµРјР°Рј, РіРґРµ РµСЃС‚СЊ: РєРѕРЅС„Р»РёРєС‚/СЃСЂР°С‡, РЅРµРѕР¶РёРґР°РЅРЅС‹Р№ РїРѕРІРѕСЂРѕС‚, С‡РµР№-С‚Рѕ РїСЂРѕРІР°Р» РёР»Рё РїРѕР±РµРґР°, Р·Р°Р±Р°РІРЅРѕРµ СЃРѕРІРїР°РґРµРЅРёРµ, С†РёС‚Р°С‚Р°, РєРѕС‚РѕСЂСѓСЋ РјРѕР¶РЅРѕ РІС‹СЂРІР°С‚СЊ РёР· РєРѕРЅС‚РµРєСЃС‚Р° Рё РїСЂРёРєРѕР»РѕС‚СЊСЃСЏ, РїСЂРѕРґРѕР»Р¶РµРЅРёРµ СЃС‚Р°СЂРѕР№ С‚РµРјС‹/РјРµРјР° (СЃРІРµСЂСЊСЃСЏ СЃ РџРђРњРЇРўР¬Р® РЅРёР¶Рµ).
-4. Р•СЃР»Рё РѕРґРЅР° Рё С‚Р° Р¶Рµ С€СѓС‚РєР°/С‚РµРјР° РІСЃРїР»С‹РІР°РµС‚ РЅРµСЃРєРѕР»СЊРєРѕ СЂР°Р· Р·Р° РЅРµРґРµР»СЋ вЂ” РЅРµ РїРµСЂРµСЃРєР°Р·С‹РІР°Р№ РµС‘ С‚СЂРёР¶РґС‹ РІ СЂР°Р·РЅС‹С… СЃРµРєС†РёСЏС…, РІС‹Р±РµСЂРё РѕРґРёРЅ Р»СѓС‡С€РёР№ РјРѕРјРµРЅС‚ Рё РїРѕРґР°Р№ РµРіРѕ РѕРґРёРЅ СЂР°Р·, РїСЂРё СЌС‚РѕРј РјРѕР¶РЅРѕ РїРѕРґСЃРІРµС‚РёС‚СЊ, С‡С‚Рѕ С‚РµРјР° СЃС‚Р°Р»Р° РјРµРјРѕРј РЅРµРґРµР»Рё.
-5. РР· Р±Р»РѕРєР° "РЎР•Р“РћР”РќРЇ / РџРћРЎР›Р•Р”РќРР• РЎРћР‘Р«РўРРЇ" Р±РµСЂРё С‚РѕР»СЊРєРѕ СЂРµР°Р»СЊРЅРѕ СЃРІРµР¶РёР№ РґРІРёР¶, Р° РЅРµ РІСЃС‘ РїРѕРґСЂСЏРґ РїСЂРѕСЃС‚Рѕ РїРѕС‚РѕРјСѓ С‡С‚Рѕ РѕРЅ СЃРІРµР¶РёР№.
+КАК ВЫБИРАТЬ, ЧТО ПОПАДЁТ В ВЫПУСК (это главное — не пересказывай подряд, а отбирай):
+1. Сначала мысленно оцени КАЖДУЮ тему/переписку в хронике по шкале "это реально смешно, дико, драматично или странно" — и оставляй только то, что набрало высокий балл. Проходной, бытовой трёп (короткие реплики без панча, техническая переписка, "+1", уточнения) — не тема для газеты, пропускай.
+2. Пометка [??xN] — сильный сигнал, что тут был движ, но не приговор: если реакция набежала на скучное сообщение (например, все просто соглашаются), не тяни это в номер только из-за цифры. И наоборот — по-настоящему угарная реплика без реакций достойна места, если она реально смешная или абсурдная.
+3. Приоритет темам, где есть: конфликт/срач, неожиданный поворот, чей-то провал или победа, забавное совпадение, цитата, которую можно вырвать из контекста и приколоться, продолжение старой темы/мема (сверься с ПАМЯТЬЮ ниже).
+4. Если одна и та же шутка/тема всплывает несколько раз за неделю — не пересказывай её трижды в разных секциях, выбери один лучший момент и подай его один раз, при этом можно подсветить, что тема стала мемом недели.
+5. Из блока "СЕГОДНЯ / ПОСЛЕДНИЕ СОБЫТИЯ" бери только реально свежий движ, а не всё подряд просто потому что он свежий.
 
-РћРҐР’РђРў РќР•Р”Р•Р›Р: РќРµ Р·Р°СЃС‚СЂРµРІР°Р№ РЅР° РѕРґРЅРѕРј РґРЅРµ вЂ” РіР°Р·РµС‚Р° РґРѕР»Р¶РЅР° РїРѕРєР°Р·С‹РІР°С‚СЊ, С‡С‚Рѕ РїСЂРѕРёСЃС…РѕРґРёР»Рѕ Рё РІ РЅР°С‡Р°Р»Рµ РЅРµРґРµР»Рё, Рё РІ СЃРµСЂРµРґРёРЅРµ, Рё СЃРµРіРѕРґРЅСЏ. Р•СЃР»Рё РєР°РєРѕР№-С‚Рѕ РґРµРЅСЊ Р±С‹Р» РѕС‚РєСЂРѕРІРµРЅРЅРѕ РїСѓСЃС‚С‹Рј Рё СЃРєСѓС‡РЅС‹Рј вЂ” СЌС‚Рѕ РЅРѕСЂРјР°Р»СЊРЅРѕ, РїСЂРѕСЃС‚Рѕ РЅРµ РІС‹РґСѓРјС‹РІР°Р№ С‚СѓРґР° РєРѕРЅС‚РµРЅС‚ Рё РЅРµ С‚СЂР°С‚СЊ РЅР° РЅРµРіРѕ РјРµСЃС‚Рѕ, Р»СѓС‡С€Рµ РѕС‚РґР°Р№ Р±РѕР»СЊС€Рµ РјРµСЃС‚Р° РґРЅСЏРј, РіРґРµ СЂРµР°Р»СЊРЅРѕ С‡С‚Рѕ-С‚Рѕ Р±С‹Р»Рѕ.
+ОХВАТ НЕДЕЛИ: Не застревай на одном дне — газета должна показывать, что происходило и в начале недели, и в середине, и сегодня. Если какой-то день был откровенно пустым и скучным — это нормально, просто не выдумывай туда контент и не трать на него место, лучше отдай больше места дням, где реально что-то было.
 
-РЎРўРР›Р¬:
-- РќРёРєР°РєРѕРіРѕ РєСЂРёРЅР¶Р°: Р±РµР· "РџСЂРёРІРµС‚, РѕР±РёС‚Р°С‚РµР»Рё СѓСЋС‚РЅРѕРіРѕ СѓРіРѕР»РєР°", "РџСЂРёСЃС‚РµРіРЅРёС‚Рµ СЂРµРјРЅРё", "Р”РѕР±СЂРѕ РїРѕР¶Р°Р»РѕРІР°С‚СЊ" Рё РїРѕРґРѕР±РЅС‹С… РІСЃС‚СѓРїР»РµРЅРёР№.
-- Р‘РµР· РєРІР°РґСЂР°С‚РЅС‹С… СЃРєРѕР±РѕРє [Р”Р°С‚Р°] РІ С‚РµРєСЃС‚Рµ.
-- РќР°С‡РёРЅР°Р№ СЃСЂР°Р·Сѓ СЃ РїРµСЂРІРѕР№ РіСЂРѕРјРєРѕР№ С‚РµРјС‹ РёР»Рё Р¶С‘СЃС‚РєРѕРіРѕ РїР°РЅС‡Р° вЂ” Р±РµР· СЂР°Р·РіРѕРЅР°.
-- Р Р°Р·Р±РёРІР°Р№ РЅР° СЂР°Р·РґРµР»С‹ СЃ РєСЂСѓС‚С‹РјРё РЅР°Р·РІР°РЅРёСЏРјРё Рё СЌРјРѕРґР·Рё, РґРѕРІРѕРґРё РєР°Р¶РґСѓСЋ РјС‹СЃР»СЊ РґРѕ РєРѕРЅС†Р°.
-- Р—Р°РІРµСЂС€Рё РІС‹РїСѓСЃРє "Р¦РёС‚Р°С‚РѕР№ РЅРµРґРµР»Рё" вЂ” РґРѕР»Р¶РЅР° Р±С‹С‚СЊ СЂРµР°Р»СЊРЅРѕ Р»СѓС‡С€Р°СЏ, Р° РЅРµ РїРµСЂРІР°СЏ РїРѕРїР°РІС€Р°СЏСЃСЏ СЂРµРїР»РёРєР°.${loreBlock}
+СТИЛЬ:
+- Никакого кринжа: без "Привет, обитатели уютного уголка", "Пристегните ремни", "Добро пожаловать" и подобных вступлений.
+- Без квадратных скобок [Дата] в тексте.
+- Начинай сразу с первой громкой темы или жёсткого панча — без разгона.
+- Разбивай на разделы с крутыми названиями и эмодзи, доводи каждую мысль до конца.
+- Заверши выпуск "Цитатой недели" — должна быть реально лучшая, а не первая попавшаяся реплика.${loreBlock}
 
-Р’РђР–РќРћ Р”Р›РЇ РћР‘РЈР§Р•РќРРЇ:
-Р’ СЃР°РјРѕРј РєРѕРЅС†Рµ РѕС‚РІРµС‚Р° РґРѕР±Р°РІСЊ 2-3 РЅРѕРІС‹С… С„Р°РєС‚Р°/РјРµРјР° Рѕ С‡РµР»Р°С… РґР»СЏ СЃРІРѕРµР№ Р±Р°Р·С‹ Р·РЅР°РЅРёР№ (Р±РµСЂРё С‚РѕР»СЊРєРѕ С‚Рѕ, С‡С‚Рѕ СЂРµР°Р»СЊРЅРѕ РІРѕР№РґС‘С‚ РІ РїСЂРёРІС‹С‡РєРё/Р»РѕСЂ СЃРµСЂРІРµСЂР°, Р° РЅРµ СЂР°Р·РѕРІСѓСЋ СЃР»СѓС‡Р°Р№РЅРѕСЃС‚СЊ):
-===РџРђРњРЇРўР¬===
-- РјРµРј РёР»Рё С‡РµСЂС‚Р° СѓС‡Р°СЃС‚РЅРёРєР°
-- РµС‰Рµ РѕРґРёРЅ С„Р°РєС‚
-===РљРћРќР•Р¦_РџРђРњРЇРўР===`;
+ВАЖНО ДЛЯ ОБУЧЕНИЯ:
+В самом конце ответа добавь 2-3 новых факта/мема о челах для своей базы знаний (бери только то, что реально войдёт в привычки/лор сервера, а не разовую случайность):
+===ПАМЯТЬ===
+- мем или черта участника
+- еще один факт
+===КОНЕЦ_ПАМЯТИ===`;
 
-  const userPrompt = `РҐСЂРѕРЅРёРєР° СЃРѕРѕР±С‰РµРЅРёР№ РїРѕ РґРЅСЏРј Р·Р° РЅРµРґРµР»СЋ (${dateRange}):\n\n${transcript}`;
+  const userPrompt = `Хроника сообщений по дням за неделю (${dateRange}):\n\n${transcript}`;
 
   let rawOutput = "";
   try {
@@ -307,13 +307,13 @@ async function generateGazetteText(
   }
 
   const newLoreFacts: string[] = [];
-  const memoryMatch = rawOutput.match(/===РџРђРњРЇРўР¬===([\s\S]*?)===РљРћРќР•Р¦_РџРђРњРЇРўР===/);
+  const memoryMatch = rawOutput.match(/===ПАМЯТЬ===([\s\S]*?)===КОНЕЦ_ПАМЯТИ===/);
   if (memoryMatch) {
     const lines = memoryMatch[1].split("\n").map((l) => l.trim()).filter(Boolean);
     newLoreFacts.push(...lines);
   }
 
-  const digestText = rawOutput.replace(/===РџРђРњРЇРўР¬===[\s\S]*?===РљРћРќР•Р¦_РџРђРњРЇРўР===/, "").trim();
+  const digestText = rawOutput.replace(/===ПАМЯТЬ===[\s\S]*?===КОНЕЦ_ПАМЯТИ===/, "").trim();
 
   return { digestText, newLoreFacts };
 }
@@ -344,8 +344,8 @@ async function publishGazetteEmbeds(botToken: string, fullText: string): Promise
   for (let i = 0; i < chunks.length; i++) {
     const title =
       chunks.length === 1
-        ? "рџ“° Р“Р°Р·РµС‚Р° СЃРµСЂРІРµСЂР° вЂў РҐСЂРѕРЅРёРєР° РЅРµРґРµР»Рё"
-        : `рџ“° Р“Р°Р·РµС‚Р° СЃРµСЂРІРµСЂР° вЂў РҐСЂРѕРЅРёРєР° РЅРµРґРµР»Рё (Р§Р°СЃС‚СЊ ${i + 1}/${chunks.length})`;
+        ? "?? Газета сервера • Хроника недели"
+        : `?? Газета сервера • Хроника недели (Часть ${i + 1}/${chunks.length})`;
 
     const res = await fetch(`${DISCORD_API}/channels/${GAZETTA_CHANNEL_ID}/messages`, {
       method: "POST",
@@ -359,7 +359,7 @@ async function publishGazetteEmbeds(botToken: string, fullText: string): Promise
             title,
             description: chunks[i],
             color: 0x5865f2,
-            footer: { text: "Р•Р¶РµРЅРµРґРµР»СЊРЅС‹Р№ РґР°Р№РґР¶РµСЃС‚" },
+            footer: { text: "Еженедельный дайджест" },
             timestamp: new Date().toISOString(),
           },
         ],
@@ -369,7 +369,7 @@ async function publishGazetteEmbeds(botToken: string, fullText: string): Promise
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      throw new Error(`РћС€РёР±РєР° РѕС‚РїСЂР°РІРєРё С‡Р°СЃС‚Рё ${i + 1} (${res.status}): ${errText.slice(0, 200)}`);
+      throw new Error(`Ошибка отправки части ${i + 1} (${res.status}): ${errText.slice(0, 200)}`);
     }
 
     if (i < chunks.length - 1) {
