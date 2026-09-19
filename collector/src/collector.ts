@@ -3845,6 +3845,7 @@ client.on('ready', async () => {
           description: 'Создать компанию на бирже',
           options: [
             { name: 'name', description: 'Название компании', type: 3, required: true },
+            { name: 'ticker', description: 'Тикер акций (2-5 латинских букв, опционально)', type: 3, required: false },
             { name: 'description', description: 'Описание компании', type: 3, required: true },
           ],
         },

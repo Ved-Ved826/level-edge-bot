@@ -35,13 +35,22 @@ export async function handleCompanyCreate(
         const nameRaw = (inter.data?.options?.find((o: any) => o.name === "name")?.value as string) || "";
         const descRaw = inter.data?.options?.find((o: any) => o.name === "description")?.value as string | undefined;
 
-        // Валидация тикера: 2-5 латинских букв
-        const ticker = tickerRaw.trim().toUpperCase();
-        if (!/^[A-Z]{2,5}$/.test(ticker)) throw new Error("Тикер должен состоять из 2-5 латинских букв (A-Z)");
-
-        // Валидация имени: сначала очистка, только потом проверка длины (3-32)
+        // Валидация имени: сначала очистка, только потом проверка длины (3-32).
+        // Выполняется раньше тикера: автогенерация тикера зависит от названия.
         const name = sanitizeText(nameRaw).trim();
         if (name.length < 3 || name.length > 32) throw new Error("Название компании должно быть от 3 до 32 символов");
+
+        // Тикер: если не передан или пустой — автогенерация из названия
+        // (только латинские буквы, верхний регистр, максимум 4 символа);
+        // если латинских букв меньше 2 (например, название на кириллице) — дефолтный "CORP".
+        let ticker = tickerRaw.trim().toUpperCase();
+        if (!ticker) {
+          ticker = (name.match(/[A-Za-z]/g) || []).join("").toUpperCase().slice(0, 4);
+          if (ticker.length < 2) ticker = "CORP";
+        }
+
+        // Валидация тикера: 2-5 латинских букв
+        if (!/^[A-Z]{2,5}$/.test(ticker)) throw new Error("Тикер должен состоять из 2-5 латинских букв (A-Z)");
 
         // Описание: очистка + обрезка до 200 символов
         const description = descRaw ? sanitizeText(descRaw).trim().slice(0, 200) : "";
