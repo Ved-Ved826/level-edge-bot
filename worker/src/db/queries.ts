@@ -366,19 +366,19 @@ export async function getUserCoins(db: any, userId: string, guildId: string): Pr
 
 export async function updateCoins(db: any, userId: string, guildId: string, coinChange: number): Promise<number> {
   try {
+    // Q-1: атомарный UPDATE без чтения-изменения-записи —
+    // параллельные вызовы больше не затирают монеты друг друга
     const res = await db.execute({
+      sql: "UPDATE users SET coins = MAX(0, coins + ?) WHERE user_id = ? AND guild_id = ?",
+      args: [coinChange, userId, guildId],
+    });
+    if (!res.rowsAffected) return 0;
+    // Возвращаем итоговый баланс
+    const updated = await db.execute({
       sql: "SELECT coins FROM users WHERE user_id = ? AND guild_id = ?",
       args: [userId, guildId],
     });
-    if (res.rows.length === 0) return 0;
-    const currentCoins = (res.rows[0].coins as number) || 0;
-    const newCoins = currentCoins + coinChange;
-    const finalCoins = Math.max(0, newCoins);
-    await db.execute({
-      sql: "UPDATE users SET coins = ? WHERE user_id = ? AND guild_id = ?",
-      args: [finalCoins, userId, guildId],
-    });
-    return finalCoins;
+    return (updated.rows[0]?.coins as number) || 0;
   } catch (err) {
     console.error("[Duel] Error updating coins:", err);
     return 0;

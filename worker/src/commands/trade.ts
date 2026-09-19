@@ -28,10 +28,18 @@ export async function handleTrade(
       data: { content: "❌ Укажите ID предмета для продажи!", flags: 64 },
     });
   }
-  if (priceOption === undefined || priceOption === null) {
+  // M-4: цена должна быть целым неотрицательным числом (0 для подарка)
+  if (!Number.isInteger(priceOption) || priceOption < 0) {
     return Response.json({
       type: 4,
-      data: { content: "❌ Укажите цену в монетах! (0 для подарка)", flags: 64 },
+      data: { content: "❌ Укажите целую неотрицательную цену в монетах! (0 для подарка)", flags: 64 },
+    });
+  }
+  // M-4: запрет сделки с самим собой
+  if (targetOption === uid) {
+    return Response.json({
+      type: 4,
+      data: { content: "❌ Нельзя совершить сделку с самим собой!", flags: 64 },
     });
   }
   ctx.waitUntil(

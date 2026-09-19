@@ -3224,25 +3224,29 @@ async function updateQuestProgress(db: any, userId: string, guildId: string, que
 
     // Проверяем достижение цели
     if (current >= target) {
-      // Начисляем XP
-      await db.execute({
-        sql: `UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?`,
-        args: [rewardXp, userId, guildId],
-      });
-
-      // Начисляем монеты за выполнение квеста (+100 🪙)
-      await db.execute({
-        sql: `UPDATE users SET coins = coins + 100 WHERE user_id = ? AND guild_id = ?`,
-        args: [userId, guildId],
-      });
-
-      // Помечаем как выполненный
-      await db.execute({
-        sql: `UPDATE user_quest_progress SET completed_at = ? WHERE user_id = ? AND guild_id = ? AND quest_daily_id = ?`,
+      // M1: атомарная пометка выполнения (условие completed_at IS NULL) —
+      // награда начисляется ТОЛЬКО если этот вызов выиграл гонку за выполнение
+      const claimResult = await db.execute({
+        sql: `UPDATE user_quest_progress SET completed_at = ?
+              WHERE user_id = ? AND guild_id = ? AND quest_daily_id = ? AND completed_at IS NULL`,
         args: [Date.now(), userId, guildId, questDailyId],
       });
 
-      console.log(`[Quest] User ${userId} completed quest ${questDailyId} - +${rewardXp} XP, +100 🪙`);
+      if ((claimResult.rowsAffected as number) === 1) {
+        // Начисляем XP
+        await db.execute({
+          sql: `UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?`,
+          args: [rewardXp, userId, guildId],
+        });
+
+        // Начисляем монеты за выполнение квеста (+100 🪙)
+        await db.execute({
+          sql: `UPDATE users SET coins = coins + 100 WHERE user_id = ? AND guild_id = ?`,
+          args: [userId, guildId],
+        });
+
+        console.log(`[Quest] User ${userId} completed quest ${questDailyId} - +${rewardXp} XP, +100 🪙`);
+      }
     }
   } catch (err) {
     console.error('[Quest] Error updating progress:', err);
@@ -3584,21 +3588,19 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
       }
 
       for (const it of companies) {
-        const tx = await db.transaction('write');
         try {
-          // Перечитываем свежие данные компании внутри транзакции
-          const companyResult = await tx.execute({
+          // C2: интерактивные транзакции недоступны в @libsql/client/web —
+          // заменяем на атомарный batch с условными UPDATE
+          // (balance >= grant, last_growth_day < todayStr)
+          const companyResult = await db.execute({
             sql: 'SELECT treasury FROM companies WHERE id = ?',
             args: [it.id],
           });
-          if (companyResult.rows.length === 0) {
-            await tx.commit();
-            continue;
-          }
+          if (companyResult.rows.length === 0) continue;
           const freshTreasury = companyResult.rows[0].treasury;
 
           // Перечитываем свежий баланс резерва (0, если строки нет)
-          const reserveResult = await tx.execute({
+          const reserveResult = await db.execute({
             sql: 'SELECT balance FROM server_reserve WHERE guild_id = ?',
             args: [guildId],
           });
@@ -3609,39 +3611,44 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
           const grant = Math.min(desired, Number(reserveBalance));
 
           if (grant > 0) {
-            // Сперва атомарно списываем из резерва (только если средств хватает)
-            const deductResult = await tx.execute({
-              sql: 'UPDATE server_reserve SET balance = balance - ? WHERE guild_id = ? AND balance >= ?',
-              args: [grant, guildId, grant],
-            });
-
-            if (deductResult.rowsAffected === 1) {
-              await tx.execute({
-                sql: 'UPDATE companies SET treasury = treasury + ?, last_growth_day = ? WHERE id = ?',
-                args: [grant, todayStr, it.id],
-              });
+            // Атомарный batch (одна транзакция, последовательное выполнение):
+            // 1) компания кредитуется только если сегодня ещё не росла И в резерве хватает средств
+            // 2) резерв списывается только если компания реально была прокредитована (маркер last_growth_day = todayStr)
+            const writeResults = await db.batch(
+              [
+                {
+                  sql: `UPDATE companies
+                        SET treasury = treasury + ?, last_growth_day = ?
+                        WHERE id = ?
+                          AND (last_growth_day IS NULL OR last_growth_day < ?)
+                          AND ? <= COALESCE((SELECT balance FROM server_reserve WHERE guild_id = ?), 0)`,
+                  args: [grant, todayStr, it.id, todayStr, grant, guildId],
+                },
+                {
+                  sql: `UPDATE server_reserve
+                        SET balance = balance - ?
+                        WHERE guild_id = ?
+                          AND balance >= ?
+                          AND (SELECT last_growth_day FROM companies WHERE id = ?) = ?`,
+                  args: [grant, guildId, grant, it.id, todayStr],
+                },
+              ],
+              'write'
+            );
+            if ((writeResults[0].rowsAffected as number) === 1 && (writeResults[1].rowsAffected as number) === 1) {
               console.log(`[Growth] Company ${it.id} in guild ${guildId}: treasury +${grant}`);
-            } else {
-              // Резерв изменился параллельно — только фиксируем дату роста
-              await tx.execute({
-                sql: 'UPDATE companies SET last_growth_day = ? WHERE id = ?',
-                args: [todayStr, it.id],
-              });
             }
+            // Иначе — гонка/недостаток средств: ничего не изменилось,
+            // идемпотентно повторится на следующем тике
           } else {
             // Резерв пуст или рост 0 — идемпотентно фиксируем дату
-            await tx.execute({
-              sql: 'UPDATE companies SET last_growth_day = ? WHERE id = ?',
-              args: [todayStr, it.id],
+            await db.execute({
+              sql: 'UPDATE companies SET last_growth_day = ? WHERE id = ? AND (last_growth_day IS NULL OR last_growth_day < ?)',
+              args: [todayStr, it.id, todayStr],
             });
           }
-
-          await tx.commit();
         } catch (e) {
-          await tx.rollback().catch(() => {});
           console.error('[Growth] Error processing company', it.id, e);
-        } finally {
-          tx.close();
         }
       }
     }
@@ -3715,15 +3722,19 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 
         console.log(`[Liquidation] Season changed for guild ${guildId}: ${lastSeasonId} -> ${currentSeasonId}, liquidating companies...`);
 
-        const tx = await db.transaction('write');
         let committed = false;
         try {
+          // C2: интерактивные транзакции недоступны в @libsql/client/web —
+          // предрасчитываем все выплаты и выполняем их одним атомарным db.batch
+          // (ошибка любой записи откатывает batch целиком)
           // Компании гильдии
-          const companiesResult = await tx.execute({
+          const companiesResult = await db.execute({
             sql: 'SELECT * FROM companies WHERE guild_id = ?',
             args: [guildId],
           });
           const companies = companiesResult.rows || [];
+
+          const batchStmts: { sql: string; args: any[] }[] = [];
 
           for (const comp of companies) {
             const circulating = 100 - Number(comp.available_shares);
@@ -3732,7 +3743,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 
             if (circulating > 0 && treasury > 0) {
               // Держатели акций компании
-              const holdersResult = await tx.execute({
+              const holdersResult = await db.execute({
                 sql: 'SELECT user_id, shares_count FROM company_shares WHERE company_id = ?',
                 args: [comp.id],
               });
@@ -3740,13 +3751,11 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
               for (const s of holdersResult.rows || []) {
                 const payout = Math.floor(Number(s.shares_count) * treasury / circulating);
                 if (payout > 0) {
-                  const userUpd = await tx.execute({
+                  batchStmts.push({
                     sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
                     args: [payout, String(s.user_id), guildId],
                   });
-                  if (userUpd.rowsAffected === 1) {
-                    distributed += payout;
-                  }
+                  distributed += payout;
                 }
               }
             }
@@ -3754,7 +3763,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
             // Остаток от floor-округления и невыплаченные суммы — в резерв сервера
             const remainder = treasury - distributed;
             if (remainder > 0) {
-              await tx.execute({
+              batchStmts.push({
                 sql: 'INSERT INTO server_reserve (guild_id, balance) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET balance = balance + ?',
                 args: [guildId, remainder, remainder],
               });
@@ -3763,19 +3772,16 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 
           // Очистка таблиц компаний гильдии.
           // server_reserve НЕ обнуляем — баланс резерва переходит в новый сезон.
-          await tx.execute({ sql: 'DELETE FROM company_crises WHERE guild_id = ?', args: [guildId] });
-          await tx.execute({ sql: 'DELETE FROM company_shares WHERE guild_id = ?', args: [guildId] });
-          await tx.execute({ sql: 'DELETE FROM companies WHERE guild_id = ?', args: [guildId] });
+          batchStmts.push({ sql: 'DELETE FROM company_crises WHERE guild_id = ?', args: [guildId] });
+          batchStmts.push({ sql: 'DELETE FROM company_shares WHERE guild_id = ?', args: [guildId] });
+          batchStmts.push({ sql: 'DELETE FROM companies WHERE guild_id = ?', args: [guildId] });
 
-          await tx.commit();
+          await db.batch(batchStmts, 'write');
           committed = true;
-          console.log(`[Liquidation] Guild ${guildId}: companies liquidated, tx committed`);
+          console.log(`[Liquidation] Guild ${guildId}: companies liquidated, batch committed`);
         } catch (e) {
-          await tx.rollback().catch(() => {});
           console.error('[Liquidation] Error in guild', guildId, e);
           // Маркер НЕ обновляем — ликвидация будет повторена на следующем тике
-        } finally {
-          tx.close();
         }
 
         // Отметка о завершении сезона — СТРОГО после успешного tx.commit()
@@ -3985,6 +3991,24 @@ client.on('ready', async () => {
       console.error('[Liquidation] Interval error:', e);
     }
   }, 60 * 60 * 1000); // Каждый час
+
+  // ============================================
+  // M11: таймер проверки зависших дуэлей (каждые 30 секунд).
+  // Pending-дуэли старше 5 минут истекают, сообщение редактируется.
+  // ============================================
+  console.log('[Duel] Starting expired duels ticker...');
+  try {
+    await checkExpiredDuels(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[Duel] Startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await checkExpiredDuels(db, client);
+    } catch (e) {
+      console.error('[Duel tick]', e);
+    }
+  }, 30 * 1000);
 
   // Еженедельная AI-газета (каждое воскресенье в 20:00 по Владивостоку)
   console.log('[Gazeta] Starting weekly digest scheduler...');
@@ -4265,7 +4289,10 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
           joinedAt = joinedAt * 1000;
         }
 
-        const elapsedMs = now - joinedAt;
+        // C4: ограничиваем начисление за одну сессию 4 часами
+        // (защита от зависшего voice_joined_at, если событие выхода потерялось)
+        const MAX_SESSION_MS = 4 * 60 * 60 * 1000;
+        const elapsedMs = Math.max(0, Math.min(now - joinedAt, MAX_SESSION_MS));
         const elapsedSeconds = Math.floor(elapsedMs / 1000);
         const wasMuted = joinedAtRow.rows[0].voice_segment_muted as number;
 

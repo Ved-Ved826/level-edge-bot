@@ -174,9 +174,9 @@ export async function handleMarket(
             });
             return;
           }
-          // C13: цена должна быть строго положительной. Лот с отрицательной ценой
-          // = печать монет (покупатель получал деньги вместо списания).
-          if (priceOption <= 0) {
+          // C13/M-7: цена должна быть целым строго положительным числом.
+          // Дробная или отрицательная цена = печать монет / поломка расчётов.
+          if (!Number.isInteger(priceOption) || priceOption <= 0) {
             await fetch(webhookUrl, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -264,6 +264,20 @@ export async function handleMarket(
           const sellerId = listing.seller_id as string;
           const inventoryId = listing.inventory_id as number;
           const price = listing.price as number;
+
+          // M-6: запрет покупки собственного лота
+          if (sellerId === uid) {
+            await fetch(webhookUrl, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                content: "❌ Нельзя покупать собственный лот!",
+                flags: 64,
+              }),
+            });
+            return;
+          }
+
           // Проверить баланс покупателя
           const buyerRes = await db.execute({
             sql: 'SELECT coins FROM users WHERE user_id = ? AND guild_id = ?',
@@ -321,7 +335,25 @@ export async function handleMarket(
             });
             return;
           }
-          // Передача монет и предмета
+          // M-1/M-2: безопасный захват лота — атомарный DELETE до любых переводов.
+          // Два параллельных покупателя: только один получит rowsAffected === 1.
+          const claim = await db.execute({
+            sql: 'DELETE FROM market_listings WHERE id = ? AND guild_id = ?',
+            args: [itemOption, gid],
+          });
+          if (!claim.rowsAffected) {
+            await fetch(webhookUrl, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                content: "⚠️ Лот уже куплен другим игроком!",
+                flags: 64,
+              }),
+            });
+            return;
+          }
+
+          // Передача монет
           // C13: списание покупателя атомарное — с проверкой баланса в самом UPDATE.
           // Два параллельных покупателя больше не могут оба пройти проверку выше.
           const buyerDeduct = await db.execute({
@@ -329,6 +361,11 @@ export async function handleMarket(
             args: [price, uid, gid, price],
           });
           if (!buyerDeduct.rowsAffected) {
+            // M-1: не удалось списать монеты — возвращаем лот на рынок
+            await db.execute({
+              sql: 'INSERT INTO market_listings (guild_id, seller_id, inventory_id, price, created_at) VALUES (?, ?, ?, ?, ?)',
+              args: [gid, sellerId, inventoryId, price, listing.created_at as number],
+            });
             await fetch(webhookUrl, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
@@ -343,15 +380,28 @@ export async function handleMarket(
             sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
             args: [price, sellerId, gid],
           });
-          await db.execute({
-            sql: 'UPDATE user_inventory SET user_id = ? WHERE id = ? AND guild_id = ?',
-            args: [uid, inventoryId, gid],
+          // Передача предмета — только если он всё ещё у продавца
+          const transferRes = await db.execute({
+            sql: 'UPDATE user_inventory SET user_id = ? WHERE id = ? AND guild_id = ? AND user_id = ?',
+            args: [uid, inventoryId, gid, sellerId],
           });
-          // Удалить лот
-          await db.execute({
-            sql: 'DELETE FROM market_listings WHERE id = ? AND guild_id = ?',
-            args: [itemOption, gid],
-          });
+          if (!transferRes.rowsAffected) {
+            // M-1: предмет исчез — возврат монет покупателю (лот уже погашен захватом)
+            await db.execute({
+              sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+              args: [price, uid, gid],
+            });
+            await fetch(webhookUrl, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                content: "⚠️ Предмет уже продан или удалён! Монеты возвращены.",
+                flags: 64,
+              }),
+            });
+            return;
+          }
+          // Лот удалён атомарным DELETE-захватом выше — повторный DELETE не нужен
           const result = {
             embeds: [{
               title: "🎉 Сделка успешна!",

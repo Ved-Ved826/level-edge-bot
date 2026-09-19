@@ -179,10 +179,6 @@ export async function handleDivest(
           const sharesCount = Number(sRes.rows[0].shares_count);
           if (sharesCount < amount) throw new Error("У вас нет столько акций");
 
-          // Контрольный пакет владельца не продаётся
-          if (String(c.owner_id) === String(sellerId) && sharesCount - amount < 51) {
-            throw new Error("Владелец не может размыть контрольный пакет: должно остаться минимум 51 акция");
-          }
 
           const treasury = Number(c.treasury);
           const circulating = 100 - Number(c.available_shares);
@@ -196,12 +192,22 @@ export async function handleDivest(
           // Проверка обеспечения казны
           if (treasury < basePayout) throw new Error("Недостаточно средств в казне");
 
-          // Списание акций у продавца
+          // B-1: контрольный пакет владельца защищён условием прямо в UPDATE —
+          // для владельца списание допустимо только если останется минимум 51 акция.
+          // Проверка и списание атомарны, гонки между параллельными /divest исключены.
+          const isOwner = String(c.owner_id) === String(sellerId);
           const decRes = await tx.execute({
-            sql: "UPDATE company_shares SET shares_count = shares_count - ? WHERE user_id = ? AND company_id = ? AND shares_count >= ?",
-            args: [amount, sellerId, companyId, amount],
+            sql: `UPDATE company_shares
+                  SET shares_count = shares_count - ?
+                  WHERE user_id = ? AND company_id = ? AND shares_count >= ?
+                    AND (shares_count - ? >= 51 OR ? = 0)`,
+            args: [amount, sellerId, companyId, amount, amount, isOwner ? 0 : 1],
           });
-          if (!decRes.rowsAffected || decRes.rowsAffected === 0) throw new Error("Не удалось списать акции");
+          if (!decRes.rowsAffected || decRes.rowsAffected === 0) {
+            throw new Error(isOwner
+              ? "Владелец не может размыть контрольный пакет: должно остаться минимум 51 акция"
+              : "Не удалось списать акции");
+          }
 
           // Удаление пустой записи
           await tx.execute({
