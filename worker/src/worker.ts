@@ -59,6 +59,7 @@ import { handleTestGazeta } from "./commands/gazeta";
 import { handleCourt } from "./commands/court";
 import { handleCompanyCreate } from "./commands/company";
 import { handlePortfolio, handleStocks } from "./commands/stocks";
+import { handleInvest, handleDivest } from "./commands/invest";
 
 
 
@@ -1256,6 +1257,12 @@ export default {
 
       // 33. Слэш-команда /portfolio (Биржа компаний — портфель игрока, read-only)
       if (inter.type === 2 && inter.data?.name === "portfolio") { return handlePortfolio(inter as CommandInteraction, env, ctx); }
+
+      // 34. Слэш-команда /invest ticker amount (Биржа компаний — покупка акций)
+      if (inter.type === 2 && inter.data?.name === "invest") { return handleInvest(inter as CommandInteraction, env, ctx); }
+
+      // 35. Слэш-команда /divest ticker amount (Биржа компаний — продажа акций)
+      if (inter.type === 2 && inter.data?.name === "divest") { return handleDivest(inter as CommandInteraction, env, ctx); }
 
 
 
