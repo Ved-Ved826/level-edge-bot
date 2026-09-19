@@ -57,6 +57,7 @@ import { handleCardCustomize, handleCardSelectTheme, handleShop } from "./comman
 import { handleGiveRelic, handleTrade } from "./commands/trade";
 import { handleTestGazeta } from "./commands/gazeta";
 import { handleCourt } from "./commands/court";
+import { handleCompanyCreate } from "./commands/company";
 
 
 
@@ -1245,6 +1246,9 @@ export default {
 
       // 30. Слэш-команда /court target:@user reason:text (ИИ-суд по последним сообщениям канала)
       if (inter.type === 2 && inter.data?.name === "court") { return handleCourt(inter as CommandInteraction, env, ctx); }
+
+      // 31. Слэш-команда /company-create name:text ticker:text [description:text] (Биржа компаний)
+      if (inter.type === 2 && inter.data?.name === "company-create") { return handleCompanyCreate(inter as CommandInteraction, env, ctx); }
 
 
 

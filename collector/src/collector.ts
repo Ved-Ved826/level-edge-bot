@@ -1682,6 +1682,86 @@ async function migrateSchema() {
       });
       console.log('[Migrate] Created table: guild_settings');
     }
+
+    // ============================================
+    // Миграция 022: Таблицы биржи компаний
+    // (server_reserve, companies, company_shares, company_crises)
+    // ============================================
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS server_reserve (
+        guild_id TEXT PRIMARY KEY,
+        balance INTEGER NOT NULL DEFAULT 0
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        ticker TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        treasury INTEGER NOT NULL DEFAULT 500,
+        total_shares INTEGER NOT NULL DEFAULT 100,
+        available_shares INTEGER NOT NULL DEFAULT 49,
+        last_growth_day TEXT DEFAULT NULL,
+        frozen INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        UNIQUE(guild_id, ticker),
+        UNIQUE(guild_id, owner_id)
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS company_shares (
+        user_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        company_id INTEGER NOT NULL,
+        shares_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(user_id, company_id)
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS company_crises (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_id INTEGER NOT NULL,
+        guild_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL DEFAULT 'finance',
+        scenario_text TEXT NOT NULL DEFAULT '',
+        player_reply TEXT DEFAULT NULL,
+        outcome_text TEXT DEFAULT NULL,
+        treasury_delta INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_companies_guild ON companies(guild_id)',
+      args: [],
+    });
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_shares_guild_user ON company_shares(guild_id, user_id)',
+      args: [],
+    });
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_crises_status_exp ON company_crises(status, expires_at)',
+      args: [],
+    });
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_crises_company ON company_crises(company_id, status)',
+      args: [],
+    });
+    console.log('[Migrate] Exchange tables ensured (server_reserve, companies, company_shares, company_crises)');
   } catch (err) {
     console.error('[Migrate] Error during schema migration:', err);
   }
