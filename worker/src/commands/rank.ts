@@ -117,7 +117,8 @@ export function buildRankTodayEmbed(userId: string, username: string, activity: 
   const msgc = activity.messages_count;
   const voicesec = activity.voice_seconds;
   const vh = Math.floor(voicesec / 3600);
-  const vm = Math.floor(voicesec / 60);
+  const vm = Math.floor((voicesec % 3600) / 60);
+  const vs = voicesec % 60;
   const streakDays = streakData.streakDays;
   const streakFreezes = streakData.streakFreezes;
   // Формирование текста множителя XP
@@ -134,7 +135,7 @@ export function buildRankTodayEmbed(userId: string, username: string, activity: 
         color: 0x5865f2,
         fields: [
           { name: "💬 Сообщений", value: `**${msgc.toLocaleString()}**`, inline: true },
-          { name: "🎙 В голосовом канале", value: `**${vm} мин.** (${vh} ч. ${vm % 60} мин.)`, inline: true },
+          { name: "🎙 В голосовом канале", value: vh > 0 ? `**${vh} ч. ${vm} мин. ${vs} сек.**` : `**${vm} мин. ${vs} сек.**`, inline: true },
           { name: "🎯 Выполнено квестов", value: `**${questProgress.completed} / ${questProgress.total}**`, inline: true },
           { name: "🔥 Стрик активности", value: `**${streakDays} дн.** (${multiplierText}) | 🧊 Заморозок: **${streakFreezes}**`, inline: true },
           { name: "🪙 Баланс монет", value: `**${(coins || 0).toLocaleString()}**`, inline: true },
