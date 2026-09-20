@@ -4897,6 +4897,59 @@ client.on('ready', async () => {
       } catch (plotErr) {
         console.error(`[City] Failed to register slash command plot in guild ${guild.id}:`, plotErr);
       }
+
+      // ============================================
+      // Слэш-команды /build и /upgrade (Город — Шаг 3)
+      // type 3 = STRING, type 4 = INTEGER
+      // ============================================
+      const buildCommand: any = {
+        name: 'build',
+        description: 'Город: построить здание на участке',
+        options: [
+          { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+          {
+            name: 'type', description: 'Тип бизнеса', type: 3, required: true,
+            choices: [
+              { name: '⛏️ Шахта', value: 'mine' },
+              { name: '🌾 Ферма', value: 'farm' },
+              { name: '⛽ АЗС', value: 'gas_station' },
+              { name: '🛒 Супермаркет', value: 'shop' },
+              { name: '🍽️ Ресторан', value: 'restaurant' },
+              { name: '🎰 Казино', value: 'casino' },
+              { name: '🏛️ Банк', value: 'bank' },
+              { name: '⚓ Морской порт', value: 'port' }
+            ]
+          }
+        ],
+      };
+
+      try {
+        const existingBuild = guild.commands.cache.find((c: any) => c.name === 'build');
+        if (!existingBuild) {
+          await guild.commands.create(buildCommand);
+          console.log(`[City] Slash command build registered in guild ${guild.id}`);
+        }
+      } catch (buildErr) {
+        console.error(`[City] Failed to register slash command build in guild ${guild.id}:`, buildErr);
+      }
+
+      const upgradeCommand: any = {
+        name: 'upgrade',
+        description: 'Город: улучшить здание на участке (до уровня 3)',
+        options: [
+          { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true }
+        ],
+      };
+
+      try {
+        const existingUpgrade = guild.commands.cache.find((c: any) => c.name === 'upgrade');
+        if (!existingUpgrade) {
+          await guild.commands.create(upgradeCommand);
+          console.log(`[City] Slash command upgrade registered in guild ${guild.id}`);
+        }
+      } catch (upgradeErr) {
+        console.error(`[City] Failed to register slash command upgrade in guild ${guild.id}:`, upgradeErr);
+      }
     }
   } catch (err) {
     console.error('[Gazeta] Failed to register slash command test-gazeta:', err);
