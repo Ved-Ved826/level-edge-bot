@@ -47,6 +47,7 @@ import { handleInvest, handleDivest } from "./commands/invest";
 import { handleExchangeSetup } from "./commands/exchange-setup";
 import { handleExchangeTop } from "./commands/exchange-top";
 import { handleCrisisResolve } from "./commands/crisis";
+import { handlePlotCommand } from "./commands/plot";
 
 
 
@@ -991,6 +992,9 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
       // 37. Кнопки кризисов компаний (Type 3 — решение принимает только владелец)
       if (inter.type === 3 && inter.data?.custom_id?.startsWith("crisis:")) { return handleCrisisResolve(inter as ButtonInteraction, env, ctx); }
+
+      // 39. Слэш-команда /plot info|buy|sell (Город — Шаг 2)
+      if (inter.type === 2 && inter.data?.name === "plot") { return handlePlotCommand(inter as CommandInteraction, env, ctx); }
 
 
 

@@ -4850,6 +4850,53 @@ client.on('ready', async () => {
           console.error(`[Exchange] Failed to register slash command ${cmd.name} in guild ${guild.id}:`, cmdErr);
         }
       }
+
+      // ============================================
+      // Слэш-команда /plot (Город — Шаг 2: info, buy, sell)
+      // type 1 = SUB_COMMAND, type 3 = STRING, type 4 = INTEGER
+      // ============================================
+      const plotCommand: any = {
+        name: 'plot',
+        description: 'Город: участки недвижимости',
+        options: [
+          {
+            name: 'info',
+            description: 'Информация об участке',
+            type: 1,
+            options: [
+              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+            ],
+          },
+          {
+            name: 'buy',
+            description: 'Купить участок (себе или компании)',
+            type: 1,
+            options: [
+              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+              { name: 'company', description: 'Тикер компании-покупателя (опционально)', type: 3, required: false },
+            ],
+          },
+          {
+            name: 'sell',
+            description: 'Выставить участок на продажу (price=0 — снять с продажи)',
+            type: 1,
+            options: [
+              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+              { name: 'price', description: 'Цена в 🪙 (0 — снять с продажи)', type: 4, required: true },
+            ],
+          },
+        ],
+      };
+
+      try {
+        const existingPlot = guild.commands.cache.find((c: any) => c.name === 'plot');
+        if (!existingPlot) {
+          await guild.commands.create(plotCommand);
+          console.log(`[City] Slash command plot registered in guild ${guild.id}`);
+        }
+      } catch (plotErr) {
+        console.error(`[City] Failed to register slash command plot in guild ${guild.id}:`, plotErr);
+      }
     }
   } catch (err) {
     console.error('[Gazeta] Failed to register slash command test-gazeta:', err);
