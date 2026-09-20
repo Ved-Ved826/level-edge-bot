@@ -49,6 +49,7 @@ import { handleExchangeTop } from "./commands/exchange-top";
 import { handleCrisisResolve } from "./commands/crisis";
 import { handlePlotCommand } from "./commands/plot";
 import { handleBuildCommand, handleUpgradeCommand } from "./commands/build";
+import { handleAuctionCommand } from "./commands/auction";
 
 
 
@@ -1002,6 +1003,9 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
       // 41. Слэш-команда /upgrade plot_id (Город — Шаг 3: апгрейд здания)
       if (inter.type === 2 && inter.data?.name === "upgrade") { return handleUpgradeCommand(inter as CommandInteraction, env, ctx); }
+
+      // 42. Слэш-команда /auction list|bid (Город — Шаг 4: аукционы участков)
+      if (inter.type === 2 && inter.data?.name === "auction") { return handleAuctionCommand(inter as CommandInteraction, env, ctx); }
 
 
 

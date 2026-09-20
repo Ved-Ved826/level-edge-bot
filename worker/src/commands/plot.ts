@@ -183,6 +183,19 @@ async function plotBuy(
     return errEmbed("Участок занят и не выставлен на продажу.");
   }
 
+  // Пока на занятый участок идут ставки аукциона — прямая покупка недоступна
+  if (!isFree) {
+    const activeAuctionRes = await db.execute({
+      sql: `SELECT id FROM plot_auctions
+            WHERE guild_id = ? AND plot_id = ? AND status = 'active' AND expires_at > ?
+            LIMIT 1`,
+      args: [guildId, plotId, Date.now()],
+    });
+    if (activeAuctionRes.rows.length > 0) {
+      return errEmbed("На этот участок уже идут ставки в аукционе. Используйте /auction bid plot_id amount.");
+    }
+  }
+
   const price = isFree ? Math.max(0, Number(row.price) || 0) : forSale;
 
   // ---------- Покупатель: компания или игрок ----------
@@ -375,20 +388,98 @@ async function plotSell(
     ownerId = String(row.owner_id);
   }
 
+  const nowMs = Date.now();
+  const AUCTION_DURATION_MS = 24 * 60 * 60 * 1000; // аукцион длится 24 часа
+
+  // Активный аукцион на этом участке (expires_at хранится в миллисекундах)
+  const activeAuctionRes = await db.execute({
+    sql: `SELECT id, highest_bid, highest_bidder_id
+          FROM plot_auctions
+          WHERE guild_id = ? AND plot_id = ? AND status = 'active' AND expires_at > ?
+          ORDER BY id DESC LIMIT 1`,
+    args: [guildId, plotId, nowMs],
+  });
+  const activeAuction = activeAuctionRes.rows[0] as
+    | { id: number; highest_bid: number; highest_bidder_id: string | null }
+    | undefined;
+
+  if (price > 0) {
+    if (activeAuction) {
+      return errEmbed(
+        `На этом участке уже идёт аукцион (текущая ставка ${fmt(Number(activeAuction.highest_bid) || 0)} 🪙). ` +
+          "Дождитесь завершения или снимите участок с продажи (/plot sell plot_id price:0)."
+      );
+    }
+
+    // Фиксируем стартовую цену за владельцем (guard по владельцу)
+    const update = await db.execute({
+      sql: "UPDATE city_plots SET for_sale_price = ? WHERE guild_id = ? AND id = ? AND owner_type = ? AND owner_id = ?",
+      args: [price, guildId, plotId, ownerType, ownerId],
+    });
+
+    if (!update.rowsAffected || update.rowsAffected === 0) {
+      return errEmbed("Не удалось запустить аукцион. Попробуйте ещё раз.");
+    }
+
+    // Стартовая ставка = цена продавца, перебивать можно только вверх.
+    // expires_at и created_at — в МИЛЛИСЕКУНДАХ (Date.now()): в этом формате
+    // их читают /auction (list/bid) и processExpiredAuctions в collector.
+    await db.execute({
+      sql: `INSERT INTO plot_auctions (guild_id, plot_id, highest_bid, status, expires_at, created_at)
+            VALUES (?, ?, ?, 'active', ?, ?)`,
+      args: [guildId, plotId, price, nowMs + AUCTION_DURATION_MS, nowMs],
+    });
+
+    const expiresAtSec = Math.floor((nowMs + AUCTION_DURATION_MS) / 1000);
+    const description =
+      `🗺️ Участок #${plotId} — **${catalog.title}** выставлен на аукцион.\n` +
+      `💰 Стартовая цена: **${fmt(price)} 🪙** (ставки строго выше)\n` +
+      `⏳ Аукцион завершится: <t:${expiresAtSec}:R>\n` +
+      `🔨 Ставка: /auction bid plot_id:${plotId} amount:<сумма>`;
+
+    return { embeds: [{ title: "🔨 Аукцион запущен", description, color: COLOR_SUCCESS }] };
+  }
+
+  // price = 0 — снять с продажи: отменяем активный аукцион и возвращаем ставку лидеру
+  if (activeAuction) {
+    const leaderId = activeAuction.highest_bidder_id ? String(activeAuction.highest_bidder_id) : null;
+    const leaderBid = Number(activeAuction.highest_bid) || 0;
+
+    const stmts: { sql: string; args: any[] }[] = [
+      {
+        sql: "UPDATE plot_auctions SET status = 'cancelled' WHERE id = ? AND status = 'active'",
+        args: [Number(activeAuction.id)],
+      },
+      {
+        sql: "UPDATE city_plots SET for_sale_price = NULL WHERE guild_id = ? AND id = ?",
+        args: [guildId, plotId],
+      },
+    ];
+    if (leaderId && leaderBid > 0) {
+      // Ставки принимаются только от пользователей — возврат лидеру в users.coins
+      stmts.push({
+        sql: "UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?",
+        args: [leaderBid, leaderId, guildId],
+      });
+    }
+    await db.batch(stmts, "write");
+
+    const description =
+      `🗺️ Участок #${plotId} — **${catalog.title}** снят с продажи, аукцион отменён.` +
+      (leaderId && leaderBid > 0 ? `\n↩️ <@${leaderId}> вернули ставку (**${fmt(leaderBid)} 🪙**).` : "");
+    return { embeds: [{ title: "🏷️ Готово", description, color: COLOR_SUCCESS }] };
+  }
+
   const update = await db.execute({
-    sql: "UPDATE city_plots SET for_sale_price = ? WHERE guild_id = ? AND id = ? AND owner_type = ? AND owner_id = ?",
-    args: [price > 0 ? price : null, guildId, plotId, ownerType, ownerId],
+    sql: "UPDATE city_plots SET for_sale_price = NULL WHERE guild_id = ? AND id = ? AND owner_type = ? AND owner_id = ?",
+    args: [guildId, plotId, ownerType, ownerId],
   });
 
   if (!update.rowsAffected || update.rowsAffected === 0) {
     return errEmbed("Не удалось обновить участок. Попробуйте ещё раз.");
   }
 
-  const description =
-    price > 0
-      ? `🗺️ Участок #${plotId} — **${catalog.title}** выставлен на продажу за **${fmt(price)} 🪙**.`
-      : `🗺️ Участок #${plotId} — **${catalog.title}** снят с продажи.`;
-
+  const description = `🗺️ Участок #${plotId} — **${catalog.title}** снят с продажи.`;
   return { embeds: [{ title: "🏷️ Готово", description, color: COLOR_SUCCESS }] };
 }
 

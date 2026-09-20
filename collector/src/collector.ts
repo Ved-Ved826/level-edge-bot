@@ -149,6 +149,288 @@ async function ensureCityPlots(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
+// Экономика городских построек (Шаг 4 - Экономика города)
+// 8 типов построек: суточный доход и недельный налог по уровням 1-3.
+// Значения синхронизированы с worker/src/city/catalog.ts (дубликат для collector).
+// ============================================
+
+interface BuildingEconomy {
+  name: string;
+  emoji: string;
+  /** Суточный доход по уровням 1-3 (🪙) */
+  dailyRevenue: number[];
+  /** Недельный налог по уровням 1-3 (🪙) */
+  weeklyTax: number[];
+}
+
+const BUILDINGS_CONFIG: Record<string, BuildingEconomy> = {
+  mine: { name: 'Шахта', emoji: '⛏️', dailyRevenue: [300, 750, 1600], weeklyTax: [60, 150, 320] },
+  farm: { name: 'Ферма', emoji: '🌾', dailyRevenue: [220, 550, 1200], weeklyTax: [45, 110, 240] },
+  gas_station: { name: 'АЗС', emoji: '⛽', dailyRevenue: [350, 850, 1800], weeklyTax: [70, 170, 360] },
+  shop: { name: 'Супермаркет', emoji: '🛒', dailyRevenue: [280, 700, 1500], weeklyTax: [55, 140, 300] },
+  restaurant: { name: 'Ресторан', emoji: '🍽️', dailyRevenue: [320, 800, 1700], weeklyTax: [65, 160, 340] },
+  casino: { name: 'Казино', emoji: '🎰', dailyRevenue: [800, 2000, 4500], weeklyTax: [180, 450, 1000] },
+  bank: { name: 'Банк', emoji: '🏛️', dailyRevenue: [1000, 2500, 5500], weeklyTax: [220, 550, 1200] },
+  port: { name: 'Морской порт', emoji: '⚓', dailyRevenue: [500, 1250, 2700], weeklyTax: [100, 250, 540] },
+};
+
+/**
+ * Возвращает экономические параметры постройки (доход/налог) или null,
+ * если участок пуст, постройка неизвестна или уровень 0.
+ */
+function getBuildingEconomy(buildingType: string | null, buildingLevel: number): BuildingEconomy | null {
+  if (!buildingType || buildingLevel <= 0) return null;
+  return BUILDINGS_CONFIG[buildingType] || null;
+}
+
+/**
+ * Параметр экономики по уровню постройки (1-3) с защитой от выхода за границы массива.
+ */
+function economyValueByLevel(values: number[], buildingLevel: number): number {
+  const idx = Math.min(Math.max(buildingLevel, 1), values.length) - 1;
+  return values[idx] || 0;
+}
+
+// ============================================
+// Экономика города (Шаг 4): суточный доход, недельный налог, аукционы
+// ============================================
+
+/**
+ * Суточный доход участков с постройками.
+ * Захват суток идемпотентен через last_revenue_at (СЕКУНДЫ, Math.floor(Date.now() / 1000)):
+ * участок обрабатывается, только если с последнего начисления прошло >= 24 часов.
+ * Начисление: владельцу-пользователю — в users.coins, компании — в companies.treasury.
+ */
+async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const dayAgoSec = nowSec - 24 * 3600;
+
+  try {
+    const plotsResult = await db.execute({
+      sql: `SELECT id, guild_id, owner_type, owner_id, building_type, building_level
+            FROM city_plots
+            WHERE building_type IS NOT NULL
+              AND building_level > 0
+              AND (last_revenue_at IS NULL OR last_revenue_at < ?)`,
+      args: [dayAgoSec],
+    });
+
+    for (const plot of plotsResult.rows || []) {
+      const plotId = Number(plot.id);
+      const guildId = plot.guild_id as string;
+      const ownerType = plot.owner_type as string | null;
+      const ownerId = plot.owner_id as string | null;
+      const buildingLevel = Number(plot.building_level) || 0;
+      const economy = getBuildingEconomy(plot.building_type as string | null, buildingLevel);
+
+      if (!economy || !ownerType || !ownerId) continue;
+
+      const revenue = economyValueByLevel(economy.dailyRevenue, buildingLevel);
+
+      try {
+        if (ownerType === 'user') {
+          await db.execute({
+            sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+            args: [revenue, ownerId, guildId],
+          });
+        } else if (ownerType === 'company') {
+          await db.execute({
+            sql: 'UPDATE companies SET treasury = treasury + ? WHERE id = ? AND guild_id = ?',
+            args: [revenue, Number(ownerId), guildId],
+          });
+        } else {
+          continue;
+        }
+
+        // Захват суток — строго после успешного начисления (в СЕКУНДАХ)
+        await db.execute({
+          sql: 'UPDATE city_plots SET last_revenue_at = ? WHERE guild_id = ? AND id = ?',
+          args: [nowSec, guildId, plotId],
+        });
+
+        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: +${revenue} 🪙 (${economy.name}, ур. ${buildingLevel})`);
+      } catch (e) {
+        console.error('[CityRevenue] Error processing plot', plotId, e);
+      }
+    }
+  } catch (err) {
+    console.error('[CityRevenue] Error in processDailyPlotRevenue:', err);
+  }
+}
+
+/**
+ * Недельный налог на постройки (last_tax_at в СЕКУНДАХ < nowSec - 7*24*3600).
+ * Налог списывается атомарно (условие coins/treasury >= tax); при успехе сумма
+ * пополняет server_reserve, при нехватке средств — инкремент unpaid_taxes_count.
+ * Маркер last_tax_at обновляется в обоих случаях, чтобы налог считался раз в 7 дней.
+ */
+async function processWeeklyPlotTaxes(db: any, bot: Client): Promise<void> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const weekAgoSec = nowSec - 7 * 24 * 3600;
+
+  try {
+    const plotsResult = await db.execute({
+      sql: `SELECT id, guild_id, owner_type, owner_id, building_type, building_level
+            FROM city_plots
+            WHERE building_type IS NOT NULL
+              AND building_level > 0
+              AND (last_tax_at IS NULL OR last_tax_at < ?)`,
+      args: [weekAgoSec],
+    });
+
+    for (const plot of plotsResult.rows || []) {
+      const plotId = Number(plot.id);
+      const guildId = plot.guild_id as string;
+      const ownerType = plot.owner_type as string | null;
+      const ownerId = plot.owner_id as string | null;
+      const buildingLevel = Number(plot.building_level) || 0;
+      const economy = getBuildingEconomy(plot.building_type as string | null, buildingLevel);
+
+      if (!economy || !ownerType || !ownerId) continue;
+
+      const tax = economyValueByLevel(economy.weeklyTax, buildingLevel);
+
+      try {
+        let paid = false;
+
+        if (ownerType === 'user') {
+          const taxResult = await db.execute({
+            sql: 'UPDATE users SET coins = coins - ? WHERE user_id = ? AND guild_id = ? AND coins >= ?',
+            args: [tax, ownerId, guildId, tax],
+          });
+          paid = (taxResult.rowsAffected as number) === 1;
+        } else if (ownerType === 'company') {
+          const taxResult = await db.execute({
+            sql: 'UPDATE companies SET treasury = treasury - ? WHERE id = ? AND guild_id = ? AND treasury >= ?',
+            args: [tax, Number(ownerId), guildId, tax],
+          });
+          paid = (taxResult.rowsAffected as number) === 1;
+        } else {
+          continue;
+        }
+
+        if (paid) {
+          // Налог уходит в резерв сервера
+          await db.execute({
+            sql: `INSERT INTO server_reserve (guild_id, balance) VALUES (?, ?)
+                  ON CONFLICT(guild_id) DO UPDATE SET balance = balance + ?`,
+            args: [guildId, tax, tax],
+          });
+          await db.execute({
+            sql: 'UPDATE city_plots SET last_tax_at = ?, unpaid_taxes_count = 0 WHERE guild_id = ? AND id = ?',
+            args: [nowSec, guildId, plotId],
+          });
+          console.log(`[CityTax] Plot #${plotId} guild ${guildId}: tax ${tax} 🪙 paid (${ownerType})`);
+        } else {
+          await db.execute({
+            sql: 'UPDATE city_plots SET unpaid_taxes_count = unpaid_taxes_count + 1, last_tax_at = ? WHERE guild_id = ? AND id = ?',
+            args: [nowSec, guildId, plotId],
+          });
+          console.log(`[CityTax] Plot #${plotId} guild ${guildId}: ${ownerType} ${ownerId} can't pay ${tax} 🪙 (unpaid_taxes_count++)`);
+        }
+      } catch (e) {
+        console.error('[CityTax] Error processing plot', plotId, e);
+      }
+    }
+  } catch (err) {
+    console.error('[CityTax] Error in processWeeklyPlotTaxes:', err);
+  }
+}
+
+/**
+ * Завершение истёкших аукционов участков.
+ * expires_at хранится в МИЛЛИСЕКУНДАХ (Date.now()). Атомарный db.batch:
+ * передача участка победителю, выплата продавцу, закрытие аукциона.
+ * Без ставок — участок остаётся у владельца, с продажи снимается.
+ */
+async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
+  const nowMs = Date.now();
+
+  try {
+    const auctionsResult = await db.execute({
+      sql: `SELECT id, guild_id, plot_id, highest_bid, highest_bidder_id
+            FROM plot_auctions
+            WHERE status = 'active' AND expires_at <= ?`,
+      args: [nowMs],
+    });
+
+    for (const a of auctionsResult.rows || []) {
+      const auctionId = Number(a.id);
+      const guildId = a.guild_id as string;
+      const plotId = Number(a.plot_id);
+      const bid = Number(a.highest_bid) || 0;
+      const winnerId = (a.highest_bidder_id as string | null) || null;
+
+      try {
+        // Продавец — текущий владелец участка
+        const plotResult = await db.execute({
+          sql: 'SELECT owner_type, owner_id FROM city_plots WHERE guild_id = ? AND id = ?',
+          args: [guildId, plotId],
+        });
+        const sellerType = plotResult.rows[0]?.owner_type as string | null;
+        const sellerId = plotResult.rows[0]?.owner_id as string | null;
+
+        const stmts: { sql: string; args: any[] }[] = [];
+
+        if (winnerId && bid > 0) {
+          // 1) Передача участка победителю — только если он всё ещё в продаже
+          //    (защита от прямой покупки /plot buy между истечением и закрытием)
+          stmts.push({
+            sql: `UPDATE city_plots
+                  SET owner_type = 'user', owner_id = ?, for_sale_price = NULL
+                  WHERE guild_id = ? AND id = ? AND for_sale_price IS NOT NULL`,
+            args: [winnerId, guildId, plotId],
+          });
+          // 2) Выплата продавцу — только если передача победителю прошла
+          const soldGuard = 'EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)';
+          if (sellerType === 'user' && sellerId) {
+            stmts.push({
+              sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ? AND ${soldGuard}`,
+              args: [bid, sellerId, guildId, guildId, plotId, winnerId],
+            });
+          } else if (sellerType === 'company' && sellerId) {
+            stmts.push({
+              sql: `UPDATE companies SET treasury = treasury + ? WHERE id = ? AND guild_id = ? AND ${soldGuard}`,
+              args: [bid, Number(sellerId), guildId, guildId, plotId, winnerId],
+            });
+          }
+          // 3) Возврат ставки победителю, если участок передать не удалось
+          stmts.push({
+            sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?
+                  AND NOT EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)`,
+            args: [bid, winnerId, guildId, guildId, plotId, winnerId],
+          });
+        } else {
+          // Ставок не было — участок остаётся у владельца, снимаем с продажи
+          stmts.push({
+            sql: 'UPDATE city_plots SET for_sale_price = NULL WHERE guild_id = ? AND id = ?',
+            args: [guildId, plotId],
+          });
+        }
+
+        // Закрытие аукциона (guard по status — защита от повторной обработки)
+        stmts.push({
+          sql: "UPDATE plot_auctions SET status = 'completed' WHERE id = ? AND status = 'active'",
+          args: [auctionId],
+        });
+
+        const results = await db.batch(stmts, 'write');
+        const closed = (results[results.length - 1].rowsAffected as number) === 1;
+
+        if (closed) {
+          console.log(`[CityAuction] Auction #${auctionId} (plot #${plotId}, guild ${guildId}) completed` +
+            (winnerId ? ` — winner ${winnerId}, seller paid ${bid} 🪙` : ' — no bids'));
+        }
+      } catch (e) {
+        console.error('[CityAuction] Error completing auction', auctionId, e);
+      }
+    }
+  } catch (err) {
+    console.error('[CityAuction] Error in processExpiredAuctions:', err);
+  }
+}
+
+// ============================================
 // Система достижений (Этап 6 - 27 секретных пасхалок)
 // ============================================
 
@@ -4950,6 +5232,41 @@ client.on('ready', async () => {
       } catch (upgradeErr) {
         console.error(`[City] Failed to register slash command upgrade in guild ${guild.id}:`, upgradeErr);
       }
+
+      // ============================================
+      // Слэш-команда /auction (Город — Шаг 4: аукционы участков)
+      // type 1 = SUB_COMMAND, type 4 = INTEGER
+      // ============================================
+      const auctionCommand: any = {
+        name: 'auction',
+        description: 'Город: аукционы участков',
+        options: [
+          {
+            name: 'list',
+            description: 'Список активных аукционов',
+            type: 1,
+          },
+          {
+            name: 'bid',
+            description: 'Сделать ставку на аукционе',
+            type: 1,
+            options: [
+              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+              { name: 'amount', description: 'Размер ставки в 🪙', type: 4, required: true },
+            ],
+          },
+        ],
+      };
+
+      try {
+        const existingAuction = guild.commands.cache.find((c: any) => c.name === 'auction');
+        if (!existingAuction) {
+          await guild.commands.create(auctionCommand);
+          console.log(`[City] Slash command auction registered in guild ${guild.id}`);
+        }
+      } catch (auctionCmdErr) {
+        console.error(`[City] Failed to register slash command auction in guild ${guild.id}:`, auctionCmdErr);
+      }
     }
   } catch (err) {
     console.error('[Gazeta] Failed to register slash command test-gazeta:', err);
@@ -5173,6 +5490,49 @@ client.on('ready', async () => {
       console.error('[Duel tick]', e);
     }
   }, 30 * 1000);
+
+  // ============================================
+  // Экономика города (Шаг 4): суточный доход, недельный налог, аукционы
+  // ============================================
+  console.log('[CityEconomy] Starting city economy tickers...');
+  try {
+    await processDailyPlotRevenue(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[CityEconomy] Revenue startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processDailyPlotRevenue(db, client);
+    } catch (e) {
+      console.error('[CityEconomy] Revenue interval error:', e);
+    }
+  }, 60 * 60 * 1000); // Каждый час
+
+  try {
+    await processWeeklyPlotTaxes(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[CityEconomy] Tax startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processWeeklyPlotTaxes(db, client);
+    } catch (e) {
+      console.error('[CityEconomy] Tax interval error:', e);
+    }
+  }, 60 * 60 * 1000); // Каждый час
+
+  try {
+    await processExpiredAuctions(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[CityEconomy] Auction startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processExpiredAuctions(db, client);
+    } catch (e) {
+      console.error('[CityEconomy] Auction interval error:', e);
+    }
+  }, 5 * 60 * 1000); // Каждые 5 минут
 
   // Еженедельная AI-газета (каждое воскресенье в 20:00 по Владивостоку)
   console.log('[Gazeta] Starting weekly digest scheduler...');

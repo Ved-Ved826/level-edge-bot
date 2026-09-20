@@ -33,14 +33,15 @@ export async function handleAuctionCommand(inter: CommandInteraction, env: Env, 
 }
 
 async function handleList(db: any, guildId: string): Promise<Response> {
-  const nowSec = Math.floor(Date.now() / 1000);
+  // expires_at аукционов хранится в миллисекундах (Date.now())
+  const nowMs = Date.now();
 
   const auctionsResult = await db.execute({
     sql: `SELECT id, plot_id, highest_bid, highest_bidder_id, expires_at
           FROM plot_auctions
           WHERE guild_id = ? AND status = 'active' AND expires_at > ?
           ORDER BY expires_at ASC`,
-    args: [guildId, nowSec],
+    args: [guildId, nowMs],
   });
 
   const auctions = auctionsResult.rows || [];
@@ -54,7 +55,8 @@ async function handleList(db: any, guildId: string): Promise<Response> {
   let description = "";
   for (const a of auctions) {
     const plotId = Number(a.plot_id);
-    const expiresAt = Number(a.expires_at);
+    // expires_at хранится в миллисекундах — для Discord <t:> переводим в секунды
+    const expiresAtSec = Math.floor(Number(a.expires_at) / 1000);
     const bid = Number(a.highest_bid) || 0;
     const leader = a.highest_bidder_id ? `<@${a.highest_bidder_id}>` : "— ставок нет —";
 
@@ -76,7 +78,7 @@ async function handleList(db: any, guildId: string): Promise<Response> {
     description += `**Участок #${plotId}** — ${plotTitle}\n`;
     description += `🏢 ${buildingInfo}\n`;
     description += `💰 Ставка: **${fmt(bid)} 🪙** • Лидер: ${leader}\n`;
-    description += `⏳ Завершение: <t:${expiresAt}:R>\n\n`;
+    description += `⏳ Завершение: <t:${expiresAtSec}:R>\n\n`;
   }
 
   return Response.json({
@@ -101,7 +103,8 @@ async function handleBid(db: any, inter: CommandInteraction, guildId: string, us
 
   const plotId = Number(getOpt("plot_id"));
   const amount = Number(getOpt("amount"));
-  const nowSec = Math.floor(Date.now() / 1000);
+  // expires_at аукционов хранится в миллисекундах (Date.now())
+  const nowMs = Date.now();
 
   if (!userId) {
     return Response.json({ type: 4, data: { content: "❌ Не удалось определить пользователя.", flags: 64 } });
@@ -122,7 +125,7 @@ async function handleBid(db: any, inter: CommandInteraction, guildId: string, us
   });
 
   const auction = auctionResult.rows[0];
-  if (!auction || Number(auction.expires_at) <= nowSec) {
+  if (!auction || Number(auction.expires_at) <= nowMs) {
     return Response.json({ type: 4, data: { content: `❌ Активного аукциона на участок #${plotId} нет.`, flags: 64 } });
   }
 
@@ -200,7 +203,7 @@ async function handleBid(db: any, inter: CommandInteraction, guildId: string, us
   }
 
   const plotTitle = PLOTS_CATALOG.find((p) => p.id === plotId)?.title || `Участок #${plotId}`;
-  const expiresAt = Number(auction.expires_at);
+  const expiresAtSec = Math.floor(Number(auction.expires_at) / 1000);
 
   return Response.json({
     type: 4,
@@ -212,7 +215,7 @@ async function handleBid(db: any, inter: CommandInteraction, guildId: string, us
             `**<@${userId}>** ставит **${fmt(amount)} 🪙** на участок #${plotId} — ${plotTitle}\n\n` +
             `💰 Текущая ставка: **${fmt(amount)} 🪙**\n` +
             (prevLeaderId ? `↩️ <@${prevLeaderId}> вернули его ставку (**${fmt(currentBid)} 🪙**)\n` : "") +
-            `⏳ Аукцион завершится: <t:${expiresAt}:R>`,
+            `⏳ Аукцион завершится: <t:${expiresAtSec}:R>`,
           color: 0x2ECC71,
         },
       ],
