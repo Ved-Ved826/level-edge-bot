@@ -90,6 +90,65 @@ const calculateLevel = (xp: number): number => {
 };
 
 // ============================================
+// Каталог городских участков (Шаг 1 - Недвижимость и Город)
+// Дублировано из worker/src/city/catalog.ts для collector (tsconfig issues)
+// ============================================
+
+type CityZone = 'mountain' | 'suburb' | 'highway' | 'center' | 'coast';
+
+interface CityPlotTemplate {
+  id: number;
+  zone: CityZone;
+  title: string;
+  base_price: number;
+  allowed_buildings: string[];
+}
+
+const PLOTS_CATALOG: CityPlotTemplate[] = [
+  { id: 1, zone: 'mountain', title: 'Горный склон', base_price: 3000, allowed_buildings: ['mine'] },
+  { id: 2, zone: 'mountain', title: 'Горный склон', base_price: 3000, allowed_buildings: ['mine'] },
+  { id: 3, zone: 'suburb', title: 'Пригородная долина', base_price: 2500, allowed_buildings: ['farm'] },
+  { id: 4, zone: 'suburb', title: 'Пригородная долина', base_price: 2500, allowed_buildings: ['farm'] },
+  { id: 5, zone: 'highway', title: 'Шоссе и трасса', base_price: 3500, allowed_buildings: ['gas_station', 'shop'] },
+  { id: 6, zone: 'highway', title: 'Шоссе и трасса', base_price: 3500, allowed_buildings: ['gas_station', 'shop'] },
+  { id: 7, zone: 'center', title: 'Деловой центр (Золотая земля)', base_price: 7000, allowed_buildings: ['casino', 'bank', 'restaurant'] },
+  { id: 8, zone: 'center', title: 'Деловой центр (Золотая земля)', base_price: 7000, allowed_buildings: ['casino', 'bank', 'restaurant'] },
+  { id: 9, zone: 'highway', title: 'Торговый проспект', base_price: 4000, allowed_buildings: ['shop', 'restaurant'] },
+  { id: 10, zone: 'highway', title: 'Торговый проспект', base_price: 4000, allowed_buildings: ['shop', 'restaurant'] },
+  { id: 11, zone: 'coast', title: 'Морская гавань', base_price: 5000, allowed_buildings: ['port', 'restaurant'] },
+  { id: 12, zone: 'coast', title: 'Морская гавань', base_price: 5000, allowed_buildings: ['port', 'restaurant'] },
+];
+
+/**
+ * Автоматически создаёт 12 городских участков (id 1-12) для каждой гильдии,
+ * где присутствует бот. INSERT OR IGNORE — идемпотентно: уже созданные участки
+ * (с владельцами и постройками) не перезаписываются.
+ * zone/title в БД не хранятся — берутся из PLOTS_CATALOG по id участка;
+ * price инициализируется base_price из каталога.
+ */
+async function ensureCityPlots(db: any, bot: Client): Promise<void> {
+  try {
+    const guilds = bot.guilds.cache;
+    if (guilds.size === 0) return;
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const placeholders = PLOTS_CATALOG.map(() => '(?, ?, ?, ?)').join(', ');
+
+    for (const [guildId] of guilds) {
+      const values = PLOTS_CATALOG.flatMap((p) => [p.id, guildId, p.base_price, nowSec]);
+      await db.execute({
+        sql: `INSERT OR IGNORE INTO city_plots (id, guild_id, price, created_at) VALUES ${placeholders}`,
+        args: values,
+      });
+    }
+
+    console.log(`[City] Ensured ${PLOTS_CATALOG.length} city plots for ${guilds.size} guilds`);
+  } catch (err) {
+    console.error('[City] Error ensuring city plots:', err);
+  }
+}
+
+// ============================================
 // Система достижений (Этап 6 - 27 секретных пасхалок)
 // ============================================
 
@@ -1963,6 +2022,57 @@ async function migrateSchema() {
       args: [],
     });
     console.log('[Migrate] Season results table ensured (season_results)');
+
+    // ============================================
+    // Миграция 028: Система Недвижимости и Города (Шаг 1).
+    // city_plots — 12 фиксированных участков на гильдию (id 1-12);
+    // zone/title берутся из PLOTS_CATALOG по id, price — текущая цена
+    // участка (изначально base_price из каталога).
+    // plot_auctions — аукционы продажи участков.
+    // ============================================
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS city_plots (
+        id INTEGER NOT NULL,
+        guild_id TEXT NOT NULL,
+        owner_type TEXT DEFAULT NULL CHECK(owner_type IN ('user', 'company')),
+        owner_id TEXT DEFAULT NULL,
+        building_type TEXT DEFAULT NULL,
+        building_level INTEGER NOT NULL DEFAULT 0,
+        price INTEGER NOT NULL DEFAULT 0,
+        for_sale_price INTEGER DEFAULT NULL,
+        unpaid_taxes_count INTEGER NOT NULL DEFAULT 0,
+        last_tax_at INTEGER DEFAULT NULL,
+        last_revenue_at INTEGER DEFAULT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(guild_id, id)
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS plot_auctions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        plot_id INTEGER NOT NULL,
+        highest_bidder_type TEXT DEFAULT NULL,
+        highest_bidder_id TEXT DEFAULT NULL,
+        highest_bid INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'cancelled')),
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_city_plots_owner ON city_plots(guild_id, owner_type, owner_id)',
+      args: [],
+    });
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_plot_auctions_active ON plot_auctions(guild_id, status, expires_at)',
+      args: [],
+    });
+    console.log('[Migrate] City tables ensured (city_plots, plot_auctions)');
   } catch (err) {
     console.error('[Migrate] Error during schema migration:', err);
   }
@@ -4654,6 +4764,9 @@ client.on('ready', async () => {
 
   // Инициализация пула квестов
   await ensureQuestsPool(db);
+
+  // Инициализация городских участков (12 на гильдию, идемпотентно)
+  await ensureCityPlots(db, client);
 
   // ============================================
   // Автоматическая регистрация слэш-команд: газета + биржа
