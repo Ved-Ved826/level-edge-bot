@@ -5106,8 +5106,7 @@ client.on('ready', async () => {
           ],
         },
         {
-          name: 'exchange-setup',
-          description: 'РќР°СЃС‚СЂРѕРёС‚СЊ РєР°РЅР°Р» РґР»СЏ РїСѓР±Р»РёС‡РЅРѕР№ Р»РµРЅС‚С‹ Р±РёСЂР¶Рё (С‚РѕР»СЊРєРѕ Manage Server)',
+          name: 'exchange-setup', description: 'Канал для ленты биржи (Manage Server)',
           options: [
             { name: 'channel', description: 'РўРµРєСЃС‚РѕРІС‹Р№ РєР°РЅР°Р» РґР»СЏ СЃРѕР±С‹С‚РёР№ Р±РёСЂР¶Рё', type: 7, required: true },
           ],
@@ -5943,4 +5942,5 @@ client.on('interactionCreate', async (interaction: any) => {
 
 const token = process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN;
 client.login(token);
+
 
