@@ -1,4 +1,4 @@
-﻿import { createClient } from "@libsql/client";
+import { createClient } from "@libsql/client";
 import satori from "satori";
 import { Resvg, initWasm } from "@resvg/resvg-wasm";
 // @ts-ignore
@@ -10,9 +10,28 @@ import { ButtonInteraction, CommandInteraction, Env, ExecutionContext } from "..
 import { BUILDINGS_CONFIG, PLOTS_CATALOG } from "../city/catalog";
 import { CityMapCard, PlotCardData } from "../CityMapCard";
 
+let isWasmInitialized = false;
 let wasmInitPromise: Promise<void> | null = null;
 function ensureWasmInitialized(): Promise<void> {
-  if (!wasmInitPromise) wasmInitPromise = initWasm(resvgWasm);
+  if (isWasmInitialized) return Promise.resolve();
+  if (!wasmInitPromise) {
+    wasmInitPromise = (async () => {
+      try {
+        await initWasm(resvgWasm);
+      } catch (e: any) {
+        const msg = String(e?.message || e);
+        // Повторный вызов initWasm в том же изоляте бросает
+        // "Already initialized" — это не ошибка, WASM уже готов.
+        if (msg.includes("Already initialized")) {
+          // глотаем и считаем инициализацию успешной
+        } else {
+          wasmInitPromise = null; // позволяем повторную попытку при следующем вызове
+          throw e;
+        }
+      }
+      isWasmInitialized = true;
+    })();
+  }
   return wasmInitPromise;
 }
 
@@ -347,4 +366,3 @@ export async function handleMapSelect(inter: ButtonInteraction, env: Env, _ctx: 
     });
   }
 }
-
