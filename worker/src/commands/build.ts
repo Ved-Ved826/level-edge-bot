@@ -168,6 +168,16 @@ async function plotBuild(
   const row = (res.rows[0] ?? null) as CityPlotRow | null;
   if (!row) return errEmbed("Участок ещё не создан на этом сервере.");
 
+  // Аукцион по участку (Город — Шаг 4): пока идут торги, строить нельзя —
+  // по завершении аукциона участок может перейти к победителю.
+  const activeAuctionRes = await db.execute({
+    sql: "SELECT id FROM plot_auctions WHERE guild_id = ? AND plot_id = ? AND status = 'active' LIMIT 1",
+    args: [guildId, plotId],
+  });
+  if (activeAuctionRes.rows.length > 0) {
+    return errEmbed("По этому участку идёт аукцион — постройка недоступна до завершения торгов.");
+  }
+
   const owner = await resolvePlotOwner(db, userId, row);
   if (!owner.ok) return errEmbed(owner.error);
 
@@ -189,12 +199,13 @@ async function plotBuild(
       ? "(SELECT coins FROM users WHERE user_id = ? AND guild_id = ?)"
       : "(SELECT treasury FROM companies WHERE id = ?)";
 
-  const claimArgs: any[] = [cfg.type, nowSec, guildId, plotId, owner.ownerType, owner.ownerId, cost];
+  const claimArgs: any[] = [cfg.type, nowSec, nowSec, 0, guildId, plotId, owner.ownerType, owner.ownerId, cost];
   claimArgs.push(...(owner.ownerType === "user" ? [owner.ownerId, guildId] : [owner.ownerId]));
 
   const claimStmt = {
     sql: `UPDATE city_plots
-          SET building_type = ?, building_level = 1, last_revenue_at = ?
+          SET building_type = ?, building_level = 1,
+              last_revenue_at = ?, last_tax_at = ?, unpaid_taxes_count = 0
           WHERE guild_id = ? AND id = ?
             AND owner_type = ? AND owner_id = ?
             AND building_type IS NULL
@@ -263,6 +274,16 @@ async function plotUpgrade(
   });
   const row = (res.rows[0] ?? null) as CityPlotRow | null;
   if (!row) return errEmbed("Участок ещё не создан на этом сервере.");
+
+  // Аукцион по участку (Город — Шаг 4): пока идут торги, улучшать нельзя —
+  // по завершении аукциона участок может перейти к победителю.
+  const activeAuctionRes = await db.execute({
+    sql: "SELECT id FROM plot_auctions WHERE guild_id = ? AND plot_id = ? AND status = 'active' LIMIT 1",
+    args: [guildId, plotId],
+  });
+  if (activeAuctionRes.rows.length > 0) {
+    return errEmbed("По этому участку идёт аукцион — апгрейд недоступен до завершения торгов.");
+  }
 
   const owner = await resolvePlotOwner(db, userId, row);
   if (!owner.ok) return errEmbed(owner.error);
