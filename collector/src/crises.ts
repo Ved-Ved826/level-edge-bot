@@ -228,8 +228,9 @@ interface CrisisApplyResult {
  * Дубликат worker/src/commands/crisis.ts — keep in sync.
  * Инвариант сохранения монет: казна +delta, резерв -delta.
  * Guard первого statement: кризис ещё pending, дедлайн в нужную сторону,
- * казна не изменилась с момента расчёта (параллельная сделка). Остальные
- * statement-ы выполняются только если захват кризиса удался и дельта совпадает.
+ * казна, mood_bps и mood_updated_at не изменились с момента расчёта
+ * (параллельная сделка двигает настроение — иначе батч перезаписал бы её сдвиг).
+ * Остальные statement-ы выполняются только если захват кризиса удался и дельта совпадает.
  */
 async function applyCrisisOutcome(
   db: any,
@@ -258,6 +259,11 @@ async function applyCrisisOutcome(
     }
     const prevTreasury = Number(compRes.rows[0].treasury) || 0;
     const circulating = (Number(compRes.rows[0].total_shares) || 100) - (Number(compRes.rows[0].available_shares) || 0);
+    // Сырые значения настроения для guard: если между чтением и батчем прошла
+    // сделка (она пишет mood_bps/mood_updated_at), батч промахнётся и пойдёт
+    // на пересчёт, а не перезапишет сдвиг настроения от сделки
+    const rawMoodBps = compRes.rows[0].mood_bps ?? null;
+    const rawMoodUpdatedAt = compRes.rows[0].mood_updated_at ?? null;
 
     const reserveRes = await db.execute({
       sql: 'SELECT balance FROM server_reserve WHERE guild_id = ?',
@@ -290,8 +296,10 @@ async function applyCrisisOutcome(
           sql: `UPDATE company_crises
                 SET status = ?, resolved_option = ?, resolved_at = ?, outcome_text = ?, treasury_delta = ?
                 WHERE id = ? AND status = 'pending' AND expires_at ${expiryOp} ?
-                  AND (SELECT treasury FROM companies WHERE id = ?) = ?`,
-          args: [finalStatus, resolvedOption, nowSec, outcome.text, delta, crisisId, nowSec, companyId, prevTreasury],
+                  AND (SELECT treasury FROM companies WHERE id = ?) = ?
+                  AND (SELECT mood_bps FROM companies WHERE id = ?) IS ?
+                  AND (SELECT mood_updated_at FROM companies WHERE id = ?) IS ?`,
+          args: [finalStatus, resolvedOption, nowSec, outcome.text, delta, crisisId, nowSec, companyId, prevTreasury, companyId, rawMoodBps, companyId, rawMoodUpdatedAt],
         },
         {
           sql: `UPDATE companies
@@ -338,7 +346,7 @@ async function applyCrisisOutcome(
     if (String(re.rows[0]?.status || '') !== 'pending') {
       return { ...empty, alreadyClosed: true };
     }
-    // Казна изменилась между расчётом и батчем — пересчёт и повтор (до 3 раз)
+    // Казна или настроение изменились между расчётом и батчем — пересчёт и повтор (до 3 раз)
   }
 
   return empty;

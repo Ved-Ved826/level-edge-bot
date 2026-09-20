@@ -46,9 +46,10 @@ interface CrisisApplyResult {
 
 /**
  * Применяет исход кризиса одним атомарным батчем (до 3 попыток).
- * Guard первого statement: кризис ещё pending, дедлайн не прошёл, казна не
- * изменилась с момента расчёта (параллельная сделка). Остальные statement-ы
- * выполняются только если захват кризиса удался и дельта совпадает.
+ * Guard первого statement: кризис ещё pending, дедлайн не прошёл, казна,
+ * mood_bps и mood_updated_at не изменились с момента расчёта (параллельная
+ * сделка двигает настроение — иначе батч перезаписал бы её сдвиг).
+ * Остальные statement-ы выполняются только если захват кризиса удался и дельта совпадает.
  */
 async function applyCrisisOutcomeBatch(
   db: any,
@@ -74,6 +75,11 @@ async function applyCrisisOutcomeBatch(
     }
     const prevTreasury = Number(compRes.rows[0].treasury) || 0;
     const circulating = (Number(compRes.rows[0].total_shares) || 100) - (Number(compRes.rows[0].available_shares) || 0);
+    // Сырые значения настроения для guard: если между чтением и батчем прошла
+    // сделка (она пишет mood_bps/mood_updated_at), батч промахнётся и пойдёт
+    // на пересчёт, а не перезапишет сдвиг настроения от сделки
+    const rawMoodBps = compRes.rows[0].mood_bps ?? null;
+    const rawMoodUpdatedAt = compRes.rows[0].mood_updated_at ?? null;
 
     const reserveRes = await db.execute({
       sql: "SELECT balance FROM server_reserve WHERE guild_id = ?",
@@ -103,12 +109,15 @@ async function applyCrisisOutcomeBatch(
     const results = await db.batch(
       [
         {
-          // (1) Захват кризиса: pending, дедлайн не прошёл, казна не изменилась с расчёта
+          // (1) Захват кризиса: pending, дедлайн не прошёл, казна и настроение
+          // не изменились с расчёта (параллельная сделка двигает mood)
           sql: `UPDATE company_crises
                 SET status = 'resolved', resolved_option = ?, resolved_at = ?, outcome_text = ?, treasury_delta = ?
                 WHERE id = ? AND status = 'pending' AND expires_at > ?
-                  AND (SELECT treasury FROM companies WHERE id = ?) = ?`,
-          args: [resolvedOption, nowSec, outcome.text, delta, crisisId, nowSec, companyId, prevTreasury],
+                  AND (SELECT treasury FROM companies WHERE id = ?) = ?
+                  AND (SELECT mood_bps FROM companies WHERE id = ?) IS ?
+                  AND (SELECT mood_updated_at FROM companies WHERE id = ?) IS ?`,
+          args: [resolvedOption, nowSec, outcome.text, delta, crisisId, nowSec, companyId, prevTreasury, companyId, rawMoodBps, companyId, rawMoodUpdatedAt],
         },
         {
           // (2) Казна и настроение — только если (1) сработал и дельта совпадает
@@ -159,7 +168,7 @@ async function applyCrisisOutcomeBatch(
     if (String(re.rows[0]?.status || "") !== "pending") {
       return { ...empty, alreadyClosed: true };
     }
-    // Казна изменилась между расчётом и батчем — пересчёт и повтор (до 3 раз)
+    // Казна или настроение изменились между расчётом и батчем — пересчёт и повтор (до 3 раз)
   }
 
   return empty;

@@ -1,13 +1,19 @@
-// Чистые функции биржи: настроение рынка и расчёт дельты кризиса.
-// Используются обработчиком кнопок кризиса (worker/src/commands/crisis.ts) и тестами.
-// Логика дублируется в collector/src/crises.ts (коллектор не может импортировать
+// Чистые функции биржи: настроение рынка, котировки сделок и расчёт дельты кризиса.
+// Используются обработчиками сделок (worker/src/commands/invest.ts), кнопок кризиса
+// (worker/src/commands/crisis.ts) и тестами.
+// Логика кризисов дублируется в collector/src/crises.ts (коллектор не может импортировать
 // из worker) — keep in sync with collector/src/crises.ts.
 
 import {
+  BUY_FOUNDER_BPS,
+  BUY_RESERVE_BPS,
   CRISIS_LOSS_MOOD_FACTOR,
   CRISIS_MAX_GAIN_COINS,
   MOOD_HALF_LIFE_HOURS,
+  MOOD_IMPULSE_BPS,
   MOOD_MAX_BPS,
+  MOOD_MAX_SHIFT_PER_TRADE_BPS,
+  SELL_RESERVE_BPS,
 } from "./constants";
 
 /**
@@ -33,6 +39,101 @@ export function crisisMoodShift(pctBps: number): number {
 export function applyMoodShift(effectiveMoodBps: number, shiftBps: number): number {
   const next = effectiveMoodBps + shiftBps;
   return Math.max(-MOOD_MAX_BPS, Math.min(MOOD_MAX_BPS, next));
+}
+
+/**
+ * Маркер промаха guard: состояние компании (казна, акции, настроение) изменилось
+ * с момента расчёта котировки. Обработчик сделки откатывает транзакцию и
+ * пересчитывает котировку на свежем состоянии.
+ */
+export class StaleStateError extends Error {
+  constructor() {
+    super("stale company state");
+    this.name = "StaleStateError";
+  }
+}
+
+export interface BuyQuote {
+  /** Базовая стоимость по NAV — уходит в казну. */
+  baseCost: number;
+  /** Надбавка ажиотажа (mood > 0) — уходит в казну и растит NAV держателей. */
+  premium: number;
+  /** Роялти основателю с базы. */
+  founderFee: number;
+  /** Взнос в резерв сервера с базы. */
+  reserveFee: number;
+  /** Итого к оплате покупателем. */
+  totalCost: number;
+  /** Сколько уходит в казну: baseCost + premium. */
+  treasuryDelta: number;
+}
+
+export interface SellQuote {
+  /** Базовая выплата по NAV — потолок для продавца при любом настроении. */
+  basePayout: number;
+  /** Скидка паники (mood < 0) — остаётся в казне для оставшихся держателей. */
+  discount: number;
+  /** Комиссия резерва с выплаты. */
+  reserveCut: number;
+  /** Итого продавцу, всегда <= basePayout. */
+  netPayout: number;
+  /** Сколько уходит из казны: basePayout - discount. */
+  treasuryDelta: number;
+}
+
+/**
+ * Котировка покупки, целочисленно. Округление в пользу системы: baseCost и
+ * premium — ceil (платит покупатель), founderFee — floor (получает основатель),
+ * reserveFee — ceil (в резерв). Премия ажиотажа (mood > 0) доплачивается
+ * покупателем и целиком попадает в казну, поднимая NAV держателей.
+ */
+export function quoteBuy(treasury: number, circulating: number, amount: number, effectiveMoodBps: number): BuyQuote {
+  // ceil(a*b/c) = floor((a*b + c - 1) / c) — целочисленный ceil без дробей
+  const baseCost = Math.floor((amount * treasury + circulating - 1) / circulating);
+  const premium = effectiveMoodBps > 0 ? Math.ceil((baseCost * effectiveMoodBps) / 10000) : 0;
+  const founderFee = Math.floor((baseCost * BUY_FOUNDER_BPS) / 10000);
+  const reserveFee = Math.ceil((baseCost * BUY_RESERVE_BPS) / 10000);
+  return {
+    baseCost,
+    premium,
+    founderFee,
+    reserveFee,
+    totalCost: baseCost + premium + founderFee + reserveFee,
+    treasuryDelta: baseCost + premium,
+  };
+}
+
+/**
+ * Котировка продажи, целочисленно. Казна никогда не платит продавцу больше NAV:
+ * при панике (mood < 0) продавец получает NAV * (1 + mood), разница (discount)
+ * остаётся в казне. Округление в пользу системы: discount и reserveCut — ceil.
+ */
+export function quoteSell(treasury: number, circulating: number, amount: number, effectiveMoodBps: number): SellQuote {
+  const basePayout = Math.floor((amount * treasury) / circulating);
+  const discount = effectiveMoodBps < 0 ? Math.ceil((basePayout * -effectiveMoodBps) / 10000) : 0;
+  const grossPayout = basePayout - discount;
+  const reserveCut = Math.ceil((grossPayout * SELL_RESERVE_BPS) / 10000);
+  return {
+    basePayout,
+    discount,
+    reserveCut,
+    netPayout: grossPayout - reserveCut,
+    treasuryDelta: grossPayout,
+  };
+}
+
+/**
+ * Модуль сдвига настроения за сделку: пропорционален доле сделки в обращении
+ * (MOOD_IMPULSE_BPS * amount / circulating), поэтому нарезка крупной сделки на
+ * мелкие не даёт преимущества (сумма округлённых вниз частей не превышает сдвига
+ * целой сделки + допуск на округления). Знак применяет вызывающий код:
+ * покупка — ажиотаж (+), продажа — паника (−).
+ */
+export function tradeMoodShift(amount: number, circulating: number): number {
+  const proportional = Math.floor((MOOD_IMPULSE_BPS * amount) / circulating);
+  // Потолок страхует только вырожденные случаи (amount > circulating); в реальной
+  // торговле amount <= 100 - circulating < circulating, поэтому не превышается.
+  return Math.min(MOOD_MAX_SHIFT_PER_TRADE_BPS, proportional);
 }
 
 export interface CrisisDelta {
