@@ -6,6 +6,8 @@ import 'dotenv/config';
 
 import http from 'node:http';
 
+import { processCompanyCrises, processCrisisTimeouts, sendCrisisSpawnEvent } from './crises';
+
 // Микро-сервер для прохождения Healthcheck на Koyeb
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
@@ -1889,6 +1891,49 @@ async function migrateSchema() {
     });
 
     console.log('[Migrate] Exchange history tables ensured (company_trades, company_nav_history, market_events, exchange_guild_state)');
+
+    // ============================================
+    // Миграция 026: колонки кризисов (options_json, timeout_json, resolved_option,
+    // resolved_at). ALTER TABLE идемпотентен: сначала PRAGMA table_info(company_crises).
+    // Таблица company_crises гарантированно существует — создана выше (миграция 022).
+    // ============================================
+    const crisesColumnsCheck = await db.execute({
+      sql: "PRAGMA table_info(company_crises)",
+      args: [],
+    });
+    const crisesColumns = (crisesColumnsCheck.rows || []).map((row: any) => row.name as string);
+
+    if (!crisesColumns.includes('options_json')) {
+      await db.execute({
+        sql: 'ALTER TABLE company_crises ADD COLUMN options_json TEXT DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: options_json to company_crises');
+    }
+
+    if (!crisesColumns.includes('timeout_json')) {
+      await db.execute({
+        sql: 'ALTER TABLE company_crises ADD COLUMN timeout_json TEXT DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: timeout_json to company_crises');
+    }
+
+    if (!crisesColumns.includes('resolved_option')) {
+      await db.execute({
+        sql: 'ALTER TABLE company_crises ADD COLUMN resolved_option TEXT DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: resolved_option to company_crises');
+    }
+
+    if (!crisesColumns.includes('resolved_at')) {
+      await db.execute({
+        sql: 'ALTER TABLE company_crises ADD COLUMN resolved_at INTEGER DEFAULT NULL',
+        args: [],
+      });
+      console.log('[Migrate] Added column: resolved_at to company_crises');
+    }
   } catch (err) {
     console.error('[Migrate] Error during schema migration:', err);
   }
@@ -4195,7 +4240,21 @@ async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
       }
 
       try {
-        await channel.send(renderMarketEventEmbed(kind, payload));
+        if (kind === 'crisis_spawn') {
+          // Кризис публикуется с кнопками вариантов; message_id пишется обратно
+          // в company_crises после успешной отправки
+          const delivered = await sendCrisisSpawnEvent(db, channel, payload);
+          if (!delivered) {
+            // Кризис уже удалён (например, сезонной ликвидацией) — не блокируем очередь
+            await db.execute({
+              sql: "UPDATE market_events SET sent_at = ?, attempts = attempts + 1, last_error = 'crisis_gone' WHERE id = ?",
+              args: [Math.floor(Date.now() / 1000), eventId],
+            });
+            continue;
+          }
+        } else {
+          await channel.send(renderMarketEventEmbed(kind, payload));
+        }
         await db.execute({
           sql: 'UPDATE market_events SET sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE id = ?',
           args: [Math.floor(Date.now() / 1000), eventId],
@@ -4687,6 +4746,37 @@ client.on('ready', async () => {
       console.error('[ExchangeFeed] Digest interval error:', e);
     }
   }, 15 * 60 * 1000); // Каждые 15 минут
+
+  // ============================================
+  // Кризисы компаний: спавн (каждые 30 минут) и таймауты (каждую минуту).
+  // Интервалы спавна/TTL настраиваются env-переменными для тестовой гильдии.
+  // ============================================
+  console.log('[Crises] Starting crisis tickers...');
+  try {
+    await processCompanyCrises(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[Crises] Spawn startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processCompanyCrises(db, client);
+    } catch (e) {
+      console.error('[Crises] Spawn interval error:', e);
+    }
+  }, 30 * 60 * 1000); // Каждые 30 минут
+
+  try {
+    await processCrisisTimeouts(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[Crises] Timeout startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processCrisisTimeouts(db, client);
+    } catch (e) {
+      console.error('[Crises] Timeout interval error:', e);
+    }
+  }, 60 * 1000); // Каждую минуту
 
   // ============================================
   // M11: таймер проверки зависших дуэлей (каждые 30 секунд).

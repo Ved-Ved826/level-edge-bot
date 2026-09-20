@@ -32,3 +32,40 @@ export const MARKET_EVENTS_MAX_ATTEMPTS = 5;
 
 /** Пауза между отправками событий, мс. */
 export const MARKET_EVENTS_SEND_PAUSE_MS = 250;
+
+// ============================================
+// Кризисы и настроение рынка
+// ============================================
+
+/** Максимальное отклонение настроения от нуля, bps (коридор ±25%). */
+export const MOOD_MAX_BPS = 2500;
+
+/** Период полураспада настроения, часов (ленивое затухание при чтении). */
+export const MOOD_HALF_LIFE_HOURS = 18;
+
+/** Минимум казны компании для спавна кризиса. */
+export const CRISIS_MIN_TREASURY = 300;
+
+/** Интервал спавна кризисов по гильдии: минимум, часов. */
+export const CRISIS_MIN_INTERVAL_HOURS = 6;
+
+/** Интервал спавна кризисов по гильдии: максимум, часов. */
+export const CRISIS_MAX_INTERVAL_HOURS = 8;
+
+/** Пауза между кризисами одной компании, часов. */
+export const CRISIS_COMPANY_COOLDOWN_HOURS = 48;
+
+/** Время на решение кризиса владельцем, часов. */
+export const CRISIS_TTL_HOURS = 24;
+
+/** Потолок потери казны за кризис, bps. */
+export const CRISIS_MAX_LOSS_BPS = 2500;
+
+/** Потолок прибыли казны за кризис, bps. */
+export const CRISIS_MAX_GAIN_BPS = 1500;
+
+/** Потолок прибыли за кризис в монетах (прибыль также ограничена резервом). */
+export const CRISIS_MAX_GAIN_COINS = 1500;
+
+/** Усиление паники при потере (множитель сдвига настроения). */
+export const CRISIS_LOSS_MOOD_FACTOR = 1.5;
