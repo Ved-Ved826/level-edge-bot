@@ -1934,6 +1934,35 @@ async function migrateSchema() {
       });
       console.log('[Migrate] Added column: resolved_at to company_crises');
     }
+
+    // ============================================
+    // Миграция 027: итоги сезонов биржи (Шаг 8 — сезонный рейтинг ROI).
+    // season_results заполняется при сезонной ликвидации
+    // (liquidateCompaniesOnSeasonChange) и читается командой /exchange-top
+    // для завершившихся сезонов.
+    // ============================================
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS season_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        season_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('investor', 'company')),
+        rank INTEGER NOT NULL,
+        target_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        invested INTEGER NOT NULL,
+        returned INTEGER NOT NULL,
+        roi_bps INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_season_results_lookup ON season_results(guild_id, season_id, kind, rank)',
+      args: [],
+    });
+    console.log('[Migrate] Season results table ensured (season_results)');
   } catch (err) {
     console.error('[Migrate] Error during schema migration:', err);
   }
@@ -3911,6 +3940,39 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 
           const batchStmts: { sql: string; args: any[] }[] = [];
 
+          // ============================================
+          // Шаг 8: агрегаты сделок закрывающегося сезона.
+          // ВАЖНО: сделки писались под season_id = lastSeasonId (сезон, который
+          // ликвидируется); под currentSeasonId сделок ещё нет, поэтому итоги
+          // считаем и сохраняем по lastSeasonId.
+          // ============================================
+          const seasonTradesResult = await db.execute({
+            sql: `SELECT user_id, company_id, side, coins
+                  FROM company_trades
+                  WHERE guild_id = ? AND season_id = ?`,
+            args: [guildId, lastSeasonId],
+          });
+
+          const investorStats = new Map<string, { invested: number; returned: number }>();
+          const companyStats = new Map<number, { invested: number; returned: number }>();
+          // Выплаты ликвидации добавляются к returned инвестора
+          const liquidationPayouts = new Map<string, number>();
+
+          for (const tr of seasonTradesResult.rows || []) {
+            const tradeUserId = String(tr.user_id);
+            const tradeCompanyId = Number(tr.company_id);
+            const coins = Number(tr.coins) || 0;
+            const isBuy = String(tr.side) === 'buy';
+
+            const inv = investorStats.get(tradeUserId) || { invested: 0, returned: 0 };
+            if (isBuy) inv.invested += coins; else inv.returned += coins;
+            investorStats.set(tradeUserId, inv);
+
+            const cst = companyStats.get(tradeCompanyId) || { invested: 0, returned: 0 };
+            if (isBuy) cst.invested += coins; else cst.returned += coins;
+            companyStats.set(tradeCompanyId, cst);
+          }
+
           for (const comp of companies) {
             const circulating = 100 - Number(comp.available_shares);
             const treasury = Number(comp.treasury);
@@ -3931,6 +3993,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
                     args: [payout, String(s.user_id), guildId],
                   });
                   distributed += payout;
+                  liquidationPayouts.set(String(s.user_id), (liquidationPayouts.get(String(s.user_id)) || 0) + payout);
                 }
               }
             }
@@ -3943,6 +4006,93 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
                 args: [guildId, remainder, remainder],
               });
             }
+          }
+
+          // ============================================
+          // Шаг 8: топ-3 инвестора по ROI (вложения от 500 🪙) и топ-3 компании
+          // по казне перед ликвидацией. Записи season_results и событие ленты
+          // ставятся в тот же batch, что и ликвидация: либо всё, либо ничего.
+          // ============================================
+          const resultsNowSec = Math.floor(Date.now() / 1000);
+
+          const investorRatings: { targetId: string; label: string; invested: number; returned: number; roiBps: number }[] = [];
+          for (const [invUserId, invStat] of investorStats) {
+            if (invStat.invested < 500) continue;
+            const returned = invStat.returned + (liquidationPayouts.get(invUserId) || 0);
+            investorRatings.push({
+              targetId: invUserId,
+              label: `<@${invUserId}>`,
+              invested: invStat.invested,
+              returned,
+              roiBps: Math.round(((returned - invStat.invested) / invStat.invested) * 10000),
+            });
+          }
+          investorRatings.sort((a, b) => b.roiBps - a.roiBps);
+          const topInvestors = investorRatings.slice(0, 3);
+
+          const topCompanies = [...companies]
+            .sort((a, b) => Number(b.treasury) - Number(a.treasury))
+            .slice(0, 3)
+            .map((comp) => {
+              const compStat = companyStats.get(Number(comp.id)) || { invested: 0, returned: 0 };
+              const returned = compStat.returned + Number(comp.treasury);
+              const roiBps = compStat.invested >= 500
+                ? Math.round(((returned - compStat.invested) / compStat.invested) * 10000)
+                : 0;
+              return {
+                targetId: String(comp.id),
+                label: `${String(comp.name)} (${String(comp.ticker)})`,
+                invested: compStat.invested,
+                returned,
+                roiBps,
+              };
+            });
+
+          let resultRank = 1;
+          for (const inv of topInvestors) {
+            batchStmts.push({
+              sql: `INSERT INTO season_results (guild_id, season_id, kind, rank, target_id, label, invested, returned, roi_bps, created_at)
+                    VALUES (?, ?, 'investor', ?, ?, ?, ?, ?, ?, ?)`,
+              args: [guildId, lastSeasonId, resultRank++, inv.targetId, inv.label, inv.invested, inv.returned, inv.roiBps, resultsNowSec],
+            });
+          }
+
+          resultRank = 1;
+          for (const comp of topCompanies) {
+            batchStmts.push({
+              sql: `INSERT INTO season_results (guild_id, season_id, kind, rank, target_id, label, invested, returned, roi_bps, created_at)
+                    VALUES (?, ?, 'company', ?, ?, ?, ?, ?, ?, ?)`,
+              args: [guildId, lastSeasonId, resultRank++, comp.targetId, comp.label, comp.invested, comp.returned, comp.roiBps, resultsNowSec],
+            });
+          }
+
+          if (topInvestors.length > 0 || topCompanies.length > 0) {
+            const feedLines: string[] = [`Подведены итоги сезона \`${lastSeasonId}\` по доходности:`];
+            if (topInvestors.length > 0) {
+              feedLines.push('');
+              feedLines.push('**📈 Топ инвесторов (ROI):**');
+              topInvestors.forEach((inv, i) => {
+                const roiPct = inv.roiBps / 100;
+                feedLines.push(`${i + 1}. ${inv.label} — ${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(1)}% (${inv.invested.toLocaleString('ru-RU')} → ${inv.returned.toLocaleString('ru-RU')} 🪙)`);
+              });
+            }
+            if (topCompanies.length > 0) {
+              feedLines.push('');
+              feedLines.push('**🏢 Топ компаний (казна):**');
+              topCompanies.forEach((c, i) => {
+                feedLines.push(`${i + 1}. ${c.label} — ${c.returned.toLocaleString('ru-RU')} 🪙`);
+              });
+            }
+
+            batchStmts.push({
+              sql: 'INSERT INTO market_events (guild_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)',
+              args: [guildId, 'season_results', JSON.stringify({
+                text: feedLines.join('\n'),
+                seasonId: lastSeasonId,
+                investors: topInvestors,
+                companies: topCompanies,
+              }), resultsNowSec],
+            });
           }
 
           // Очистка таблиц компаний гильдии.
@@ -4155,6 +4305,14 @@ function renderMarketEventEmbed(kind: string, payload: any): any {
           title: '📊 Дайджест биржи за сутки',
           description: text || '',
           color: blue,
+        }],
+      };
+    case 'season_results':
+      return {
+        embeds: [{
+          title: `🏆 Итоги сезона${payload?.seasonId ? ` ${payload.seasonId}` : ''} — рейтинг ROI`,
+          description: text || 'Итоги сезона зафиксированы.',
+          color: 0xF1C40F,
         }],
       };
     default:
@@ -4557,6 +4715,13 @@ client.on('ready', async () => {
           description: 'Настроить канал для публичной ленты биржи (только Manage Server)',
           options: [
             { name: 'channel', description: 'Текстовый канал для событий биржи', type: 7, required: true },
+          ],
+        },
+        {
+          name: 'exchange-top',
+          description: 'Рейтинг инвесторов и компаний сезона по доходности (ROI)',
+          options: [
+            { name: 'season', description: 'ID сезона (по умолчанию текущий)', type: 3, required: false },
           ],
         },
       ];

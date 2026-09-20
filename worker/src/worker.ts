@@ -45,6 +45,7 @@ import { handleCompanyCreate } from "./commands/company";
 import { handlePortfolio, handleStocks } from "./commands/stocks";
 import { handleInvest, handleDivest } from "./commands/invest";
 import { handleExchangeSetup } from "./commands/exchange-setup";
+import { handleExchangeTop } from "./commands/exchange-top";
 import { handleCrisisResolve } from "./commands/crisis";
 
 
@@ -984,6 +985,9 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
       // 36. Слэш-команда /exchange-setup channel (Биржа — канал событий, только Manage Guild)
       if (inter.type === 2 && inter.data?.name === "exchange-setup") { return handleExchangeSetup(inter as CommandInteraction, env, ctx); }
+
+      // 38. Слэш-команда /exchange-top [season] (Биржа — рейтинг ROI сезона)
+      if (inter.type === 2 && inter.data?.name === "exchange-top") { return handleExchangeTop(inter as CommandInteraction, env, ctx); }
 
       // 37. Кнопки кризисов компаний (Type 3 — решение принимает только владелец)
       if (inter.type === 3 && inter.data?.custom_id?.startsWith("crisis:")) { return handleCrisisResolve(inter as ButtonInteraction, env, ctx); }
