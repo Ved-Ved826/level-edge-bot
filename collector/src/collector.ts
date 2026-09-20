@@ -5267,6 +5267,24 @@ client.on('ready', async () => {
       } catch (auctionCmdErr) {
         console.error(`[City] Failed to register slash command auction in guild ${guild.id}:`, auctionCmdErr);
       }
+
+      // ============================================
+      // Слэш-команда /map (Город — Шаг 5: интерактивная карта)
+      // ============================================
+      const mapCommand: any = {
+        name: 'map',
+        description: 'Город: интерактивная карта участков и недвижимости',
+      };
+
+      try {
+        const existingMap = guild.commands.cache.find((c: any) => c.name === 'map');
+        if (!existingMap) {
+          await guild.commands.create(mapCommand);
+          console.log(`[City] Slash command map registered in guild ${guild.id}`);
+        }
+      } catch (mapCmdErr) {
+        console.error(`[City] Failed to register slash command map in guild ${guild.id}:`, mapCmdErr);
+      }
     }
   } catch (err) {
     console.error('[Gazeta] Failed to register slash command test-gazeta:', err);

@@ -50,6 +50,7 @@ import { handleCrisisResolve } from "./commands/crisis";
 import { handlePlotCommand } from "./commands/plot";
 import { handleBuildCommand, handleUpgradeCommand } from "./commands/build";
 import { handleAuctionCommand } from "./commands/auction";
+import { handleMapCommand, handleMapSelect } from "./commands/map";
 
 
 
@@ -1006,6 +1007,12 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
       // 42. Слэш-команда /auction list|bid (Город — Шаг 4: аукционы участков)
       if (inter.type === 2 && inter.data?.name === "auction") { return handleAuctionCommand(inter as CommandInteraction, env, ctx); }
+
+      // 43. Слэш-команда /map (Город — Шаг 5: интерактивная карта участков)
+      if (inter.type === 2 && inter.data?.name === "map") { return handleMapCommand(inter as CommandInteraction, env, ctx); }
+
+      // 44. Select Menu карты города (Type 3 — выбор участка для осмотра)
+      if (inter.type === 3 && inter.data?.custom_id === "city_map_select") { return handleMapSelect(inter as ButtonInteraction, env, ctx); }
 
 
 
