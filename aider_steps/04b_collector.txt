@@ -1,0 +1,22 @@
+﻿Выполни часть 4.2 задачи: фоновые процессы ленты биржи в collector/src/collector.ts:
+
+1. В регистрации слэш-команд (рядом с invest, divest, stocks) добавь регистрацию /exchange-setup:
+   {
+     name: 'exchange-setup',
+     description: 'Настроить канал для публичной ленты биржи (только Manage Server)',
+     options: [
+       { name: 'channel', description: 'Текстовый канал для событий биржи', type: 7, required: true },
+     ],
+   }
+
+2. Добавь константы и хелперы sparkline, buildHourlyNavSeries, enqueueMarketEvent (как в ТЗ 4 шага).
+
+3. Реализуй фоновые задачи:
+   - processMarketEventsOutbox(db, bot): вычитывает до 20 событий из market_events (sent_at IS NULL AND attempts < 5 ORDER BY id), шлёт в канал (exchange_guild_state.market_channel_id или process.env.MARKET_CHANNEL_ID), помечает sent_at, пауза 250 мс. При отсутствии канала — sent_at с last_error='no_channel'.
+   - checkSharpNavMoves(db): каждые 5 минут ищет изменения NAV >= 10% за 24ч, антидубль 6 часов, ставит в очередь nav_move.
+   - processDailyDigest(db, bot): раз в сутки (захват дня через last_digest_day) формирует сводку топ-5 роста и падения за 24ч и ставит в очередь daily_digest.
+
+4. Запусти таймеры в client.on('ready'):
+   - processMarketEventsOutbox каждые 20 секунд (20 * 1000).
+   - checkSharpNavMoves каждые 5 минут (5 * 60 * 1000).
+   - processDailyDigest каждые 15 минут (15 * 60 * 1000).

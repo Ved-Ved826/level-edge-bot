@@ -1,0 +1,52 @@
+﻿Реализуй Шаг 4 системы Города (Выручка, Налоги и Аукционы):
+
+1. В collector/src/collector.ts:
+   - Добавь BUILDINGS_CONFIG (дубль параметров доходов/налогов для коллектора).
+   - processDailyPlotRevenue(db):
+     Каждые 15 минут проверяет участки, где building_level >= 1 и (last_revenue_at IS NULL OR last_revenue_at <= now - 24*3600).
+     Берёт revenue = BUILDINGS_CONFIG[type].daily_revenue[level - 1].
+     Если owner_type === 'user': начисляет users.coins = coins + revenue.
+     Если owner_type === 'company': начисляет companies.treasury = treasury + revenue.
+     Обновляет last_revenue_at = now.
+   - processWeeklyPlotTaxes(db):
+     Каждые 30 минут проверяет участки, где owner_id IS NOT NULL и (last_tax_at IS NULL OR last_tax_at <= now - 7*24*3600).
+     Берёт tax = BUILDINGS_CONFIG[type].weekly_tax[level - 1] (или 50 монет, если постройки нет).
+     Пытается списать tax (у игрока из coins или у компании из treasury).
+     Если списание успешно: last_tax_at = now, unpaid_taxes_count = 0.
+     Если средств не хватает: unpaid_taxes_count = unpaid_taxes_count + 1.
+     Если unpaid_taxes_count >= 2:
+       КОНФИСКАЦИЯ: сбрасывает owner_id = NULL, owner_type = NULL, unpaid_taxes_count = 0, for_sale_price = NULL.
+       Создаёт аукцион в plot_auctions: status = 'active', expires_at = now + 24*3600, highest_bid = 0.
+       Ставит в market_events уведомление о конфискации участка и аукционе.
+   - processExpiredAuctions(db):
+     Каждую минуту закрывает аукционы, где expires_at <= now AND status = 'active'.
+     Если есть highest_bidder_id: переводит участок победителю (owner_type, owner_id), деньги победителя идут в server_reserve.
+     Если ставок не было: участок остаётся свободным (plot_auctions.status = 'completed').
+   - Запусти таймеры в client.on('ready'): revenue (15 мин), taxes (30 мин), auctions (1 мин).
+
+2. Создай worker/src/commands/auction.ts:
+   - /auction (без параметров или подкоманда list):
+     Показывает активные аукционы: Участок #ID, здание, текущая ставка, лидер, осталось времени <t:expires_at:R>.
+   - /auction bid plot_id:X amount:Y:
+     Делает ставку. amount должен быть строго > текущего highest_bid.
+     Списывает монеты у нового лидера (users.coins >= amount).
+     Если был предыдущий лидер (highest_bidder_id) — возвращает ему его монеты обратно!
+     Обновляет highest_bid, highest_bidder_id, highest_bidder_type = 'user'.
+
+3. В worker/src/worker.ts:
+   - Добавь импорт handleAuctionCommand и маршрут для inter.data?.name === "auction".
+
+4. В collector/src/collector.ts:
+   - Зарегистрируй слэш-команду /auction:
+     options: [
+       {
+         name: 'list', description: 'Список активных аукционов участков', type: 1
+       },
+       {
+         name: 'bid', description: 'Сделать ставку на аукционе участка', type: 1,
+         options: [
+           { name: 'plot_id', description: 'ID участка', type: 4, required: true },
+           { name: 'amount', description: 'Размер ставки в 🪙', type: 4, required: true }
+         ]
+       }
+     ]

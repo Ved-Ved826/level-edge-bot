@@ -1,0 +1,42 @@
+﻿Реализуй Шаг 8 (Сезонный рейтинг ROI биржи):
+
+1. В collector/src/collector.ts:
+   - Добавь миграцию 027:
+     CREATE TABLE IF NOT EXISTS season_results (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       guild_id TEXT NOT NULL,
+       season_id TEXT NOT NULL,
+       kind TEXT NOT NULL CHECK(kind IN ('investor', 'company')),
+       rank INTEGER NOT NULL,
+       target_id TEXT NOT NULL,
+       label TEXT NOT NULL,
+       invested INTEGER NOT NULL,
+       returned INTEGER NOT NULL,
+       roi_bps INTEGER NOT NULL,
+       created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_season_results_lookup ON season_results(guild_id, season_id, kind, rank);
+   - В регистрацию слэш-команд добавь /exchange-top:
+     {
+       name: 'exchange-top',
+       description: 'Рейтинг инвесторов и компаний сезона по доходности (ROI)',
+       options: [
+         { name: 'season', description: 'ID сезона (по умолчанию текущий)', type: 3, required: false },
+       ],
+     }
+   - В функции liquidateCompaniesOnSeasonChange() перед удалением компаний:
+     Рассчитай итоги сезона из company_trades текущего сезона:
+     * Для каждого инвестора: invested = сумма coins покупок, returned = сумма coins продаж + выплаты ликвидации.
+     * roi_bps = invested >= 500 ? Math.round(((returned - invested) / invested) * 10000) : null.
+     * Отбери топ-3 инвесторов (где invested >= 500 и roi_bps не null) и топ-3 компаний по казне перед ликвидацией.
+     * Вставь записи в season_results и поставь событие season_results в market_events внутри того же db.batch.
+
+2. Создай worker/src/commands/exchange-top.ts:
+   - Команда /exchange-top: принимает опциональный параметр season (по умолчанию getSeasonId()).
+   - Если сезон прошлый — читает готовые результаты из season_results.
+   - Если сезон текущий — агрегирует company_trades текущего сезона (invested >= 500 монет) и выводит топ инвесторов по ROI% = (roi_bps / 100).
+   - Выводит красивый Embed с лидерами доходности.
+
+3. В worker/src/worker.ts:
+   - Добавь импорт handleExchangeTop и маршрут:
+     if (inter.type === 2 && inter.data?.name === "exchange-top") { return handleExchangeTop(inter as CommandInteraction, env, ctx); }

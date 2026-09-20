@@ -1,0 +1,22 @@
+Задача: добавить таблицы истории и очередь публичных событий (outbox). Никакой видимой игрокам логики и никакого изменения экономики на этом шаге.
+
+1. Миграции — идемпотентно, в том же месте и в том же стиле, где collector уже создаёт company_crises. Для ALTER TABLE ADD COLUMN сначала проверяй PRAGMA table_info.
+   - companies: добавить `mood_bps INTEGER NOT NULL DEFAULT 0` и `mood_updated_at INTEGER NOT NULL DEFAULT 0`.
+   - company_trades (id INTEGER PK AUTOINCREMENT, guild_id, company_id, user_id, season_id TEXT, side TEXT CHECK(side IN ('buy','sell')), shares INTEGER, base_amount INTEGER, coins INTEGER (для buy — сколько заплатил, для sell — сколько получил), treasury_after INTEGER, circulating_after INTEGER, mood_bps_after INTEGER, created_at INTEGER). Индексы: (company_id, created_at), (guild_id, season_id, user_id).
+   - company_nav_history (id, guild_id, company_id, ts INTEGER, treasury INTEGER, circulating INTEGER, mood_bps INTEGER, reason TEXT — одно из 'create','buy','sell','growth','crisis'). Индекс (company_id, ts).
+   - market_events (id INTEGER PK AUTOINCREMENT, guild_id, kind TEXT, payload_json TEXT, created_at INTEGER, sent_at INTEGER NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT). Индекс (sent_at, id).
+   - exchange_guild_state (guild_id PK, market_channel_id TEXT NULL, last_digest_day TEXT NULL, next_crisis_at INTEGER NULL).
+   Не используй CASCADE; при ликвидации сезона company_trades и company_nav_history удалять НЕ надо (нужны для рейтинга; чистка — отдельная задача по возрасту, см. п.4).
+
+2. Запись истории — В ТОМ ЖЕ db.batch, что и сама операция, с тем же guard-условием (нельзя записать историю, если основная операция не применилась):
+   - /company-create -> строка company_nav_history reason='create';
+   - /invest и /divest -> строка company_trades + company_nav_history ('buy'/'sell'); значения *_after брать из рассчитанного состояния после сделки;
+   - processDailyCompanyGrowth -> company_nav_history reason='growth' при grant > 0.
+   season_id получай той же функцией/логикой, что использует ликвидация сезона (YYYY-spring и т.д.). Если worker не может импортировать её из collector, вынеси в общий модуль или сделай дубль с комментарием keep in sync.
+
+3. Outbox: `worker/src/exchange/events.ts`
+   - `enqueueMarketEventStatement(guildId, kind, payload)` возвращает готовый statement (НЕ выполняет), чтобы вставлять его в существующие батчи. Допустимые kind: 'whale_trade','nav_move','crisis_spawn','crisis_resolved','daily_digest','season_results'. Реализуй только сам механизм; вызовы появятся на следующих шагах.
+
+4. Чистка: раз в час в collector удалять из market_events отправленные записи старше 14 дней и из company_nav_history записи старше 60 дней.
+
+Критерий готовности: приложение стартует на пустой и на существующей БД (миграции безопасны при повторном запуске), /company-create, /invest, /divest работают как раньше и дополнительно пишут историю; в БД после серии сделок видно строки в company_trades и company_nav_history.

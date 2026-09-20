@@ -1,0 +1,33 @@
+Задача: вынести всю денежную математику биржи в чистые функции без I/O и покрыть их тестами инвариантов. ПОВЕДЕНИЕ ПРОДАКШЕНА ДОЛЖНО ОСТАТЬСЯ ТОЧНО ТАКИМ ЖЕ (комиссии пока прежние: покупка +6%, продажа -5%).
+
+1. Создай `worker/src/exchange/constants.ts` со всеми константами из EXCHANGE_2_RULES.md (§4). На этом шаге значения комиссий выставь ПРЕЖНИЕ, чтобы результат был байт-в-байт как сейчас: покупка totalCost = ceil(baseCost * 1.06), founderFee = floor(baseCost * 3 / 100), reserveFee = остаток; продажа netPayout = floor(basePayout * 95 / 100), reserveCut = остаток. Новые комиссии (4%/3%) добавим на шаге 6 отдельным коммитом. Если для этого нужны временные «legacy»-константы, заведи их с явным комментарием.
+
+2. Создай `worker/src/exchange/math.ts` — чистые функции, БЕЗ доступа к БД и времени (время передаётся параметром):
+   - circulating(availableShares), navX100(treasury, circulating) (floor до 2 знаков, как в /stocks);
+   - quoteBuy({ amount, treasury, circulating, moodBps }) -> { baseCost, premium, founderFee, reserveFee, totalCost, treasuryDelta, founderDelta, reserveDelta, moodShiftBps };
+   - quoteSell({ amount, treasury, circulating, moodBps }) -> { basePayout, discount, grossPayout, netPayout, reserveCut, treasuryDelta, reserveDelta, moodShiftBps };
+   - effectiveMood(moodBps, updatedAtSec, nowSec) и applyMoodShift(moodBps, shiftBps);
+   - dailyGrowthGrant(treasury, reserveBalance).
+   Логику настроения реализуй уже сейчас по спецификации из EXCHANGE_2_RULES.md (§3), но обработчики пока ВСЕГДА передают moodBps = 0 и игнорируют moodShiftBps. Так при moodBps = 0 премия и скидка равны 0 и результат совпадает со старой формулой.
+   Формулы настроения (m = эффективное настроение в bps, k = amount, T = treasury, C = circulating до сделки):
+     покупка: premium = m > 0 ? ceil(baseCost * m / 10000) : 0; в казну уходит baseCost + premium.
+     продажа: discount = m < 0 ? ceil(basePayout * (-m) / 10000) : 0; grossPayout = basePayout - discount; из казны уходит grossPayout (казна остаётся с discount).
+     сдвиг настроения: shift = min(MOOD_MAX_SHIFT_PER_TRADE_BPS, round(MOOD_IMPULSE_BPS * k / C)); покупка +shift, продажа -shift; итог обрезается в [-2500, 2500].
+     затухание: trunc(m * 0.5 ** (dtHours / MOOD_HALF_LIFE_HOURS)), усечение к нулю.
+   Все деньги — целые числа, только floor/ceil. Комментарий к каждой формуле: зачем она такая.
+
+3. Перепиши invest.ts и divest.ts так, чтобы они использовали quoteBuy/quoteSell (SQL-запросы, guard-условия батча, тексты ответов и порядок проверок не менять). Функцию суточного роста в collector.ts перевести на dailyGrowthGrant (если импорт между пакетами невозможен, сделай минимальное дублирование с комментарием keep in sync).
+
+4. Тесты (используй тест-раннер из package.json; если его нет, возьми vitest и в конце ответа напиши команду установки; тесты чистых функций без БД):
+   а) Золотые примеры из гайда §3.5: T=5000, available=40, покупка 5 акций -> baseCost 417, totalCost 443, founderFee 12, reserveFee 14; затем T=5417, available=35, продажа 5 -> basePayout 416, netPayout 395, reserveCut 21. Плюс пример роста §5.3: T=5001 -> grant 50.
+   б) Property-тесты (детерминированный seeded PRNG, минимум 10 000 итераций, случайные T, C, amount, moodBps):
+      - сохранение монет: покупка — totalCost == treasuryDelta + founderDelta + reserveDelta; продажа — grossPayout == -treasuryDelta, netPayout + reserveCut == grossPayout (а с учётом скидки: basePayout == netPayout + reserveCut + discount);
+      - при moodBps = 0 NAV после покупки и после продажи не уменьшается;
+      - круговая сделка (купил -> продал) никогда не даёт прибыли при любом moodBps;
+      - premium > 0 только при mood > 0, discount > 0 только при mood < 0;
+      - netPayout никогда не превышает basePayout;
+      - настроение всегда в [-2500, 2500]; затухание: через один период полураспада |m| падает примерно вдвое (допуск 1 bps), знак не меняется;
+      - нарезка на мелкие сделки не даёт большего сдвига настроения, чем одна крупная (допуск на округление: число мелких сделок в bps).
+   в) Симуляция в памяти (без БД): 5 игроков, 3 компании, резерв; 5000 случайных операций (создание, покупка, продажа, суточный рост); после каждой проверять: сумма всех монет (игроки + казны + резерв) неизменна, ни одна казна и резерв не отрицательны, available_shares в [0, 100].
+
+Критерий готовности: тесты зелёные; handlers ведут себя как раньше (докажи это золотыми примерами); typecheck проходит.

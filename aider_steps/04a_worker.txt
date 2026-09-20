@@ -1,0 +1,26 @@
+﻿Выполни часть 4.1 задачи: визуал и воркер биржи:
+
+1. Создай worker/src/exchange/constants.ts с константами:
+   - WHALE_MIN_SHARES = 5; WHALE_MIN_COINS = 1000;
+   - NAV_MOVE_THRESHOLD_PCT = 10; NAV_MOVE_LOOKBACK_HOURS = 24; NAV_MOVE_DEDUP_HOURS = 6;
+   - DIGEST_TOP_N = 5; DIGEST_MIN_COMPANIES = 2; SPARKLINE_POINTS = 24;
+   - MARKET_EVENTS_BATCH = 20; MARKET_EVENTS_MAX_ATTEMPTS = 5; MARKET_EVENTS_SEND_PAUSE_MS = 250;
+
+2. Создай worker/src/exchange/sparkline.ts:
+   - Чистая функция sparkline(values: number[]): string с символами ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']. При min === max возвращать '▄'.repeat(len).
+
+3. Создай worker/src/exchange/nav.ts:
+   - buildHourlyNavSeries(records, nowSec, points) с fill-forward для пропусков.
+   - navChangePct(current, base): ((current - base) / base) * 100.
+
+4. Создай worker/src/exchange/format.ts:
+   - sanitizeDisplayName(raw): очистка от @, <, >, `, *, ~, |, _, обрезка до 32 символов.
+
+5. В worker/src/commands/invest.ts:
+   - При покупке/продаже, если amount >= WHALE_MIN_SHARES или сумма >= WHALE_MIN_COINS, добавляй в транзакцию tx.execute(enqueueMarketEventStatement(gid, 'whale_trade', { ... })).
+
+6. В worker/src/commands/stocks.ts:
+   - Выбирай company_nav_history за 25 часов, вычисляй 24ч дельту NAV и спарклайн из SPARKLINE_POINTS точек. Выводи в поле: `NAV: ... • Казна: ... • Доступно: ...\n24ч: +X.X% ▁▃▄▅▇█`.
+
+7. Создай worker/src/commands/exchange-setup.ts и добавь маршрут в worker/src/worker.ts:
+   - Команда /exchange-setup channel для сохранения market_channel_id в exchange_guild_state (только Manage Guild).

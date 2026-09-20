@@ -1,0 +1,9 @@
+﻿Исправь ошибки TypeScript в worker, чтобы `cd worker && npx tsc --noEmit` завершался с 0 ошибок:
+
+1. В worker/tsconfig.json:
+   - В compilerOptions добавь "jsx": "react-jsx" (требуется для Card.tsx и Satori).
+   - Убедись, что "lib" настроен корректно (например, ["ES2022"]), без конфликтующего "DOM" с @cloudflare/workers-types.
+   - Добавь секцию "exclude": ["node_modules", "**/*.test.ts"], чтобы тесты не попадали в проверку воркера.
+
+2. В worker/src/utils/discord.ts:
+   - Исправь несовместимость типов Uint8Array с BufferSource / BlobPart в функциях crypto.subtle.importKey, verify и создании Blob (добавь приведение типов `as any` или корректный каст), чтобы компилятор TypeScript не выдавал ошибок перегрузки.

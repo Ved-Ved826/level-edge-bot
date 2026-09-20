@@ -1,0 +1,36 @@
+﻿Реализуй финальный Шаг 5 системы Города — Интерактивную карту города (/map):
+
+1. Создай worker/src/commands/map.ts:
+   - Импортируй PLOTS_CATALOG и BUILDINGS_CONFIG из ../city/catalog.
+   - Реализуй handleMapCommand(inter, env, ctx):
+     * Запрашивает city_plots, plot_auctions (активные) и server_reserve (баланс казны города) для текущей guild_id.
+     * Запрашивает имена/тикеры компаний для участков, где owner_type === 'company'.
+     * Формирует визуальную сетку 4x3 в описании Embed:
+       Каждый участок отображает: `#ID [Эмодзи здания/ур.]` или `🕊️` (свободен), `🏷️` (в продаже), `🔨` (аукцион).
+     * Группирует участки по 5 зонам:
+       🏔️ Горный склон (#1, #2)
+       🌾 Пригородная долина (#3, #4)
+       🛣️ Шоссе и Торговый проспект (#5, #6, #9, #10)
+       🏙️ Деловой центр (#7, #8)
+       🌊 Морская гавань (#11, #12)
+     * В футере или поле выводит баланс городской казны (server_reserve.balance).
+     * Добавляет ActionRow со String Select Menu (custom_id: "city_map_select", placeholder: "🔍 Выберите участок для осмотра"):
+       12 опций (по одной на каждый участок #1..#12) с названием, типом постройки и ценой/статусом.
+   - Реализуй handleMapSelect(inter, env, ctx):
+     * Срабатывает при выборе участка в меню city_map_select (inter.type === 3).
+     * Достаёт выбранный plot_id из inter.data.values[0].
+     * Отвечает подробной информацией об участке (как в /plot info).
+
+2. В worker/src/worker.ts:
+   - Импортируй handleMapCommand и handleMapSelect из ./commands/map.
+   - Добавь маршруты:
+     if (inter.type === 2 && inter.data?.name === "map") { return handleMapCommand(inter as CommandInteraction, env, ctx); }
+     if (inter.type === 3 && inter.data?.custom_id === "city_map_select") { return handleMapSelect(inter as any, env, ctx); }
+
+3. В collector/src/collector.ts:
+   - В цикле регистрации команд гильдии добавь слэш-команду /map:
+     { name: 'map', description: 'Город: интерактивная карта участков и недвижимости' }
+
+4. Проверь типы:
+   - Запусти `cd collector && npx tsc --noEmit` и `cd ../worker && npx tsc --noEmit`.
+   - Устрани любые замечания TypeScript и сделай git commit.

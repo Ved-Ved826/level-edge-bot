@@ -1,0 +1,16 @@
+﻿Исправь ошибки компиляции TypeScript в collector:
+
+1. В collector/src/crisisCatalog.ts:
+   - Объяви и экспортируй интерфейс CrisisScenario:
+     export interface CrisisScenario {
+       kind: CrisisKind;
+       scenario_text: string;
+       options: CrisisOption[];
+       timeout: CrisisOutcome;
+     }
+   - Используй его для массива CRISIS_CATALOG:
+     export const CRISIS_CATALOG: CrisisScenario[] = [
+
+2. В collector/src/crises.ts:
+   - В строке 174 в .map() явно укажи тип параметра:
+     options: scenario.options.map((o: any) => ({ id: o.id, label: o.label, emoji: o.emoji })),

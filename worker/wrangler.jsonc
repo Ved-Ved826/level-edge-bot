@@ -1,18 +1,15 @@
 {
-  "name": "level-edge",
+  "name": "level-edge-worker",
   "main": "src/worker.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "DATABASE_URL": "libsql://disbot-db-zomka.aws-ap-northeast-1.turso.io",
+    "DISCORD_APPLICATION_ID": "939777923320283176"
+  },
   "rules": [
-    {
-      "type": "Text",
-      "globs": ["**/*.md"],
-      "fallthrough": true
-    },
-    {
-      "type": "Data",
-      "globs": ["**/*.ttf", "**/*.wasm"],
-      "fallthrough": true
-    }
+    { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
+    { "type": "Data", "globs": ["**/*.ttf"], "fallthrough": true },
+    { "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }
   ]
 }

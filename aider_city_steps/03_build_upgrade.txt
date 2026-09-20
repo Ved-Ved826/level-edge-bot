@@ -1,0 +1,52 @@
+﻿Реализуй Шаг 3 системы Города (Команды /build и /upgrade):
+
+1. Создай worker/src/commands/build.ts:
+   - Импортируй PLOTS_CATALOG и BUILDINGS_CONFIG из ../city/catalog.
+   - Реализуй handleBuildCommand(inter, env, ctx):
+     * Параметры: plot_id (1-12), type (тип постройки из BuildingType).
+     * Проверяй право владения: вызвавший — владелец-пользователь или создатель компании-владельца.
+     * Проверяй, что на участке ещё нет постройки (building_level === 0 или building_type IS NULL).
+     * Проверяй, что выбранный type входит в catalog.allowed_buildings для этого участка.
+     * Стоимость: cfg.base_cost.
+     * Списание: если владелец игрок — users.coins >= cost; если компания — companies.treasury >= cost.
+     * Атомарно обновляй city_plots: building_type = type, building_level = 1, last_revenue_at = now.
+     * Отвечай красивым Embed с эмодзи постройки, суточной доходностью 1-го уровня и недельным налогом.
+
+   - Реализуй handleUpgradeCommand(inter, env, ctx):
+     * Параметры: plot_id (1-12).
+     * Проверяй право владения (игрок или создатель компании).
+     * Проверяй, что здание есть (building_level >= 1) и уровень < 3 (максимум 3).
+     * Стоимость апгрейда: Math.round(cfg.base_cost * Math.pow(cfg.upgrade_multiplier, currentLevel)).
+     * Списание средств (users.coins или companies.treasury).
+     * Атомарно обновляй city_plots: building_level = building_level + 1.
+     * Отвечай Embed с новым уровнем, обновлённым суточным доходом и налогом.
+
+2. В worker/src/worker.ts:
+   - Добавь импорт handleBuildCommand, handleUpgradeCommand.
+   - Добавь маршруты:
+     if (inter.type === 2 && inter.data?.name === "build") { return handleBuildCommand(inter as CommandInteraction, env, ctx); }
+     if (inter.type === 2 && inter.data?.name === "upgrade") { return handleUpgradeCommand(inter as CommandInteraction, env, ctx); }
+
+3. В collector/src/collector.ts:
+   - В регистрацию слэш-команд добавь:
+     * /build:
+       options: [
+         { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+         {
+           name: 'type', description: 'Тип бизнеса', type: 3, required: true,
+           choices: [
+             { name: '⛏️ Шахта', value: 'mine' },
+             { name: '🌾 Ферма', value: 'farm' },
+             { name: '⛽ АЗС', value: 'gas_station' },
+             { name: '🛒 Супермаркет', value: 'shop' },
+             { name: '🍽️ Ресторан', value: 'restaurant' },
+             { name: '🎰 Казино', value: 'casino' },
+             { name: '🏛️ Банк', value: 'bank' },
+             { name: '⚓ Морской порт', value: 'port' }
+           ]
+         }
+       ]
+     * /upgrade:
+       options: [
+         { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true }
+       ]

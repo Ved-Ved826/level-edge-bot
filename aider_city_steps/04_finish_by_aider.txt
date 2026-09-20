@@ -1,0 +1,27 @@
+﻿Заверши реализацию Шага 4 (Экономика города, налоги, доход и аукционы) и доведи сборку до 0 ошибок TypeScript:
+
+1. В worker/src/commands/auction.ts и worker/src/worker.ts:
+   - Убедись, что файл worker/src/commands/auction.ts существует, корректно обрабатывает подкоманды `list` и `bid plot_id amount`, блокирует ставку на балансе пользователя и возвращает монеты предыдущему лидеру при перебитии.
+   - Убедись, что в worker/src/worker.ts импортирован `handleAuctionCommand` и добавлен маршрут:
+     if (inter.type === 2 && inter.data?.name === "auction") { return handleAuctionCommand(inter as CommandInteraction, env, ctx); }
+
+2. В collector/src/collector.ts:
+   - Добавь BUILDINGS_CONFIG и вспомогательную функцию getBuildingEconomy (параметры дохода и налогов 8 построек).
+   - Реализуй processDailyPlotRevenue(db, bot: Client):
+     * Суточный доход для участков с постройкой.
+     * Захват суток в last_revenue_at в СЕКУНДАХ (Math.floor(Date.now() / 1000)).
+     * Начисление: пользователю в users.coins, компании в companies.treasury.
+   - Реализуй processWeeklyPlotTaxes(db, bot: Client):
+     * Недельный налог (last_tax_at в СЕКУНДАХ < nowSec - 7*24*3600).
+     * Списание налога (пользователь или компания), при успехе — пополнение server_reserve.
+     * При нехватке средств — инкремент unpaid_taxes_count.
+   - Реализуй processExpiredAuctions(db, bot: Client):
+     * Завершение аукционов по expires_at (в МИЛЛИСЕКУНДАХ Date.now()).
+     * Атомарный db.batch: выплата продавцу, передача участка победителю, закрытие аукциона.
+   - В регистрацию слэш-команд гильдии добавь регистрацию /auction (subcommands: list, bid).
+   - В client.on('ready') запусти периодические вызовы этих 3 процессов.
+
+3. Проверка типов и сборка:
+   - Выполни проверку типов: `cd collector && npx tsc --noEmit` и `cd ../worker && npx tsc --noEmit`.
+   - Устрани любые ошибки типов TypeScript, если они возникнут.
+   - Закоммить результат.

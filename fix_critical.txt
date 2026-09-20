@@ -1,0 +1,28 @@
+﻿Примени следующие исправления в кодовой базе:
+
+1. collector/src/collector.ts:
+   - [C2] В функциях processDailyCompanyGrowth() и liquidateCompaniesOnSeasonChange() замени неработающий db.transaction('write') на db.batch([...], 'write') с условными UPDATE (balance >= grant, last_growth_day < todayStr).
+   - [C4] В voiceStateUpdate ограничь максимальное начисление за одну сессию 4 часами:
+     const MAX_SESSION_MS = 4 * 60 * 60 * 1000;
+     const elapsedMs = Math.max(0, Math.min(now - joinedAt, MAX_SESSION_MS));
+   - [M1] В updateQuestProgress() сделай начисление награды атомарным:
+     UPDATE user_quest_progress SET completed_at = ? WHERE user_id = ? AND guild_id = ? AND quest_daily_id = ? AND completed_at IS NULL;
+     Начислять XP и монеты ТОЛЬКО если rowsAffected === 1.
+   - [M11] В client.on('ready') или clientReady добавь таймер проверки зависших дуэлей:
+     setInterval(async () => { try { await checkExpiredDuels(db, client); } catch(e) { console.error('[Duel tick]', e); } }, 30 * 1000);
+
+2. worker/src/commands/market.ts:
+   - [M-1, M-2] В handleMarket (ветка buy):
+     Оберни покупку в безопасный захват лота: сначала атомарный DELETE FROM market_listings WHERE id = ? AND guild_id = ?; если rowsAffected === 0, отвечать что лот уже куплен.
+   - [M-6] Запрети покупку собственного лота: if (sellerId === uid) throw/return "Нельзя покупать собственный лот".
+   - [M-7] Проверяй цену при продаже: Number.isInteger(priceOption) && priceOption > 0.
+
+3. worker/src/db/queries.ts:
+   - [Q-1] В updateCoins перепиши обновление на атомарный SQL:
+     UPDATE users SET coins = MAX(0, coins + ?) WHERE user_id = ? AND guild_id = ?
+
+4. worker/src/commands/trade.ts:
+   - [M-4] В handleTrade запрети трейд с самим собой (targetOption === uid) и требуй Number.isInteger(priceOption) && priceOption >= 0.
+
+5. worker/src/commands/invest.ts:
+   - [B-1] В handleDivest перенеси проверку 51 акции владельца в условие UPDATE (AND shares_count - ? >= 51 для владельца).

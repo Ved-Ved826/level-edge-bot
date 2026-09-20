@@ -1,14 +1,14 @@
-import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
-// ВАЖНО: субпять /web обязателен для Termux Android — там нет нативных
-// glibc C++ бинарей libsql (иначе MODULE_NOT_FOUND в requireNative).
+﻿import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
+// Р’РђР–РќРћ: СЃСѓР±РїСЏС‚СЊ /web РѕР±СЏР·Р°С‚РµР»РµРЅ РґР»СЏ Termux Android вЂ” С‚Р°Рј РЅРµС‚ РЅР°С‚РёРІРЅС‹С…
+// glibc C++ Р±РёРЅР°СЂРµР№ libsql (РёРЅР°С‡Рµ MODULE_NOT_FOUND РІ requireNative).
 import { createClient } from '@libsql/client/web';
 import 'dotenv/config';
 
 import http from 'node:http';
 
-import { processCompanyCrises, processCrisisTimeouts, sendCrisisSpawnEvent } from './crises';
+import { processCompanyCrises, processCrisisTimeouts, sendCrisisSpawnEvent } from './crises.js';
 
-// Микро-сервер для прохождения Healthcheck на Koyeb
+// РњРёРєСЂРѕ-СЃРµСЂРІРµСЂ РґР»СЏ РїСЂРѕС…РѕР¶РґРµРЅРёСЏ Healthcheck РЅР° Koyeb
 const PORT = process.env.PORT || 8000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -18,9 +18,9 @@ http.createServer((req, res) => {
 });
 
 // ============================================
-// Глобальная защита от сетевых сбоев Turso/libSQL
-// (FetchError: Premature close, ECONNRESET, fetch failed и т.п.)
-// Не даём процессу упасть из-за временного разрыва соединения с БД.
+// Р“Р»РѕР±Р°Р»СЊРЅР°СЏ Р·Р°С‰РёС‚Р° РѕС‚ СЃРµС‚РµРІС‹С… СЃР±РѕРµРІ Turso/libSQL
+// (FetchError: Premature close, ECONNRESET, fetch failed Рё С‚.Рї.)
+// РќРµ РґР°С‘Рј РїСЂРѕС†РµСЃСЃСѓ СѓРїР°СЃС‚СЊ РёР·-Р·Р° РІСЂРµРјРµРЅРЅРѕРіРѕ СЂР°Р·СЂС‹РІР° СЃРѕРµРґРёРЅРµРЅРёСЏ СЃ Р‘Р”.
 // ============================================
 function isTransientNetworkError(err: any): boolean {
   const message = String(err?.message || err || '');
@@ -37,7 +37,7 @@ function isTransientNetworkError(err: any): boolean {
 
 process.on('unhandledRejection', (reason: any) => {
   if (isTransientNetworkError(reason)) {
-    console.error('[Network] Unhandled rejection (transient network error), collector продолжает работу:', reason?.message || reason);
+    console.error('[Network] Unhandled rejection (transient network error), collector РїСЂРѕРґРѕР»Р¶Р°РµС‚ СЂР°Р±РѕС‚Сѓ:', reason?.message || reason);
   } else {
     console.error('[UnhandledRejection]', reason);
   }
@@ -45,14 +45,14 @@ process.on('unhandledRejection', (reason: any) => {
 
 process.on('uncaughtException', (err: any) => {
   if (isTransientNetworkError(err)) {
-    console.error('[Network] Uncaught exception (transient network error), collector продолжает работу:', err?.message || err);
+    console.error('[Network] Uncaught exception (transient network error), collector РїСЂРѕРґРѕР»Р¶Р°РµС‚ СЂР°Р±РѕС‚Сѓ:', err?.message || err);
   } else {
     console.error('[UncaughtException]', err);
   }
 });
 
 // ============================================
-// Пул квестов (дублировано для collector, избегаем tsconfig issues)
+// РџСѓР» РєРІРµСЃС‚РѕРІ (РґСѓР±Р»РёСЂРѕРІР°РЅРѕ РґР»СЏ collector, РёР·Р±РµРіР°РµРј tsconfig issues)
 // ============================================
 interface QuestTemplate {
   id: string;
@@ -64,24 +64,24 @@ interface QuestTemplate {
 }
 
 const QUESTS_POOL: QuestTemplate[] = [
-  // Текстовые квесты
-  { id: 'messages_warmup_10_50xp', title: 'Разминка пальцев', desc: '10 сообщений', type: 'messages', target: 10, xp: 50 },
-  { id: 'messages_active_30_150xp', title: 'Активный спикер', desc: '30 сообщений', type: 'messages', target: 30, xp: 150 },
-  { id: 'messages_god_60_300xp', title: 'Гроза чата', desc: '60 сообщений', type: 'messages', target: 60, xp: 300 },
-  { id: 'messages_wall_100_500xp', title: 'Стена текста', desc: '100 сообщений', type: 'messages', target: 100, xp: 500 },
-  { id: 'messages_long_20_100xp', title: 'Философ', desc: '20 сообщений > 100 символов', type: 'messages', target: 20, xp: 100 },
-  // Голосовые квесты
-  { id: 'voice_peep_15_100xp', title: 'Заглянул на огонек', desc: '15 минут в войсе', type: 'voice', target: 15, xp: 100 },
-  { id: 'voice_deep_45_250xp', title: 'Душевный разговор', desc: '45 минут в войсе', type: 'voice', target: 45, xp: 250 },
-  { id: 'voice_marathon_90_450xp', title: 'Войс-марафон', desc: '90 минут в войсе', type: 'voice', target: 90, xp: 450 },
-  { id: 'voice_host_150_750xp', title: 'Хозяин эфира', desc: '150 минут в войсе', type: 'voice', target: 150, xp: 750 },
-  { id: 'voice_night_30_200xp', title: 'Ночной дозор', desc: '30 минут после 00:00 UTC', type: 'voice', target: 30, xp: 200 },
-  // Комбо и особые
-  { id: 'combo_double_25_25_300xp', title: 'Двойной удар', desc: '25 сообщ. + 25 мин войса', type: 'combo', target: 25, xp: 300 },
-  { id: 'combo_morning_15_100xp', title: 'Утренний кофе', desc: '15 сообщений (06:00-12:00)', type: 'messages', target: 15, xp: 100 },
-  { id: 'combo_night_10_20_150xp', title: 'Совместное усилие', desc: '10 сообщ. + 20 мин войса', type: 'combo', target: 10, xp: 150 },
-  { id: 'combo_balance_50_50_400xp', title: 'Баланс', desc: '50 сообщ. + 50 мин войса', type: 'combo', target: 50, xp: 400 },
-  { id: 'combo_super_100_100_800xp', title: 'Ирония судьбы', desc: '100 сообщ. + 100 мин войса', type: 'combo', target: 100, xp: 800 },
+  // РўРµРєСЃС‚РѕРІС‹Рµ РєРІРµСЃС‚С‹
+  { id: 'messages_warmup_10_50xp', title: 'Р Р°Р·РјРёРЅРєР° РїР°Р»СЊС†РµРІ', desc: '10 СЃРѕРѕР±С‰РµРЅРёР№', type: 'messages', target: 10, xp: 50 },
+  { id: 'messages_active_30_150xp', title: 'РђРєС‚РёРІРЅС‹Р№ СЃРїРёРєРµСЂ', desc: '30 СЃРѕРѕР±С‰РµРЅРёР№', type: 'messages', target: 30, xp: 150 },
+  { id: 'messages_god_60_300xp', title: 'Р“СЂРѕР·Р° С‡Р°С‚Р°', desc: '60 СЃРѕРѕР±С‰РµРЅРёР№', type: 'messages', target: 60, xp: 300 },
+  { id: 'messages_wall_100_500xp', title: 'РЎС‚РµРЅР° С‚РµРєСЃС‚Р°', desc: '100 СЃРѕРѕР±С‰РµРЅРёР№', type: 'messages', target: 100, xp: 500 },
+  { id: 'messages_long_20_100xp', title: 'Р¤РёР»РѕСЃРѕС„', desc: '20 СЃРѕРѕР±С‰РµРЅРёР№ > 100 СЃРёРјРІРѕР»РѕРІ', type: 'messages', target: 20, xp: 100 },
+  // Р“РѕР»РѕСЃРѕРІС‹Рµ РєРІРµСЃС‚С‹
+  { id: 'voice_peep_15_100xp', title: 'Р—Р°РіР»СЏРЅСѓР» РЅР° РѕРіРѕРЅРµРє', desc: '15 РјРёРЅСѓС‚ РІ РІРѕР№СЃРµ', type: 'voice', target: 15, xp: 100 },
+  { id: 'voice_deep_45_250xp', title: 'Р”СѓС€РµРІРЅС‹Р№ СЂР°Р·РіРѕРІРѕСЂ', desc: '45 РјРёРЅСѓС‚ РІ РІРѕР№СЃРµ', type: 'voice', target: 45, xp: 250 },
+  { id: 'voice_marathon_90_450xp', title: 'Р’РѕР№СЃ-РјР°СЂР°С„РѕРЅ', desc: '90 РјРёРЅСѓС‚ РІ РІРѕР№СЃРµ', type: 'voice', target: 90, xp: 450 },
+  { id: 'voice_host_150_750xp', title: 'РҐРѕР·СЏРёРЅ СЌС„РёСЂР°', desc: '150 РјРёРЅСѓС‚ РІ РІРѕР№СЃРµ', type: 'voice', target: 150, xp: 750 },
+  { id: 'voice_night_30_200xp', title: 'РќРѕС‡РЅРѕР№ РґРѕР·РѕСЂ', desc: '30 РјРёРЅСѓС‚ РїРѕСЃР»Рµ 00:00 UTC', type: 'voice', target: 30, xp: 200 },
+  // РљРѕРјР±Рѕ Рё РѕСЃРѕР±С‹Рµ
+  { id: 'combo_double_25_25_300xp', title: 'Р”РІРѕР№РЅРѕР№ СѓРґР°СЂ', desc: '25 СЃРѕРѕР±С‰. + 25 РјРёРЅ РІРѕР№СЃР°', type: 'combo', target: 25, xp: 300 },
+  { id: 'combo_morning_15_100xp', title: 'РЈС‚СЂРµРЅРЅРёР№ РєРѕС„Рµ', desc: '15 СЃРѕРѕР±С‰РµРЅРёР№ (06:00-12:00)', type: 'messages', target: 15, xp: 100 },
+  { id: 'combo_night_10_20_150xp', title: 'РЎРѕРІРјРµСЃС‚РЅРѕРµ СѓСЃРёР»РёРµ', desc: '10 СЃРѕРѕР±С‰. + 20 РјРёРЅ РІРѕР№СЃР°', type: 'combo', target: 10, xp: 150 },
+  { id: 'combo_balance_50_50_400xp', title: 'Р‘Р°Р»Р°РЅСЃ', desc: '50 СЃРѕРѕР±С‰. + 50 РјРёРЅ РІРѕР№СЃР°', type: 'combo', target: 50, xp: 400 },
+  { id: 'combo_super_100_100_800xp', title: 'РСЂРѕРЅРёСЏ СЃСѓРґСЊР±С‹', desc: '100 СЃРѕРѕР±С‰. + 100 РјРёРЅ РІРѕР№СЃР°', type: 'combo', target: 100, xp: 800 },
 ];
 
 // Re-export from shared types (duplicate for collector to avoid tsconfig issues)
@@ -90,8 +90,8 @@ const calculateLevel = (xp: number): number => {
 };
 
 // ============================================
-// Каталог городских участков (Шаг 1 - Недвижимость и Город)
-// Дублировано из worker/src/city/catalog.ts для collector (tsconfig issues)
+// РљР°С‚Р°Р»РѕРі РіРѕСЂРѕРґСЃРєРёС… СѓС‡Р°СЃС‚РєРѕРІ (РЁР°Рі 1 - РќРµРґРІРёР¶РёРјРѕСЃС‚СЊ Рё Р“РѕСЂРѕРґ)
+// Р”СѓР±Р»РёСЂРѕРІР°РЅРѕ РёР· worker/src/city/catalog.ts РґР»СЏ collector (tsconfig issues)
 // ============================================
 
 type CityZone = 'mountain' | 'suburb' | 'highway' | 'center' | 'coast';
@@ -105,26 +105,26 @@ interface CityPlotTemplate {
 }
 
 const PLOTS_CATALOG: CityPlotTemplate[] = [
-  { id: 1, zone: 'mountain', title: 'Горный склон', base_price: 3000, allowed_buildings: ['mine'] },
-  { id: 2, zone: 'mountain', title: 'Горный склон', base_price: 3000, allowed_buildings: ['mine'] },
-  { id: 3, zone: 'suburb', title: 'Пригородная долина', base_price: 2500, allowed_buildings: ['farm'] },
-  { id: 4, zone: 'suburb', title: 'Пригородная долина', base_price: 2500, allowed_buildings: ['farm'] },
-  { id: 5, zone: 'highway', title: 'Шоссе и трасса', base_price: 3500, allowed_buildings: ['gas_station', 'shop'] },
-  { id: 6, zone: 'highway', title: 'Шоссе и трасса', base_price: 3500, allowed_buildings: ['gas_station', 'shop'] },
-  { id: 7, zone: 'center', title: 'Деловой центр (Золотая земля)', base_price: 7000, allowed_buildings: ['casino', 'bank', 'restaurant'] },
-  { id: 8, zone: 'center', title: 'Деловой центр (Золотая земля)', base_price: 7000, allowed_buildings: ['casino', 'bank', 'restaurant'] },
-  { id: 9, zone: 'highway', title: 'Торговый проспект', base_price: 4000, allowed_buildings: ['shop', 'restaurant'] },
-  { id: 10, zone: 'highway', title: 'Торговый проспект', base_price: 4000, allowed_buildings: ['shop', 'restaurant'] },
-  { id: 11, zone: 'coast', title: 'Морская гавань', base_price: 5000, allowed_buildings: ['port', 'restaurant'] },
-  { id: 12, zone: 'coast', title: 'Морская гавань', base_price: 5000, allowed_buildings: ['port', 'restaurant'] },
+  { id: 1, zone: 'mountain', title: 'Р“РѕСЂРЅС‹Р№ СЃРєР»РѕРЅ', base_price: 3000, allowed_buildings: ['mine'] },
+  { id: 2, zone: 'mountain', title: 'Р“РѕСЂРЅС‹Р№ СЃРєР»РѕРЅ', base_price: 3000, allowed_buildings: ['mine'] },
+  { id: 3, zone: 'suburb', title: 'РџСЂРёРіРѕСЂРѕРґРЅР°СЏ РґРѕР»РёРЅР°', base_price: 2500, allowed_buildings: ['farm'] },
+  { id: 4, zone: 'suburb', title: 'РџСЂРёРіРѕСЂРѕРґРЅР°СЏ РґРѕР»РёРЅР°', base_price: 2500, allowed_buildings: ['farm'] },
+  { id: 5, zone: 'highway', title: 'РЁРѕСЃСЃРµ Рё С‚СЂР°СЃСЃР°', base_price: 3500, allowed_buildings: ['gas_station', 'shop'] },
+  { id: 6, zone: 'highway', title: 'РЁРѕСЃСЃРµ Рё С‚СЂР°СЃСЃР°', base_price: 3500, allowed_buildings: ['gas_station', 'shop'] },
+  { id: 7, zone: 'center', title: 'Р”РµР»РѕРІРѕР№ С†РµРЅС‚СЂ (Р—РѕР»РѕС‚Р°СЏ Р·РµРјР»СЏ)', base_price: 7000, allowed_buildings: ['casino', 'bank', 'restaurant'] },
+  { id: 8, zone: 'center', title: 'Р”РµР»РѕРІРѕР№ С†РµРЅС‚СЂ (Р—РѕР»РѕС‚Р°СЏ Р·РµРјР»СЏ)', base_price: 7000, allowed_buildings: ['casino', 'bank', 'restaurant'] },
+  { id: 9, zone: 'highway', title: 'РўРѕСЂРіРѕРІС‹Р№ РїСЂРѕСЃРїРµРєС‚', base_price: 4000, allowed_buildings: ['shop', 'restaurant'] },
+  { id: 10, zone: 'highway', title: 'РўРѕСЂРіРѕРІС‹Р№ РїСЂРѕСЃРїРµРєС‚', base_price: 4000, allowed_buildings: ['shop', 'restaurant'] },
+  { id: 11, zone: 'coast', title: 'РњРѕСЂСЃРєР°СЏ РіР°РІР°РЅСЊ', base_price: 5000, allowed_buildings: ['port', 'restaurant'] },
+  { id: 12, zone: 'coast', title: 'РњРѕСЂСЃРєР°СЏ РіР°РІР°РЅСЊ', base_price: 5000, allowed_buildings: ['port', 'restaurant'] },
 ];
 
 /**
- * Автоматически создаёт 12 городских участков (id 1-12) для каждой гильдии,
- * где присутствует бот. INSERT OR IGNORE — идемпотентно: уже созданные участки
- * (с владельцами и постройками) не перезаписываются.
- * zone/title в БД не хранятся — берутся из PLOTS_CATALOG по id участка;
- * price инициализируется base_price из каталога.
+ * РђРІС‚РѕРјР°С‚РёС‡РµСЃРєРё СЃРѕР·РґР°С‘С‚ 12 РіРѕСЂРѕРґСЃРєРёС… СѓС‡Р°СЃС‚РєРѕРІ (id 1-12) РґР»СЏ РєР°Р¶РґРѕР№ РіРёР»СЊРґРёРё,
+ * РіРґРµ РїСЂРёСЃСѓС‚СЃС‚РІСѓРµС‚ Р±РѕС‚. INSERT OR IGNORE вЂ” РёРґРµРјРїРѕС‚РµРЅС‚РЅРѕ: СѓР¶Рµ СЃРѕР·РґР°РЅРЅС‹Рµ СѓС‡Р°СЃС‚РєРё
+ * (СЃ РІР»Р°РґРµР»СЊС†Р°РјРё Рё РїРѕСЃС‚СЂРѕР№РєР°РјРё) РЅРµ РїРµСЂРµР·Р°РїРёСЃС‹РІР°СЋС‚СЃСЏ.
+ * zone/title РІ Р‘Р” РЅРµ С…СЂР°РЅСЏС‚СЃСЏ вЂ” Р±РµСЂСѓС‚СЃСЏ РёР· PLOTS_CATALOG РїРѕ id СѓС‡Р°СЃС‚РєР°;
+ * price РёРЅРёС†РёР°Р»РёР·РёСЂСѓРµС‚СЃСЏ base_price РёР· РєР°С‚Р°Р»РѕРіР°.
  */
 async function ensureCityPlots(db: any, bot: Client): Promise<void> {
   try {
@@ -149,34 +149,34 @@ async function ensureCityPlots(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Экономика городских построек (Шаг 4 - Экономика города)
-// 8 типов построек: суточный доход и недельный налог по уровням 1-3.
-// Значения синхронизированы с worker/src/city/catalog.ts (дубликат для collector).
+// Р­РєРѕРЅРѕРјРёРєР° РіРѕСЂРѕРґСЃРєРёС… РїРѕСЃС‚СЂРѕРµРє (РЁР°Рі 4 - Р­РєРѕРЅРѕРјРёРєР° РіРѕСЂРѕРґР°)
+// 8 С‚РёРїРѕРІ РїРѕСЃС‚СЂРѕРµРє: СЃСѓС‚РѕС‡РЅС‹Р№ РґРѕС…РѕРґ Рё РЅРµРґРµР»СЊРЅС‹Р№ РЅР°Р»РѕРі РїРѕ СѓСЂРѕРІРЅСЏРј 1-3.
+// Р—РЅР°С‡РµРЅРёСЏ СЃРёРЅС…СЂРѕРЅРёР·РёСЂРѕРІР°РЅС‹ СЃ worker/src/city/catalog.ts (РґСѓР±Р»РёРєР°С‚ РґР»СЏ collector).
 // ============================================
 
 interface BuildingEconomy {
   name: string;
   emoji: string;
-  /** Суточный доход по уровням 1-3 (🪙) */
+  /** РЎСѓС‚РѕС‡РЅС‹Р№ РґРѕС…РѕРґ РїРѕ СѓСЂРѕРІРЅСЏРј 1-3 (рџЄ™) */
   dailyRevenue: number[];
-  /** Недельный налог по уровням 1-3 (🪙) */
+  /** РќРµРґРµР»СЊРЅС‹Р№ РЅР°Р»РѕРі РїРѕ СѓСЂРѕРІРЅСЏРј 1-3 (рџЄ™) */
   weeklyTax: number[];
 }
 
 const BUILDINGS_CONFIG: Record<string, BuildingEconomy> = {
-  mine: { name: 'Шахта', emoji: '⛏️', dailyRevenue: [300, 750, 1600], weeklyTax: [60, 150, 320] },
-  farm: { name: 'Ферма', emoji: '🌾', dailyRevenue: [220, 550, 1200], weeklyTax: [45, 110, 240] },
-  gas_station: { name: 'АЗС', emoji: '⛽', dailyRevenue: [350, 850, 1800], weeklyTax: [70, 170, 360] },
-  shop: { name: 'Супермаркет', emoji: '🛒', dailyRevenue: [280, 700, 1500], weeklyTax: [55, 140, 300] },
-  restaurant: { name: 'Ресторан', emoji: '🍽️', dailyRevenue: [320, 800, 1700], weeklyTax: [65, 160, 340] },
-  casino: { name: 'Казино', emoji: '🎰', dailyRevenue: [800, 2000, 4500], weeklyTax: [180, 450, 1000] },
-  bank: { name: 'Банк', emoji: '🏛️', dailyRevenue: [1000, 2500, 5500], weeklyTax: [220, 550, 1200] },
-  port: { name: 'Морской порт', emoji: '⚓', dailyRevenue: [500, 1250, 2700], weeklyTax: [100, 250, 540] },
+  mine: { name: 'РЁР°С…С‚Р°', emoji: 'в›ЏпёЏ', dailyRevenue: [300, 750, 1600], weeklyTax: [60, 150, 320] },
+  farm: { name: 'Р¤РµСЂРјР°', emoji: 'рџЊѕ', dailyRevenue: [220, 550, 1200], weeklyTax: [45, 110, 240] },
+  gas_station: { name: 'РђР—РЎ', emoji: 'в›Ѕ', dailyRevenue: [350, 850, 1800], weeklyTax: [70, 170, 360] },
+  shop: { name: 'РЎСѓРїРµСЂРјР°СЂРєРµС‚', emoji: 'рџ›’', dailyRevenue: [280, 700, 1500], weeklyTax: [55, 140, 300] },
+  restaurant: { name: 'Р РµСЃС‚РѕСЂР°РЅ', emoji: 'рџЌЅпёЏ', dailyRevenue: [320, 800, 1700], weeklyTax: [65, 160, 340] },
+  casino: { name: 'РљР°Р·РёРЅРѕ', emoji: 'рџЋ°', dailyRevenue: [800, 2000, 4500], weeklyTax: [180, 450, 1000] },
+  bank: { name: 'Р‘Р°РЅРє', emoji: 'рџЏ›пёЏ', dailyRevenue: [1000, 2500, 5500], weeklyTax: [220, 550, 1200] },
+  port: { name: 'РњРѕСЂСЃРєРѕР№ РїРѕСЂС‚', emoji: 'вљ“', dailyRevenue: [500, 1250, 2700], weeklyTax: [100, 250, 540] },
 };
 
 /**
- * Возвращает экономические параметры постройки (доход/налог) или null,
- * если участок пуст, постройка неизвестна или уровень 0.
+ * Р’РѕР·РІСЂР°С‰Р°РµС‚ СЌРєРѕРЅРѕРјРёС‡РµСЃРєРёРµ РїР°СЂР°РјРµС‚СЂС‹ РїРѕСЃС‚СЂРѕР№РєРё (РґРѕС…РѕРґ/РЅР°Р»РѕРі) РёР»Рё null,
+ * РµСЃР»Рё СѓС‡Р°СЃС‚РѕРє РїСѓСЃС‚, РїРѕСЃС‚СЂРѕР№РєР° РЅРµРёР·РІРµСЃС‚РЅР° РёР»Рё СѓСЂРѕРІРµРЅСЊ 0.
  */
 function getBuildingEconomy(buildingType: string | null, buildingLevel: number): BuildingEconomy | null {
   if (!buildingType || buildingLevel <= 0) return null;
@@ -184,7 +184,7 @@ function getBuildingEconomy(buildingType: string | null, buildingLevel: number):
 }
 
 /**
- * Параметр экономики по уровню постройки (1-3) с защитой от выхода за границы массива.
+ * РџР°СЂР°РјРµС‚СЂ СЌРєРѕРЅРѕРјРёРєРё РїРѕ СѓСЂРѕРІРЅСЋ РїРѕСЃС‚СЂРѕР№РєРё (1-3) СЃ Р·Р°С‰РёС‚РѕР№ РѕС‚ РІС‹С…РѕРґР° Р·Р° РіСЂР°РЅРёС†С‹ РјР°СЃСЃРёРІР°.
  */
 function economyValueByLevel(values: number[], buildingLevel: number): number {
   const idx = Math.min(Math.max(buildingLevel, 1), values.length) - 1;
@@ -192,14 +192,14 @@ function economyValueByLevel(values: number[], buildingLevel: number): number {
 }
 
 // ============================================
-// Экономика города (Шаг 4): суточный доход, недельный налог, аукционы
+// Р­РєРѕРЅРѕРјРёРєР° РіРѕСЂРѕРґР° (РЁР°Рі 4): СЃСѓС‚РѕС‡РЅС‹Р№ РґРѕС…РѕРґ, РЅРµРґРµР»СЊРЅС‹Р№ РЅР°Р»РѕРі, Р°СѓРєС†РёРѕРЅС‹
 // ============================================
 
 /**
- * Суточный доход участков с постройками.
- * Захват суток идемпотентен через last_revenue_at (СЕКУНДЫ, Math.floor(Date.now() / 1000)):
- * участок обрабатывается, только если с последнего начисления прошло >= 24 часов.
- * Начисление: владельцу-пользователю — в users.coins, компании — в companies.treasury.
+ * РЎСѓС‚РѕС‡РЅС‹Р№ РґРѕС…РѕРґ СѓС‡Р°СЃС‚РєРѕРІ СЃ РїРѕСЃС‚СЂРѕР№РєР°РјРё.
+ * Р—Р°С…РІР°С‚ СЃСѓС‚РѕРє РёРґРµРјРїРѕС‚РµРЅС‚РµРЅ С‡РµСЂРµР· last_revenue_at (РЎР•РљРЈРќР”Р«, Math.floor(Date.now() / 1000)):
+ * СѓС‡Р°СЃС‚РѕРє РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚СЃСЏ, С‚РѕР»СЊРєРѕ РµСЃР»Рё СЃ РїРѕСЃР»РµРґРЅРµРіРѕ РЅР°С‡РёСЃР»РµРЅРёСЏ РїСЂРѕС€Р»Рѕ >= 24 С‡Р°СЃРѕРІ.
+ * РќР°С‡РёСЃР»РµРЅРёРµ: РІР»Р°РґРµР»СЊС†Сѓ-РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ вЂ” РІ users.coins, РєРѕРјРїР°РЅРёРё вЂ” РІ companies.treasury.
  */
 async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -242,13 +242,13 @@ async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
           continue;
         }
 
-        // Захват суток — строго после успешного начисления (в СЕКУНДАХ)
+        // Р—Р°С…РІР°С‚ СЃСѓС‚РѕРє вЂ” СЃС‚СЂРѕРіРѕ РїРѕСЃР»Рµ СѓСЃРїРµС€РЅРѕРіРѕ РЅР°С‡РёСЃР»РµРЅРёСЏ (РІ РЎР•РљРЈРќР”РђРҐ)
         await db.execute({
           sql: 'UPDATE city_plots SET last_revenue_at = ? WHERE guild_id = ? AND id = ?',
           args: [nowSec, guildId, plotId],
         });
 
-        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: +${revenue} 🪙 (${economy.name}, ур. ${buildingLevel})`);
+        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: +${revenue} рџЄ™ (${economy.name}, СѓСЂ. ${buildingLevel})`);
       } catch (e) {
         console.error('[CityRevenue] Error processing plot', plotId, e);
       }
@@ -259,10 +259,10 @@ async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
 }
 
 /**
- * Недельный налог на постройки (last_tax_at в СЕКУНДАХ < nowSec - 7*24*3600).
- * Налог списывается атомарно (условие coins/treasury >= tax); при успехе сумма
- * пополняет server_reserve, при нехватке средств — инкремент unpaid_taxes_count.
- * Маркер last_tax_at обновляется в обоих случаях, чтобы налог считался раз в 7 дней.
+ * РќРµРґРµР»СЊРЅС‹Р№ РЅР°Р»РѕРі РЅР° РїРѕСЃС‚СЂРѕР№РєРё (last_tax_at РІ РЎР•РљРЈРќР”РђРҐ < nowSec - 7*24*3600).
+ * РќР°Р»РѕРі СЃРїРёСЃС‹РІР°РµС‚СЃСЏ Р°С‚РѕРјР°СЂРЅРѕ (СѓСЃР»РѕРІРёРµ coins/treasury >= tax); РїСЂРё СѓСЃРїРµС…Рµ СЃСѓРјРјР°
+ * РїРѕРїРѕР»РЅСЏРµС‚ server_reserve, РїСЂРё РЅРµС…РІР°С‚РєРµ СЃСЂРµРґСЃС‚РІ вЂ” РёРЅРєСЂРµРјРµРЅС‚ unpaid_taxes_count.
+ * РњР°СЂРєРµСЂ last_tax_at РѕР±РЅРѕРІР»СЏРµС‚СЃСЏ РІ РѕР±РѕРёС… СЃР»СѓС‡Р°СЏС…, С‡С‚РѕР±С‹ РЅР°Р»РѕРі СЃС‡РёС‚Р°Р»СЃСЏ СЂР°Р· РІ 7 РґРЅРµР№.
  */
 async function processWeeklyPlotTaxes(db: any, bot: Client): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -310,7 +310,7 @@ async function processWeeklyPlotTaxes(db: any, bot: Client): Promise<void> {
         }
 
         if (paid) {
-          // Налог уходит в резерв сервера
+          // РќР°Р»РѕРі СѓС…РѕРґРёС‚ РІ СЂРµР·РµСЂРІ СЃРµСЂРІРµСЂР°
           await db.execute({
             sql: `INSERT INTO server_reserve (guild_id, balance) VALUES (?, ?)
                   ON CONFLICT(guild_id) DO UPDATE SET balance = balance + ?`,
@@ -320,13 +320,13 @@ async function processWeeklyPlotTaxes(db: any, bot: Client): Promise<void> {
             sql: 'UPDATE city_plots SET last_tax_at = ?, unpaid_taxes_count = 0 WHERE guild_id = ? AND id = ?',
             args: [nowSec, guildId, plotId],
           });
-          console.log(`[CityTax] Plot #${plotId} guild ${guildId}: tax ${tax} 🪙 paid (${ownerType})`);
+          console.log(`[CityTax] Plot #${plotId} guild ${guildId}: tax ${tax} рџЄ™ paid (${ownerType})`);
         } else {
           await db.execute({
             sql: 'UPDATE city_plots SET unpaid_taxes_count = unpaid_taxes_count + 1, last_tax_at = ? WHERE guild_id = ? AND id = ?',
             args: [nowSec, guildId, plotId],
           });
-          console.log(`[CityTax] Plot #${plotId} guild ${guildId}: ${ownerType} ${ownerId} can't pay ${tax} 🪙 (unpaid_taxes_count++)`);
+          console.log(`[CityTax] Plot #${plotId} guild ${guildId}: ${ownerType} ${ownerId} can't pay ${tax} рџЄ™ (unpaid_taxes_count++)`);
         }
       } catch (e) {
         console.error('[CityTax] Error processing plot', plotId, e);
@@ -338,10 +338,10 @@ async function processWeeklyPlotTaxes(db: any, bot: Client): Promise<void> {
 }
 
 /**
- * Завершение истёкших аукционов участков.
- * expires_at хранится в МИЛЛИСЕКУНДАХ (Date.now()). Атомарный db.batch:
- * передача участка победителю, выплата продавцу, закрытие аукциона.
- * Без ставок — участок остаётся у владельца, с продажи снимается.
+ * Р—Р°РІРµСЂС€РµРЅРёРµ РёСЃС‚С‘РєС€РёС… Р°СѓРєС†РёРѕРЅРѕРІ СѓС‡Р°СЃС‚РєРѕРІ.
+ * expires_at С…СЂР°РЅРёС‚СЃСЏ РІ РњРР›Р›РРЎР•РљРЈРќР”РђРҐ (Date.now()). РђС‚РѕРјР°СЂРЅС‹Р№ db.batch:
+ * РїРµСЂРµРґР°С‡Р° СѓС‡Р°СЃС‚РєР° РїРѕР±РµРґРёС‚РµР»СЋ, РІС‹РїР»Р°С‚Р° РїСЂРѕРґР°РІС†Сѓ, Р·Р°РєСЂС‹С‚РёРµ Р°СѓРєС†РёРѕРЅР°.
+ * Р‘РµР· СЃС‚Р°РІРѕРє вЂ” СѓС‡Р°СЃС‚РѕРє РѕСЃС‚Р°С‘С‚СЃСЏ Сѓ РІР»Р°РґРµР»СЊС†Р°, СЃ РїСЂРѕРґР°Р¶Рё СЃРЅРёРјР°РµС‚СЃСЏ.
  */
 async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
   const nowMs = Date.now();
@@ -362,7 +362,7 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
       const winnerId = (a.highest_bidder_id as string | null) || null;
 
       try {
-        // Продавец — текущий владелец участка
+        // РџСЂРѕРґР°РІРµС† вЂ” С‚РµРєСѓС‰РёР№ РІР»Р°РґРµР»РµС† СѓС‡Р°СЃС‚РєР°
         const plotResult = await db.execute({
           sql: 'SELECT owner_type, owner_id FROM city_plots WHERE guild_id = ? AND id = ?',
           args: [guildId, plotId],
@@ -373,15 +373,15 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
         const stmts: { sql: string; args: any[] }[] = [];
 
         if (winnerId && bid > 0) {
-          // 1) Передача участка победителю — только если он всё ещё в продаже
-          //    (защита от прямой покупки /plot buy между истечением и закрытием)
+          // 1) РџРµСЂРµРґР°С‡Р° СѓС‡Р°СЃС‚РєР° РїРѕР±РµРґРёС‚РµР»СЋ вЂ” С‚РѕР»СЊРєРѕ РµСЃР»Рё РѕРЅ РІСЃС‘ РµС‰С‘ РІ РїСЂРѕРґР°Р¶Рµ
+          //    (Р·Р°С‰РёС‚Р° РѕС‚ РїСЂСЏРјРѕР№ РїРѕРєСѓРїРєРё /plot buy РјРµР¶РґСѓ РёСЃС‚РµС‡РµРЅРёРµРј Рё Р·Р°РєСЂС‹С‚РёРµРј)
           stmts.push({
             sql: `UPDATE city_plots
                   SET owner_type = 'user', owner_id = ?, for_sale_price = NULL
                   WHERE guild_id = ? AND id = ? AND for_sale_price IS NOT NULL`,
             args: [winnerId, guildId, plotId],
           });
-          // 2) Выплата продавцу — только если передача победителю прошла
+          // 2) Р’С‹РїР»Р°С‚Р° РїСЂРѕРґР°РІС†Сѓ вЂ” С‚РѕР»СЊРєРѕ РµСЃР»Рё РїРµСЂРµРґР°С‡Р° РїРѕР±РµРґРёС‚РµР»СЋ РїСЂРѕС€Р»Р°
           const soldGuard = 'EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)';
           if (sellerType === 'user' && sellerId) {
             stmts.push({
@@ -394,21 +394,21 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
               args: [bid, Number(sellerId), guildId, guildId, plotId, winnerId],
             });
           }
-          // 3) Возврат ставки победителю, если участок передать не удалось
+          // 3) Р’РѕР·РІСЂР°С‚ СЃС‚Р°РІРєРё РїРѕР±РµРґРёС‚РµР»СЋ, РµСЃР»Рё СѓС‡Р°СЃС‚РѕРє РїРµСЂРµРґР°С‚СЊ РЅРµ СѓРґР°Р»РѕСЃСЊ
           stmts.push({
             sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?
                   AND NOT EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)`,
             args: [bid, winnerId, guildId, guildId, plotId, winnerId],
           });
         } else {
-          // Ставок не было — участок остаётся у владельца, снимаем с продажи
+          // РЎС‚Р°РІРѕРє РЅРµ Р±С‹Р»Рѕ вЂ” СѓС‡Р°СЃС‚РѕРє РѕСЃС‚Р°С‘С‚СЃСЏ Сѓ РІР»Р°РґРµР»СЊС†Р°, СЃРЅРёРјР°РµРј СЃ РїСЂРѕРґР°Р¶Рё
           stmts.push({
             sql: 'UPDATE city_plots SET for_sale_price = NULL WHERE guild_id = ? AND id = ?',
             args: [guildId, plotId],
           });
         }
 
-        // Закрытие аукциона (guard по status — защита от повторной обработки)
+        // Р—Р°РєСЂС‹С‚РёРµ Р°СѓРєС†РёРѕРЅР° (guard РїРѕ status вЂ” Р·Р°С‰РёС‚Р° РѕС‚ РїРѕРІС‚РѕСЂРЅРѕР№ РѕР±СЂР°Р±РѕС‚РєРё)
         stmts.push({
           sql: "UPDATE plot_auctions SET status = 'completed' WHERE id = ? AND status = 'active'",
           args: [auctionId],
@@ -419,7 +419,7 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
 
         if (closed) {
           console.log(`[CityAuction] Auction #${auctionId} (plot #${plotId}, guild ${guildId}) completed` +
-            (winnerId ? ` — winner ${winnerId}, seller paid ${bid} 🪙` : ' — no bids'));
+            (winnerId ? ` вЂ” winner ${winnerId}, seller paid ${bid} рџЄ™` : ' вЂ” no bids'));
         }
       } catch (e) {
         console.error('[CityAuction] Error completing auction', auctionId, e);
@@ -431,7 +431,7 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Система достижений (Этап 6 - 27 секретных пасхалок)
+// РЎРёСЃС‚РµРјР° РґРѕСЃС‚РёР¶РµРЅРёР№ (Р­С‚Р°Рї 6 - 27 СЃРµРєСЂРµС‚РЅС‹С… РїР°СЃС…Р°Р»РѕРє)
 // ============================================
 
 interface Achievement {
@@ -443,246 +443,246 @@ interface Achievement {
   trigger: (db: any, userId: string, guildId: string, data: any) => Promise<boolean>;
 }
 
-// 27 достижений из CLAUDE.md
+// 27 РґРѕСЃС‚РёР¶РµРЅРёР№ РёР· CLAUDE.md
 const ACHIEVEMENTS_LIST: Achievement[] = [
-  // --- Ведьмак 3 ---
+  // --- Р’РµРґСЊРјР°Рє 3 ---
   {
     id: 'witcher_plod',
-    title: '🐺 Шевелись, Плотва!',
-    description: 'Отправить сообщение ровно через 30-35 сек после предыдущего',
-    quote: 'Лютик, бл#ть...',
+    title: 'рџђє РЁРµРІРµР»РёСЃСЊ, РџР»РѕС‚РІР°!',
+    description: 'РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЂРѕРІРЅРѕ С‡РµСЂРµР· 30-35 СЃРµРє РїРѕСЃР»Рµ РїСЂРµРґС‹РґСѓС‰РµРіРѕ',
+    quote: 'Р›СЋС‚РёРє, Р±Р»#С‚СЊ...',
     reward: 150,
     trigger: checkWitcherPlod
   },
   {
     id: 'witcher_gwent',
-    title: '🃏 В Гвинт не сыграешь?',
-    description: 'Сыграть 3 дуэли за один день',
-    quote: 'Кивает молча и достаёт колоду Королевств Севера.',
+    title: 'рџѓЏ Р’ Р“РІРёРЅС‚ РЅРµ СЃС‹РіСЂР°РµС€СЊ?',
+    description: 'РЎС‹РіСЂР°С‚СЊ 3 РґСѓСЌР»Рё Р·Р° РѕРґРёРЅ РґРµРЅСЊ',
+    quote: 'РљРёРІР°РµС‚ РјРѕР»С‡Р° Рё РґРѕСЃС‚Р°С‘С‚ РєРѕР»РѕРґСѓ РљРѕСЂРѕР»РµРІСЃС‚РІ РЎРµРІРµСЂР°.',
     reward: 200,
     trigger: checkWitcherGwent
   },
   {
     id: 'witcher_damn',
-    title: '🐺 Зараза...',
-    description: 'Проиграть дуэль с броском кубика меньше 10',
-    quote: 'Ветер воет...',
+    title: 'рџђє Р—Р°СЂР°Р·Р°...',
+    description: 'РџСЂРѕРёРіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃ Р±СЂРѕСЃРєРѕРј РєСѓР±РёРєР° РјРµРЅСЊС€Рµ 10',
+    quote: 'Р’РµС‚РµСЂ РІРѕРµС‚...',
     reward: 100,
     trigger: checkWitcherDamn
   },
   {
     id: 'witcher_blaviken',
-    title: '⚔️ Мясник из Блавикена',
-    description: 'Выиграть 3 дуэли подряд без поражений',
-    quote: 'Если приходится выбирать между злом и злом...',
+    title: 'вљ”пёЏ РњСЏСЃРЅРёРє РёР· Р‘Р»Р°РІРёРєРµРЅР°',
+    description: 'Р’С‹РёРіСЂР°С‚СЊ 3 РґСѓСЌР»Рё РїРѕРґСЂСЏРґ Р±РµР· РїРѕСЂР°Р¶РµРЅРёР№',
+    quote: 'Р•СЃР»Рё РїСЂРёС…РѕРґРёС‚СЃСЏ РІС‹Р±РёСЂР°С‚СЊ РјРµР¶РґСѓ Р·Р»РѕРј Рё Р·Р»РѕРј...',
     reward: 350,
     trigger: checkWitcherBlaviken
   },
   {
     id: 'witcher_coin',
-    title: '🪙 Чеканная монета',
-    description: 'Зафиксировать ровно 1000, 2000, 3000 или 5000 XP',
-    quote: 'Зачтётся всё это вам!',
+    title: 'рџЄ™ Р§РµРєР°РЅРЅР°СЏ РјРѕРЅРµС‚Р°',
+    description: 'Р—Р°С„РёРєСЃРёСЂРѕРІР°С‚СЊ СЂРѕРІРЅРѕ 1000, 2000, 3000 РёР»Рё 5000 XP',
+    quote: 'Р—Р°С‡С‚С‘С‚СЃСЏ РІСЃС‘ СЌС‚Рѕ РІР°Рј!',
     reward: 250,
     trigger: checkWitcherCoin
   },
   // --- Red Dead Redemption 2 ---
   {
     id: 'rdr_plan',
-    title: '🤠 У меня есть ПЛАН!',
-    description: 'Накопить 3000+ XP, ни разу не проиграв в дуэлях',
-    quote: 'Нам просто нужно больше денег, Артур!',
+    title: 'рџ¤  РЈ РјРµРЅСЏ РµСЃС‚СЊ РџР›РђРќ!',
+    description: 'РќР°РєРѕРїРёС‚СЊ 3000+ XP, РЅРё СЂР°Р·Сѓ РЅРµ РїСЂРѕРёРіСЂР°РІ РІ РґСѓСЌР»СЏС…',
+    quote: 'РќР°Рј РїСЂРѕСЃС‚Рѕ РЅСѓР¶РЅРѕ Р±РѕР»СЊС€Рµ РґРµРЅРµРі, РђСЂС‚СѓСЂ!',
     reward: 300,
     trigger: checkRDRPlan
   },
   {
     id: 'rdr_lenny',
-    title: '🍻 ЛИИИННИИИИ!',
-    description: 'Отправить капс-сообщение 10+ букв ночью с 02:00 до 05:00',
-    quote: 'YNNEL?! ГДЕ ТЫ, ЛЕННИ?!',
+    title: 'рџЌ» Р›РРРРќРќРРРР!',
+    description: 'РћС‚РїСЂР°РІРёС‚СЊ РєР°РїСЃ-СЃРѕРѕР±С‰РµРЅРёРµ 10+ Р±СѓРєРІ РЅРѕС‡СЊСЋ СЃ 02:00 РґРѕ 05:00',
+    quote: 'YNNEL?! Р“Р”Р• РўР«, Р›Р•РќРќР?!',
     reward: 150,
     trigger: checkRDRLenny
   },
   {
     id: 'rdr_quickdraw',
-    title: '🎯 Быстрая рука',
-    description: 'Выиграть дуэль с броском 95+',
-    quote: 'На этом сервере место только для одного.',
+    title: 'рџЋЇ Р‘С‹СЃС‚СЂР°СЏ СЂСѓРєР°',
+    description: 'Р’С‹РёРіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃ Р±СЂРѕСЃРєРѕРј 95+',
+    quote: 'РќР° СЌС‚РѕРј СЃРµСЂРІРµСЂРµ РјРµСЃС‚Рѕ С‚РѕР»СЊРєРѕ РґР»СЏ РѕРґРЅРѕРіРѕ.',
     reward: 250,
     trigger: checkRDRQuickdraw
   },
   {
     id: 'rdr_tahiti',
-    title: '🥭 Билет на Таити',
-    description: 'Провести более 5 часов в войсе за день',
-    quote: 'Мы будем выращивать манго и жить припеваючи.',
+    title: 'рџҐ­ Р‘РёР»РµС‚ РЅР° РўР°РёС‚Рё',
+    description: 'РџСЂРѕРІРµСЃС‚Рё Р±РѕР»РµРµ 5 С‡Р°СЃРѕРІ РІ РІРѕР№СЃРµ Р·Р° РґРµРЅСЊ',
+    quote: 'РњС‹ Р±СѓРґРµРј РІС‹СЂР°С‰РёРІР°С‚СЊ РјР°РЅРіРѕ Рё Р¶РёС‚СЊ РїСЂРёРїРµРІР°СЋС‡Рё.',
     reward: 300,
     trigger: checkRDRTahiti
   },
   {
     id: 'rdr_tax',
-    title: '💰 Капитализм, Артур',
-    description: 'Сжечь более 200 XP на налоге с дуэлей',
-    quote: 'Мы воры в мире, которому мы больше не нужны.',
+    title: 'рџ’° РљР°РїРёС‚Р°Р»РёР·Рј, РђСЂС‚СѓСЂ',
+    description: 'РЎР¶РµС‡СЊ Р±РѕР»РµРµ 200 XP РЅР° РЅР°Р»РѕРіРµ СЃ РґСѓСЌР»РµР№',
+    quote: 'РњС‹ РІРѕСЂС‹ РІ РјРёСЂРµ, РєРѕС‚РѕСЂРѕРјСѓ РјС‹ Р±РѕР»СЊС€Рµ РЅРµ РЅСѓР¶РЅС‹.',
     reward: 200,
     trigger: checkRDRTax
   },
-  // --- Владивосток и ДВ ---
+  // --- Р’Р»Р°РґРёРІРѕСЃС‚РѕРє Рё Р”Р’ ---
   {
     id: 'vlad_2000',
-    title: '🌊 Владивосток 2000',
-    description: 'Оказаться ровно с 2000 XP на балансе',
-    quote: 'Уходим, уходим, уходят кометы...',
+    title: 'рџЊЉ Р’Р»Р°РґРёРІРѕСЃС‚РѕРє 2000',
+    description: 'РћРєР°Р·Р°С‚СЊСЃСЏ СЂРѕРІРЅРѕ СЃ 2000 XP РЅР° Р±Р°Р»Р°РЅСЃРµ',
+    quote: 'РЈС…РѕРґРёРј, СѓС…РѕРґРёРј, СѓС…РѕРґСЏС‚ РєРѕРјРµС‚С‹...',
     reward: 200,
     trigger: checkVlad2000
   },
   {
     id: 'vlad_midnight',
-    title: '⚓ Полночь на Эгершельде',
-    description: 'Отправить сообщение ровно в 00:00 (Владивосток)',
-    quote: 'Маяк светит, квесты сбросились.',
+    title: 'вљ“ РџРѕР»РЅРѕС‡СЊ РЅР° Р­РіРµСЂС€РµР»СЊРґРµ',
+    description: 'РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЂРѕРІРЅРѕ РІ 00:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)',
+    quote: 'РњР°СЏРє СЃРІРµС‚РёС‚, РєРІРµСЃС‚С‹ СЃР±СЂРѕСЃРёР»РёСЃСЊ.',
     reward: 200,
     trigger: checkVladMidnight
   },
   {
     id: 'vlad_pyanse',
-    title: '🥟 Пян-се на Луговой',
-    description: 'Быть активным в чате во время обеда с 12:00 до 13:00 (Владивосток)',
-    quote: 'С пылу с жару, с перцем и капустой.',
+    title: 'рџҐџ РџСЏРЅ-СЃРµ РЅР° Р›СѓРіРѕРІРѕР№',
+    description: 'Р‘С‹С‚СЊ Р°РєС‚РёРІРЅС‹Рј РІ С‡Р°С‚Рµ РІРѕ РІСЂРµРјСЏ РѕР±РµРґР° СЃ 12:00 РґРѕ 13:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)',
+    quote: 'РЎ РїС‹Р»Сѓ СЃ Р¶Р°СЂСѓ, СЃ РїРµСЂС†РµРј Рё РєР°РїСѓСЃС‚РѕР№.',
     reward: 120,
     trigger: checkVladPyanse
   },
   {
     id: 'vlad_typhoon',
-    title: '🌪️ Тайфун прошёл стороной',
-    description: 'Спасти стрик с помощью заморозки',
-    quote: 'Опять передавали штормовое, но обошлось.',
+    title: 'рџЊЄпёЏ РўР°Р№С„СѓРЅ РїСЂРѕС€С‘Р» СЃС‚РѕСЂРѕРЅРѕР№',
+    description: 'РЎРїР°СЃС‚Рё СЃС‚СЂРёРє СЃ РїРѕРјРѕС‰СЊСЋ Р·Р°РјРѕСЂРѕР·РєРё',
+    quote: 'РћРїСЏС‚СЊ РїРµСЂРµРґР°РІР°Р»Рё С€С‚РѕСЂРјРѕРІРѕРµ, РЅРѕ РѕР±РѕС€Р»РѕСЃСЊ.',
     reward: 250,
     trigger: checkVladTyphoon
   },
   {
     id: 'vlad_right_hand',
-    title: '🚗 Истинный праворульщик',
-    description: 'Сменить тему на Киберпанк или Магму',
-    quote: 'Руль в бардачке, едем боком.',
+    title: 'рџљ— РСЃС‚РёРЅРЅС‹Р№ РїСЂР°РІРѕСЂСѓР»СЊС‰РёРє',
+    description: 'РЎРјРµРЅРёС‚СЊ С‚РµРјСѓ РЅР° РљРёР±РµСЂРїР°РЅРє РёР»Рё РњР°РіРјСѓ',
+    quote: 'Р СѓР»СЊ РІ Р±Р°СЂРґР°С‡РєРµ, РµРґРµРј Р±РѕРєРѕРј.',
     reward: 100,
     trigger: checkVladRightHand
   },
   {
     id: 'vlad_golden_horn',
-    title: '🌉 Хозяин Золотого Рога',
-    description: 'Занять 1-е место в лидерборде сервера',
-    quote: 'Мост построили, сервер держим.',
+    title: 'рџЊ‰ РҐРѕР·СЏРёРЅ Р—РѕР»РѕС‚РѕРіРѕ Р РѕРіР°',
+    description: 'Р—Р°РЅСЏС‚СЊ 1-Рµ РјРµСЃС‚Рѕ РІ Р»РёРґРµСЂР±РѕСЂРґРµ СЃРµСЂРІРµСЂР°',
+    quote: 'РњРѕСЃС‚ РїРѕСЃС‚СЂРѕРёР»Рё, СЃРµСЂРІРµСЂ РґРµСЂР¶РёРј.',
     reward: 500,
     trigger: checkVladGoldenHorn
   },
   // --- Half-Life 2 ---
   {
     id: 'hl_wakeup',
-    title: '🚆 Проснитесь и попойте',
-    description: 'Отправить сообщение с 06:00 до 07:00 утра (Владивосток)',
-    quote: 'Нужный человек не в том месте...',
+    title: 'рџљ† РџСЂРѕСЃРЅРёС‚РµСЃСЊ Рё РїРѕРїРѕР№С‚Рµ',
+    description: 'РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЃ 06:00 РґРѕ 07:00 СѓС‚СЂР° (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)',
+    quote: 'РќСѓР¶РЅС‹Р№ С‡РµР»РѕРІРµРє РЅРµ РІ С‚РѕРј РјРµСЃС‚Рµ...',
     reward: 150,
     trigger: checkHLWakeup
   },
   {
     id: 'hl_can',
-    title: '🥫 Подними эту банку',
-    description: 'Выполнить свой первый ежедневный квест',
-    quote: 'А теперь брось её в урну.',
+    title: 'рџҐ« РџРѕРґРЅРёРјРё СЌС‚Сѓ Р±Р°РЅРєСѓ',
+    description: 'Р’С‹РїРѕР»РЅРёС‚СЊ СЃРІРѕР№ РїРµСЂРІС‹Р№ РµР¶РµРґРЅРµРІРЅС‹Р№ РєРІРµСЃС‚',
+    quote: 'Рђ С‚РµРїРµСЂСЊ Р±СЂРѕСЃСЊ РµС‘ РІ СѓСЂРЅСѓ.',
     reward: 100,
     trigger: checkHLCan
   },
   {
     id: 'hl_water',
-    title: '💧 Не пейте воду',
-    description: 'Провести 2 часа непрерывно в войсе',
-    quote: 'Они туда что-то подмешивают...',
+    title: 'рџ’§ РќРµ РїРµР№С‚Рµ РІРѕРґСѓ',
+    description: 'РџСЂРѕРІРµСЃС‚Рё 2 С‡Р°СЃР° РЅРµРїСЂРµСЂС‹РІРЅРѕ РІ РІРѕР№СЃРµ',
+    quote: 'РћРЅРё С‚СѓРґР° С‡С‚Рѕ-С‚Рѕ РїРѕРґРјРµС€РёРІР°СЋС‚...',
     reward: 250,
     trigger: checkHLWater
   },
   {
     id: 'hl_crowbar',
-    title: '🪓 Монтировка против страйдера',
-    description: 'Победить в дуэли оппонента, у которого уровень выше твоего на 2+',
-    quote: 'Физика Source на твоей стороне.',
+    title: 'рџЄ“ РњРѕРЅС‚РёСЂРѕРІРєР° РїСЂРѕС‚РёРІ СЃС‚СЂР°Р№РґРµСЂР°',
+    description: 'РџРѕР±РµРґРёС‚СЊ РІ РґСѓСЌР»Рё РѕРїРїРѕРЅРµРЅС‚Р°, Сѓ РєРѕС‚РѕСЂРѕРіРѕ СѓСЂРѕРІРµРЅСЊ РІС‹С€Рµ С‚РІРѕРµРіРѕ РЅР° 2+',
+    quote: 'Р¤РёР·РёРєР° Source РЅР° С‚РІРѕРµР№ СЃС‚РѕСЂРѕРЅРµ.',
     reward: 300,
     trigger: checkHLCrowbar
   },
   {
     id: 'hl_airdrop',
-    title: '📦 Ящик сопротивления',
-    description: 'Первым забрать контейнер войс-дропа',
-    quote: 'Сигнальная ракета сработала.',
+    title: 'рџ“¦ РЇС‰РёРє СЃРѕРїСЂРѕС‚РёРІР»РµРЅРёСЏ',
+    description: 'РџРµСЂРІС‹Рј Р·Р°Р±СЂР°С‚СЊ РєРѕРЅС‚РµР№РЅРµСЂ РІРѕР№СЃ-РґСЂРѕРїР°',
+    quote: 'РЎРёРіРЅР°Р»СЊРЅР°СЏ СЂР°РєРµС‚Р° СЃСЂР°Р±РѕС‚Р°Р»Р°.',
     reward: 150,
     trigger: checkHLAirdrop
   },
-  // --- Мемы / Навальный ---
+  // --- РњРµРјС‹ / РќР°РІР°Р»СЊРЅС‹Р№ ---
   {
     id: 'fbk_hello',
-    title: '📣 Привет, это Навальный',
-    description: 'Написать сообщение после 3+ дней отсутствия на сервере',
-    quote: 'Я не молчал, я просто был в оффлайне!',
+    title: 'рџ“Ј РџСЂРёРІРµС‚, СЌС‚Рѕ РќР°РІР°Р»СЊРЅС‹Р№',
+    description: 'РќР°РїРёСЃР°С‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РїРѕСЃР»Рµ 3+ РґРЅРµР№ РѕС‚СЃСѓС‚СЃС‚РІРёСЏ РЅР° СЃРµСЂРІРµСЂРµ',
+    quote: 'РЇ РЅРµ РјРѕР»С‡Р°Р», СЏ РїСЂРѕСЃС‚Рѕ Р±С‹Р» РІ РѕС„С„Р»Р°Р№РЅРµ!',
     reward: 150,
     trigger: checkFBKHello
   },
   {
     id: 'fbk_sandwich',
-    title: '🥪 Не бутерброд',
-    description: 'Удержать стрик активности ровно 14 дней',
-    quote: 'Стрик — он что, бутерброд, чтобы его сбрасывать?',
+    title: 'рџҐЄ РќРµ Р±СѓС‚РµСЂР±СЂРѕРґ',
+    description: 'РЈРґРµСЂР¶Р°С‚СЊ СЃС‚СЂРёРє Р°РєС‚РёРІРЅРѕСЃС‚Рё СЂРѕРІРЅРѕ 14 РґРЅРµР№',
+    quote: 'РЎС‚СЂРёРє вЂ” РѕРЅ С‡С‚Рѕ, Р±СѓС‚РµСЂР±СЂРѕРґ, С‡С‚РѕР±С‹ РµРіРѕ СЃР±СЂР°СЃС‹РІР°С‚СЊ?',
     reward: 250,
     trigger: checkFBKSandwich
   },
   {
     id: 'fbk_final_battle',
-    title: '⚔️ Финальная битва',
-    description: 'Сыграть дуэль со ставкой от 1000 XP',
-    quote: 'Финальная битва добра с нейтралитетом!',
+    title: 'вљ”пёЏ Р¤РёРЅР°Р»СЊРЅР°СЏ Р±РёС‚РІР°',
+    description: 'РЎС‹РіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃРѕ СЃС‚Р°РІРєРѕР№ РѕС‚ 1000 XP',
+    quote: 'Р¤РёРЅР°Р»СЊРЅР°СЏ Р±РёС‚РІР° РґРѕР±СЂР° СЃ РЅРµР№С‚СЂР°Р»РёС‚РµС‚РѕРј!',
     reward: 300,
     trigger: checkFBKFinalBattle
   },
   {
     id: 'fbk_investigation',
-    title: '🕵️ Команда расследователей',
-    description: 'Посмотреть карточки /rank 5 разных людей за день',
-    quote: 'Мы нашли у него незадекларированный уровень.',
+    title: 'рџ•µпёЏ РљРѕРјР°РЅРґР° СЂР°СЃСЃР»РµРґРѕРІР°С‚РµР»РµР№',
+    description: 'РџРѕСЃРјРѕС‚СЂРµС‚СЊ РєР°СЂС‚РѕС‡РєРё /rank 5 СЂР°Р·РЅС‹С… Р»СЋРґРµР№ Р·Р° РґРµРЅСЊ',
+    quote: 'РњС‹ РЅР°С€Р»Рё Сѓ РЅРµРіРѕ РЅРµР·Р°РґРµРєР»Р°СЂРёСЂРѕРІР°РЅРЅС‹Р№ СѓСЂРѕРІРµРЅСЊ.',
     reward: 150,
     trigger: checkFBKInvestigation
   },
   {
     id: 'fbk_prb',
-    title: '☀️ Прекрасный Сервер Будущего',
-    description: 'Закрыть все 3 дейлика за один день',
-    quote: 'Россия будет счастливой, а опыт нафармлен.',
+    title: 'вЂпёЏ РџСЂРµРєСЂР°СЃРЅС‹Р№ РЎРµСЂРІРµСЂ Р‘СѓРґСѓС‰РµРіРѕ',
+    description: 'Р—Р°РєСЂС‹С‚СЊ РІСЃРµ 3 РґРµР№Р»РёРєР° Р·Р° РѕРґРёРЅ РґРµРЅСЊ',
+    quote: 'Р РѕСЃСЃРёСЏ Р±СѓРґРµС‚ СЃС‡Р°СЃС‚Р»РёРІРѕР№, Р° РѕРїС‹С‚ РЅР°С„Р°СЂРјР»РµРЅ.',
     reward: 250,
     trigger: checkFBKPRB
   },
-  // --- Классика ---
+  // --- РљР»Р°СЃСЃРёРєР° ---
   {
     id: 'lucky_777',
-    title: '🎰 Три топора',
-    description: 'Зафиксировать ровно 777 XP на балансе',
-    quote: 'Поднял бабла, теперь в топе.',
+    title: 'рџЋ° РўСЂРё С‚РѕРїРѕСЂР°',
+    description: 'Р—Р°С„РёРєСЃРёСЂРѕРІР°С‚СЊ СЂРѕРІРЅРѕ 777 XP РЅР° Р±Р°Р»Р°РЅСЃРµ',
+    quote: 'РџРѕРґРЅСЏР» Р±Р°Р±Р»Р°, С‚РµРїРµСЂСЊ РІ С‚РѕРїРµ.',
     reward: 250,
     trigger: checkLucky777
   },
   {
     id: 'casino_house',
-    title: '🎲 Казино всегда в плюсе',
-    description: 'Сжечь более 100 XP налога в одной дуэли',
-    quote: 'Карты с самого начала были краплеными.',
+    title: 'рџЋІ РљР°Р·РёРЅРѕ РІСЃРµРіРґР° РІ РїР»СЋСЃРµ',
+    description: 'РЎР¶РµС‡СЊ Р±РѕР»РµРµ 100 XP РЅР°Р»РѕРіР° РІ РѕРґРЅРѕР№ РґСѓСЌР»Рё',
+    quote: 'РљР°СЂС‚С‹ СЃ СЃР°РјРѕРіРѕ РЅР°С‡Р°Р»Р° Р±С‹Р»Рё РєСЂР°РїР»РµРЅС‹РјРё.',
     reward: 150,
     trigger: checkCasinoHouse
   },
 ];
 
 // ============================================
-// Функции разблокировки достижений (Этап 6)
+// Р¤СѓРЅРєС†РёРё СЂР°Р·Р±Р»РѕРєРёСЂРѕРІРєРё РґРѕСЃС‚РёР¶РµРЅРёР№ (Р­С‚Р°Рї 6)
 // ============================================
 
 /**
- * Проверяет, открыто ли уже достижение
+ * РџСЂРѕРІРµСЂСЏРµС‚, РѕС‚РєСЂС‹С‚Рѕ Р»Рё СѓР¶Рµ РґРѕСЃС‚РёР¶РµРЅРёРµ
  */
 async function checkAchievementUnlocked(db: any, userId: string, guildId: string, achievementId: string): Promise<boolean> {
   try {
@@ -698,7 +698,7 @@ async function checkAchievementUnlocked(db: any, userId: string, guildId: string
 }
 
 /**
- * Начисляет награду за достижение и отправляет оповещение
+ * РќР°С‡РёСЃР»СЏРµС‚ РЅР°РіСЂР°РґСѓ Р·Р° РґРѕСЃС‚РёР¶РµРЅРёРµ Рё РѕС‚РїСЂР°РІР»СЏРµС‚ РѕРїРѕРІРµС‰РµРЅРёРµ
  */
 async function unlockAchievement(db: any, userId: string, guildId: string, achievementId: string, bot: Client, targetChannel?: any): Promise<void> {
   const achievement = ACHIEVEMENTS_LIST.find(a => a.id === achievementId);
@@ -707,14 +707,14 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
     return;
   }
 
-  // Проверка: если уже открыто
+  // РџСЂРѕРІРµСЂРєР°: РµСЃР»Рё СѓР¶Рµ РѕС‚РєСЂС‹С‚Рѕ
   const isUnlocked = await checkAchievementUnlocked(db, userId, guildId, achievementId);
   if (isUnlocked) {
     console.log(`[Achievement] Already unlocked: ${achievementId} for ${userId}`);
     return;
   }
 
-  // Вставляем запись
+  // Р’СЃС‚Р°РІР»СЏРµРј Р·Р°РїРёСЃСЊ
   const now = Math.floor(Date.now() / 1000);
   try {
     await db.execute({
@@ -722,19 +722,19 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
       args: [userId, guildId, achievementId, now],
     });
 
-    // Начисляем XP награду
+    // РќР°С‡РёСЃР»СЏРµРј XP РЅР°РіСЂР°РґСѓ
     await db.execute({
       sql: 'UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?',
       args: [achievement.reward, userId, guildId],
     });
 
-    // Начисляем монеты за достижение (+300 🪙)
+    // РќР°С‡РёСЃР»СЏРµРј РјРѕРЅРµС‚С‹ Р·Р° РґРѕСЃС‚РёР¶РµРЅРёРµ (+300 рџЄ™)
     await db.execute({
       sql: 'UPDATE users SET coins = coins + 300 WHERE user_id = ? AND guild_id = ?',
       args: [userId, guildId],
     });
 
-    // Обновляем уровень
+    // РћР±РЅРѕРІР»СЏРµРј СѓСЂРѕРІРµРЅСЊ
     const userResult = await db.execute({
       sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
       args: [userId, guildId],
@@ -750,15 +750,15 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
 
     console.log(`[Achievement] ${userId} unlocked ${achievementId} - +${achievement.reward} XP`);
 
-    // Отправляем золотой Embed в чат
+    // РћС‚РїСЂР°РІР»СЏРµРј Р·РѕР»РѕС‚РѕР№ Embed РІ С‡Р°С‚
     try {
       const guild = bot.guilds.cache.get(guildId);
       if (guild) {
-        // Если передан целевой канал, используем его (для messageCreate - message.channel)
+        // Р•СЃР»Рё РїРµСЂРµРґР°РЅ С†РµР»РµРІРѕР№ РєР°РЅР°Р», РёСЃРїРѕР»СЊР·СѓРµРј РµРіРѕ (РґР»СЏ messageCreate - message.channel)
         let channel: any = targetChannel || null;
 
-        // Если событие произошло в голосовом канале (не текстовый) или канал не определён —
-        // гарантированно отправляем золотой Embed в главный канал ивентов
+        // Р•СЃР»Рё СЃРѕР±С‹С‚РёРµ РїСЂРѕРёР·РѕС€Р»Рѕ РІ РіРѕР»РѕСЃРѕРІРѕРј РєР°РЅР°Р»Рµ (РЅРµ С‚РµРєСЃС‚РѕРІС‹Р№) РёР»Рё РєР°РЅР°Р» РЅРµ РѕРїСЂРµРґРµР»С‘РЅ вЂ”
+        // РіР°СЂР°РЅС‚РёСЂРѕРІР°РЅРЅРѕ РѕС‚РїСЂР°РІР»СЏРµРј Р·РѕР»РѕС‚РѕР№ Embed РІ РіР»Р°РІРЅС‹Р№ РєР°РЅР°Р» РёРІРµРЅС‚РѕРІ
         if (!channel || channel.type !== 0) {
           channel = getEventTargetChannel(guild);
         }
@@ -766,15 +766,15 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
         if (channel) {
           const embed = {
             embeds: [{
-              title: '🏆 СЕКРЕТНОЕ ДОСТИЖЕНИЕ РАЗБЛОКИРОВАНО!',
-              description: `<@${userId}> открыл(а) достижение **\`«${achievement.title}»**!`,
+              title: 'рџЏ† РЎР•РљР Р•РўРќРћР• Р”РћРЎРўРР–Р•РќРР• Р РђР—Р‘Р›РћРљРР РћР’РђРќРћ!',
+              description: `<@${userId}> РѕС‚РєСЂС‹Р»(Р°) РґРѕСЃС‚РёР¶РµРЅРёРµ **\`В«${achievement.title}В»**!`,
               color: 0xF1C40F,
               fields: [
-                { name: 'Описание', value: achievement.description, inline: false },
-                { name: 'Цитата', value: `*${achievement.quote}*`, inline: false },
-                { name: 'Награда', value: `**+${achievement.reward} XP**`, inline: true },
+                { name: 'РћРїРёСЃР°РЅРёРµ', value: achievement.description, inline: false },
+                { name: 'Р¦РёС‚Р°С‚Р°', value: `*${achievement.quote}*`, inline: false },
+                { name: 'РќР°РіСЂР°РґР°', value: `**+${achievement.reward} XP**`, inline: true },
               ],
-              footer: { text: 'Отличная работа! Продолжай исследовать сервер...' },
+              footer: { text: 'РћС‚Р»РёС‡РЅР°СЏ СЂР°Р±РѕС‚Р°! РџСЂРѕРґРѕР»Р¶Р°Р№ РёСЃСЃР»РµРґРѕРІР°С‚СЊ СЃРµСЂРІРµСЂ...' },
             }],
           };
 
@@ -795,24 +795,24 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
 }
 
 // ============================================
-// Функции проверки условий достижений
+// Р¤СѓРЅРєС†РёРё РїСЂРѕРІРµСЂРєРё СѓСЃР»РѕРІРёР№ РґРѕСЃС‚РёР¶РµРЅРёР№
 // ============================================
 
-// --- Ведьмак 3 ---
+// --- Р’РµРґСЊРјР°Рє 3 ---
 
 /**
- * witcher_plod: Отправить сообщение ровно через 30-35 сек после предыдущего
+ * witcher_plod: РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЂРѕРІРЅРѕ С‡РµСЂРµР· 30-35 СЃРµРє РїРѕСЃР»Рµ РїСЂРµРґС‹РґСѓС‰РµРіРѕ
  */
 async function checkWitcherPlod(db: any, userId: string, guildId: string, data: { now: number; lastMessageAt: number }): Promise<boolean> {
   const { now, lastMessageAt } = data;
   if (!lastMessageAt) return false;
-  // lastMessageAt теперь в миллисекундах, diff в секундах
+  // lastMessageAt С‚РµРїРµСЂСЊ РІ РјРёР»Р»РёСЃРµРєСѓРЅРґР°С…, diff РІ СЃРµРєСѓРЅРґР°С…
   const diff = Math.floor((now - lastMessageAt) / 1000);
   return diff >= 30 && diff <= 35;
 }
 
 /**
- * witcher_gwent: Сыграть 3 дуэли за один день
+ * witcher_gwent: РЎС‹РіСЂР°С‚СЊ 3 РґСѓСЌР»Рё Р·Р° РѕРґРёРЅ РґРµРЅСЊ
  */
 async function checkWitcherGwent(db: any, userId: string, guildId: string): Promise<boolean> {
   const today = getVladivostokDate();
@@ -828,10 +828,10 @@ async function checkWitcherGwent(db: any, userId: string, guildId: string): Prom
 }
 
 /**
- * witcher_damn: Проиграть дуэль с броском кубика меньше 10
+ * witcher_damn: РџСЂРѕРёРіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃ Р±СЂРѕСЃРєРѕРј РєСѓР±РёРєР° РјРµРЅСЊС€Рµ 10
  */
 async function checkWitcherDamn(db: any, userId: string, guildId: string, data: { lastDuelRoll?: number }): Promise<boolean> {
-  // Проверяем последние дуэли
+  // РџСЂРѕРІРµСЂСЏРµРј РїРѕСЃР»РµРґРЅРёРµ РґСѓСЌР»Рё
   try {
     const result = await db.execute({
       sql: 'SELECT * FROM duels WHERE (challenger_id = ? OR opponent_id = ?) AND guild_id = ? ORDER BY created_at DESC LIMIT 1',
@@ -839,7 +839,7 @@ async function checkWitcherDamn(db: any, userId: string, guildId: string, data: 
     });
     if (result.rows.length > 0) {
       const duel = result.rows[0];
-      // Если пользователь проиграл и бросок был меньше 10
+      // Р•СЃР»Рё РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РїСЂРѕРёРіСЂР°Р» Рё Р±СЂРѕСЃРѕРє Р±С‹Р» РјРµРЅСЊС€Рµ 10
       return (duel.status === 'completed');
     }
     return false;
@@ -849,7 +849,7 @@ async function checkWitcherDamn(db: any, userId: string, guildId: string, data: 
 }
 
 /**
- * witcher_blaviken: Выиграть 3 дуэли подряд без поражений
+ * witcher_blaviken: Р’С‹РёРіСЂР°С‚СЊ 3 РґСѓСЌР»Рё РїРѕРґСЂСЏРґ Р±РµР· РїРѕСЂР°Р¶РµРЅРёР№
  */
 async function checkWitcherBlaviken(db: any, userId: string, guildId: string): Promise<boolean> {
   try {
@@ -864,7 +864,7 @@ async function checkWitcherBlaviken(db: any, userId: string, guildId: string): P
       if (duel.status === 'completed') {
         const winnerId = duel.challenger_id as string;
         const loserId = duel.opponent_id as string;
-        // Определяем победителя из записей дуэли (нужен roll)
+        // РћРїСЂРµРґРµР»СЏРµРј РїРѕР±РµРґРёС‚РµР»СЏ РёР· Р·Р°РїРёСЃРµР№ РґСѓСЌР»Рё (РЅСѓР¶РµРЅ roll)
         if (winnerId === userId) {
           winStreak++;
           maxWinStreak = Math.max(maxWinStreak, winStreak);
@@ -880,7 +880,7 @@ async function checkWitcherBlaviken(db: any, userId: string, guildId: string): P
 }
 
 /**
- * witcher_coin: Зафиксировать ровно 1000, 2000, 3000 или 5000 XP
+ * witcher_coin: Р—Р°С„РёРєСЃРёСЂРѕРІР°С‚СЊ СЂРѕРІРЅРѕ 1000, 2000, 3000 РёР»Рё 5000 XP
  */
 async function checkWitcherCoin(db: any, userId: string, guildId: string, data: { newXp: number }): Promise<boolean> {
   const { newXp } = data;
@@ -890,11 +890,11 @@ async function checkWitcherCoin(db: any, userId: string, guildId: string, data: 
 // --- Red Dead Redemption 2 ---
 
 /**
- * rdr_plan: Накопить 3000+ XP, ни разу не проиграв в дуэлях
+ * rdr_plan: РќР°РєРѕРїРёС‚СЊ 3000+ XP, РЅРё СЂР°Р·Сѓ РЅРµ РїСЂРѕРёРіСЂР°РІ РІ РґСѓСЌР»СЏС…
  */
 async function checkRDRPlan(db: any, userId: string, guildId: string): Promise<boolean> {
   try {
-    // Проверяем XP
+    // РџСЂРѕРІРµСЂСЏРµРј XP
     const xpResult = await db.execute({
       sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
       args: [userId, guildId],
@@ -903,17 +903,17 @@ async function checkRDRPlan(db: any, userId: string, guildId: string): Promise<b
     const xp = (xpResult.rows[0].xp as number) || 0;
     if (xp < 3000) return false;
 
-    // Проверяем, не проигрывал ли в дуэлях
+    // РџСЂРѕРІРµСЂСЏРµРј, РЅРµ РїСЂРѕРёРіСЂС‹РІР°Р» Р»Рё РІ РґСѓСЌР»СЏС…
     const duelResult = await db.execute({
       sql: 'SELECT * FROM duels WHERE (challenger_id = ? OR opponent_id = ?) AND guild_id = ? AND status = ?',
       args: [userId, userId, guildId, 'completed'],
     });
-    if (duelResult.rows.length === 0) return true; // Дуэлей не было
+    if (duelResult.rows.length === 0) return true; // Р”СѓСЌР»РµР№ РЅРµ Р±С‹Р»Рѕ
 
-    // Проверяем, был ли проигрыш
+    // РџСЂРѕРІРµСЂСЏРµРј, Р±С‹Р» Р»Рё РїСЂРѕРёРіСЂС‹С€
     for (const duel of duelResult.rows) {
-      // В текущей схеме победитель определяется по roll в worker.ts
-      // Пропускаем проверку, так как в БД нет информации о проигрыше
+      // Р’ С‚РµРєСѓС‰РµР№ СЃС…РµРјРµ РїРѕР±РµРґРёС‚РµР»СЊ РѕРїСЂРµРґРµР»СЏРµС‚СЃСЏ РїРѕ roll РІ worker.ts
+      // РџСЂРѕРїСѓСЃРєР°РµРј РїСЂРѕРІРµСЂРєСѓ, С‚Р°Рє РєР°Рє РІ Р‘Р” РЅРµС‚ РёРЅС„РѕСЂРјР°С†РёРё Рѕ РїСЂРѕРёРіСЂС‹С€Рµ
     }
     return true;
   } catch (err) {
@@ -922,25 +922,25 @@ async function checkRDRPlan(db: any, userId: string, guildId: string): Promise<b
 }
 
 /**
- * rdr_lenny: Отправить капс-сообщение 10+ букв ночью с 02:00 до 05:00
+ * rdr_lenny: РћС‚РїСЂР°РІРёС‚СЊ РєР°РїСЃ-СЃРѕРѕР±С‰РµРЅРёРµ 10+ Р±СѓРєРІ РЅРѕС‡СЊСЋ СЃ 02:00 РґРѕ 05:00
  */
 async function checkRDRLenny(db: any, userId: string, guildId: string, data: { messageContent: string; hour: number }): Promise<boolean> {
   const { messageContent, hour } = data;
-  if (hour < 2 || hour >= 5) return false; // Только 02:00-05:00
+  if (hour < 2 || hour >= 5) return false; // РўРѕР»СЊРєРѕ 02:00-05:00
   if (!messageContent || messageContent.length < 10) return false;
   return messageContent === messageContent.toUpperCase();
 }
 
 /**
- * rdr_quickdraw: Выиграть дуэль с броском 95+
+ * rdr_quickdraw: Р’С‹РёРіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃ Р±СЂРѕСЃРєРѕРј 95+
  */
 async function checkRDRQuickdraw(db: any, userId: string, guildId: string): Promise<boolean> {
-  // Проверяем последнюю дуэль с высоким броском
-  return false; // Требует изменений в worker.ts
+  // РџСЂРѕРІРµСЂСЏРµРј РїРѕСЃР»РµРґРЅСЋСЋ РґСѓСЌР»СЊ СЃ РІС‹СЃРѕРєРёРј Р±СЂРѕСЃРєРѕРј
+  return false; // РўСЂРµР±СѓРµС‚ РёР·РјРµРЅРµРЅРёР№ РІ worker.ts
 }
 
 /**
- * rdr_tahiti: Провести более 5 часов в войсе за день
+ * rdr_tahiti: РџСЂРѕРІРµСЃС‚Рё Р±РѕР»РµРµ 5 С‡Р°СЃРѕРІ РІ РІРѕР№СЃРµ Р·Р° РґРµРЅСЊ
  */
 async function checkRDRTahiti(db: any, userId: string, guildId: string): Promise<boolean> {
   const today = getVladivostokDate();
@@ -951,14 +951,14 @@ async function checkRDRTahiti(db: any, userId: string, guildId: string): Promise
     });
     if (result.rows.length === 0) return false;
     const voiceSeconds = (result.rows[0].voice_seconds as number) || 0;
-    return voiceSeconds > 5 * 3600; // 5 часов
+    return voiceSeconds > 5 * 3600; // 5 С‡Р°СЃРѕРІ
   } catch (err) {
     return false;
   }
 }
 
 /**
- * rdr_tax: Сжечь более 200 XP на налоге с дуэлей
+ * rdr_tax: РЎР¶РµС‡СЊ Р±РѕР»РµРµ 200 XP РЅР° РЅР°Р»РѕРіРµ СЃ РґСѓСЌР»РµР№
  */
 async function checkRDRTax(db: any, userId: string, guildId: string): Promise<boolean> {
   try {
@@ -978,17 +978,17 @@ async function checkRDRTax(db: any, userId: string, guildId: string): Promise<bo
   }
 }
 
-// --- Владивосток и ДВ ---
+// --- Р’Р»Р°РґРёРІРѕСЃС‚РѕРє Рё Р”Р’ ---
 
 /**
- * vlad_2000: Оказаться ровно с 2000 XP на балансе
+ * vlad_2000: РћРєР°Р·Р°С‚СЊСЃСЏ СЂРѕРІРЅРѕ СЃ 2000 XP РЅР° Р±Р°Р»Р°РЅСЃРµ
  */
 async function checkVlad2000(db: any, userId: string, guildId: string, data: { newXp: number }): Promise<boolean> {
   return data.newXp === 2000;
 }
 
 /**
- * vlad_midnight: Отправить сообщение ровно в 00:00 (Владивосток)
+ * vlad_midnight: РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЂРѕРІРЅРѕ РІ 00:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)
  */
 async function checkVladMidnight(db: any, userId: string, guildId: string, data: { hour: number; minute: number; second: number }): Promise<boolean> {
   const { hour, minute, second } = data;
@@ -996,28 +996,28 @@ async function checkVladMidnight(db: any, userId: string, guildId: string, data:
 }
 
 /**
- * vlad_pyanse: Быть активным в чате во время обеда с 12:00 до 13:00 (Владивосток)
+ * vlad_pyanse: Р‘С‹С‚СЊ Р°РєС‚РёРІРЅС‹Рј РІ С‡Р°С‚Рµ РІРѕ РІСЂРµРјСЏ РѕР±РµРґР° СЃ 12:00 РґРѕ 13:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)
  */
 async function checkVladPyanse(db: any, userId: string, guildId: string, data: { hour: number }): Promise<boolean> {
   return data.hour >= 12 && data.hour < 13;
 }
 
 /**
- * vlad_typhoon: Спасти стрик с помощью заморозки
+ * vlad_typhoon: РЎРїР°СЃС‚Рё СЃС‚СЂРёРє СЃ РїРѕРјРѕС‰СЊСЋ Р·Р°РјРѕСЂРѕР·РєРё
  */
 async function checkVladTyphoon(db: any, userId: string, guildId: string, data: { usedFreeze: boolean }): Promise<boolean> {
   return data.usedFreeze;
 }
 
 /**
- * vlad_right_hand: Сменить тему на Киберпанк или Магму
+ * vlad_right_hand: РЎРјРµРЅРёС‚СЊ С‚РµРјСѓ РЅР° РљРёР±РµСЂРїР°РЅРє РёР»Рё РњР°РіРјСѓ
  */
 async function checkVladRightHand(db: any, userId: string, guildId: string, data: { themeId: string }): Promise<boolean> {
   return data.themeId === 'cyberpunk' || data.themeId === 'magma';
 }
 
 /**
- * vlad_golden_horn: Занять 1-е место в лидерборде сервера
+ * vlad_golden_horn: Р—Р°РЅСЏС‚СЊ 1-Рµ РјРµСЃС‚Рѕ РІ Р»РёРґРµСЂР±РѕСЂРґРµ СЃРµСЂРІРµСЂР°
  */
 async function checkVladGoldenHorn(db: any, userId: string, guildId: string): Promise<boolean> {
   try {
@@ -1042,83 +1042,83 @@ async function checkVladGoldenHorn(db: any, userId: string, guildId: string): Pr
 // --- Half-Life 2 ---
 
 /**
- * hl_wakeup: Отправить сообщение с 06:00 до 07:00 утра (Владивосток)
+ * hl_wakeup: РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЃ 06:00 РґРѕ 07:00 СѓС‚СЂР° (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)
  */
 async function checkHLWakeup(db: any, userId: string, guildId: string, data: { hour: number }): Promise<boolean> {
   return data.hour >= 6 && data.hour < 7;
 }
 
 /**
- * hl_can: Выполнить свой первый ежедневный квест
+ * hl_can: Р’С‹РїРѕР»РЅРёС‚СЊ СЃРІРѕР№ РїРµСЂРІС‹Р№ РµР¶РµРґРЅРµРІРЅС‹Р№ РєРІРµСЃС‚
  */
 async function checkHLCan(db: any, userId: string, guildId: string, data: { firstQuestCompleted: boolean }): Promise<boolean> {
   return data.firstQuestCompleted;
 }
 
 /**
- * hl_water: Провести 2 часа непрерывно в войсе
+ * hl_water: РџСЂРѕРІРµСЃС‚Рё 2 С‡Р°СЃР° РЅРµРїСЂРµСЂС‹РІРЅРѕ РІ РІРѕР№СЃРµ
  */
 async function checkHLWater(db: any, userId: string, guildId: string, data: { continuousVoiceSeconds: number }): Promise<boolean> {
-  return (data.continuousVoiceSeconds || 0) >= 7200; // 2 часа
+  return (data.continuousVoiceSeconds || 0) >= 7200; // 2 С‡Р°СЃР°
 }
 
 /**
- * hl_crowbar: Победить в дуэли оппонента, у которого уровень выше твоего на 2+
+ * hl_crowbar: РџРѕР±РµРґРёС‚СЊ РІ РґСѓСЌР»Рё РѕРїРїРѕРЅРµРЅС‚Р°, Сѓ РєРѕС‚РѕСЂРѕРіРѕ СѓСЂРѕРІРµРЅСЊ РІС‹С€Рµ С‚РІРѕРµРіРѕ РЅР° 2+
  */
 async function checkHLCrowbar(db: any, userId: string, guildId: string, data: { opponentLevel: number; userLevel: number }): Promise<boolean> {
   return (data.opponentLevel - data.userLevel) >= 2;
 }
 
 /**
- * hl_airdrop: Первым забрать контейнер войс-дропа
+ * hl_airdrop: РџРµСЂРІС‹Рј Р·Р°Р±СЂР°С‚СЊ РєРѕРЅС‚РµР№РЅРµСЂ РІРѕР№СЃ-РґСЂРѕРїР°
  */
 async function checkHLAirdrop(db: any, userId: string, guildId: string, data: { claimedAirdrop: boolean }): Promise<boolean> {
   return data.claimedAirdrop;
 }
 
-// --- Мемы / Навальный ---
+// --- РњРµРјС‹ / РќР°РІР°Р»СЊРЅС‹Р№ ---
 
 /**
- * fbk_hello: Написать сообщение после 3+ дней отсутствия на сервере
+ * fbk_hello: РќР°РїРёСЃР°С‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РїРѕСЃР»Рµ 3+ РґРЅРµР№ РѕС‚СЃСѓС‚СЃС‚РІРёСЏ РЅР° СЃРµСЂРІРµСЂРµ
  */
 async function checkFBKHello(db: any, userId: string, guildId: string, data: { lastMessageAt: number; now: number }): Promise<boolean> {
   const { lastMessageAt, now } = data;
-  if (!lastMessageAt) return true; // Первое сообщение
-  // lastMessageAt теперь в миллисекундах
+  if (!lastMessageAt) return true; // РџРµСЂРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ
+  // lastMessageAt С‚РµРїРµСЂСЊ РІ РјРёР»Р»РёСЃРµРєСѓРЅРґР°С…
   const daysOffline = (now - lastMessageAt) / (1000 * 60 * 60 * 24);
   return daysOffline >= 3;
 }
 
 /**
- * fbk_sandwich: Удержать стрик активности ровно 14 дней
+ * fbk_sandwich: РЈРґРµСЂР¶Р°С‚СЊ СЃС‚СЂРёРє Р°РєС‚РёРІРЅРѕСЃС‚Рё СЂРѕРІРЅРѕ 14 РґРЅРµР№
  */
 async function checkFBKSandwich(db: any, userId: string, guildId: string, data: { streakDays: number }): Promise<boolean> {
   return data.streakDays === 14;
 }
 
 /**
- * fbk_final_battle: Сыграть дуэль со ставкой от 1000 XP
+ * fbk_final_battle: РЎС‹РіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃРѕ СЃС‚Р°РІРєРѕР№ РѕС‚ 1000 XP
  */
 async function checkFBKFinalBattle(db: any, userId: string, guildId: string, data: { betAmount: number }): Promise<boolean> {
   return data.betAmount >= 1000;
 }
 
 /**
- * fbk_investigation: Посмотреть карточки /rank 5 разных людей за день
+ * fbk_investigation: РџРѕСЃРјРѕС‚СЂРµС‚СЊ РєР°СЂС‚РѕС‡РєРё /rank 5 СЂР°Р·РЅС‹С… Р»СЋРґРµР№ Р·Р° РґРµРЅСЊ
  */
 async function checkFBKInvestigation(db: any, userId: string, guildId: string): Promise<boolean> {
-  // Отслеживание просмотров в worker.ts через пользовательское состояние
+  // РћС‚СЃР»РµР¶РёРІР°РЅРёРµ РїСЂРѕСЃРјРѕС‚СЂРѕРІ РІ worker.ts С‡РµСЂРµР· РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРѕРµ СЃРѕСЃС‚РѕСЏРЅРёРµ
   return false;
 }
 
 /**
- * fbk_prb: Закрыть все 3 дейлика за один день
+ * fbk_prb: Р—Р°РєСЂС‹С‚СЊ РІСЃРµ 3 РґРµР№Р»РёРєР° Р·Р° РѕРґРёРЅ РґРµРЅСЊ
  */
 async function checkFBKPRB(db: any, userId: string, guildId: string): Promise<boolean> {
   const today = getVladivostokDate();
   try {
-    // ИСПРАВЛЕНИЕ: учитываем только квесты, закрытые СЕГОДНЯ (фильтр по active_date),
-    // как в getUserStreakData — иначе достижимость давних квестов портила проверку.
+    // РРЎРџР РђР’Р›Р•РќРР•: СѓС‡РёС‚С‹РІР°РµРј С‚РѕР»СЊРєРѕ РєРІРµСЃС‚С‹, Р·Р°РєСЂС‹С‚С‹Рµ РЎР•Р“РћР”РќРЇ (С„РёР»СЊС‚СЂ РїРѕ active_date),
+    // РєР°Рє РІ getUserStreakData вЂ” РёРЅР°С‡Рµ РґРѕСЃС‚РёР¶РёРјРѕСЃС‚СЊ РґР°РІРЅРёС… РєРІРµСЃС‚РѕРІ РїРѕСЂС‚РёР»Р° РїСЂРѕРІРµСЂРєСѓ.
     const result = await db.execute({
       sql: `SELECT COUNT(*) as completed
             FROM user_quest_progress uqp
@@ -1132,17 +1132,17 @@ async function checkFBKPRB(db: any, userId: string, guildId: string): Promise<bo
   }
 }
 
-// --- Классика ---
+// --- РљР»Р°СЃСЃРёРєР° ---
 
 /**
- * lucky_777: Зафиксировать ровно 777 XP на балансе
+ * lucky_777: Р—Р°С„РёРєСЃРёСЂРѕРІР°С‚СЊ СЂРѕРІРЅРѕ 777 XP РЅР° Р±Р°Р»Р°РЅСЃРµ
  */
 async function checkLucky777(db: any, userId: string, guildId: string, data: { newXp: number }): Promise<boolean> {
   return data.newXp === 777;
 }
 
 /**
- * casino_house: Сжечь более 100 XP налога в одной дуэли
+ * casino_house: РЎР¶РµС‡СЊ Р±РѕР»РµРµ 100 XP РЅР°Р»РѕРіР° РІ РѕРґРЅРѕР№ РґСѓСЌР»Рё
  */
 async function checkCasinoHouse(db: any, userId: string, guildId: string, data: { taxAmount: number }): Promise<boolean> {
   return data.taxAmount > 100;
@@ -1154,9 +1154,9 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
-    // C8: без GuildPresences member.presence?.status всегда undefined,
-    // из-за чего awardOnlineSeconds не начислял online_seconds никому.
-    // ВАЖНО: требует включения Privileged Intent в Discord Developer Portal.
+    // C8: Р±РµР· GuildPresences member.presence?.status РІСЃРµРіРґР° undefined,
+    // РёР·-Р·Р° С‡РµРіРѕ awardOnlineSeconds РЅРµ РЅР°С‡РёСЃР»СЏР» online_seconds РЅРёРєРѕРјСѓ.
+    // Р’РђР–РќРћ: С‚СЂРµР±СѓРµС‚ РІРєР»СЋС‡РµРЅРёСЏ Privileged Intent РІ Discord Developer Portal.
     GatewayIntentBits.GuildPresences,
   ],
 });
@@ -1166,10 +1166,10 @@ const db = createClient({
   authToken: process.env.DATABASE_AUTH_TOKEN,
 });
 
-// Проверка и обновление схемы БД при старте
+// РџСЂРѕРІРµСЂРєР° Рё РѕР±РЅРѕРІР»РµРЅРёРµ СЃС…РµРјС‹ Р‘Р” РїСЂРё СЃС‚Р°СЂС‚Рµ
 async function migrateSchema() {
   try {
-    // Проверка наличия колонки level (в старых версиях её могло не быть)
+    // РџСЂРѕРІРµСЂРєР° РЅР°Р»РёС‡РёСЏ РєРѕР»РѕРЅРєРё level (РІ СЃС‚Р°СЂС‹С… РІРµСЂСЃРёСЏС… РµС‘ РјРѕРіР»Рѕ РЅРµ Р±С‹С‚СЊ)
     const levelCheck = await db.execute({
       sql: "PRAGMA table_info(users)",
       args: [],
@@ -1210,7 +1210,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 003: Колонки для стриков активности (Этап 2)
+    // РњРёРіСЂР°С†РёСЏ 003: РљРѕР»РѕРЅРєРё РґР»СЏ СЃС‚СЂРёРєРѕРІ Р°РєС‚РёРІРЅРѕСЃС‚Рё (Р­С‚Р°Рї 2)
     // ============================================
     if (!columns.includes('streak_days')) {
       await db.execute({
@@ -1237,7 +1237,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 011: Колонка last_week_reset для еженедельного сброса (Этап 7)
+    // РњРёРіСЂР°С†РёСЏ 011: РљРѕР»РѕРЅРєР° last_week_reset РґР»СЏ РµР¶РµРЅРµРґРµР»СЊРЅРѕРіРѕ СЃР±СЂРѕСЃР° (Р­С‚Р°Рї 7)
     // ============================================
     if (!columns.includes('last_week_reset')) {
       await db.execute({
@@ -1248,9 +1248,9 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 023: Колонка last_season_reset — отметка завершения сезона.
-    // Маркер хранится ПО ГИЛЬДИЯМ в служебной записи users (user_id = guild_id)
-    // и обновляется СТРОГО после успешного коммита сезонной ликвидации компаний.
+    // РњРёРіСЂР°С†РёСЏ 023: РљРѕР»РѕРЅРєР° last_season_reset вЂ” РѕС‚РјРµС‚РєР° Р·Р°РІРµСЂС€РµРЅРёСЏ СЃРµР·РѕРЅР°.
+    // РњР°СЂРєРµСЂ С…СЂР°РЅРёС‚СЃСЏ РџРћ Р“РР›Р¬Р”РРЇРњ РІ СЃР»СѓР¶РµР±РЅРѕР№ Р·Р°РїРёСЃРё users (user_id = guild_id)
+    // Рё РѕР±РЅРѕРІР»СЏРµС‚СЃСЏ РЎРўР РћР“Рћ РїРѕСЃР»Рµ СѓСЃРїРµС€РЅРѕРіРѕ РєРѕРјРјРёС‚Р° СЃРµР·РѕРЅРЅРѕР№ Р»РёРєРІРёРґР°С†РёРё РєРѕРјРїР°РЅРёР№.
     // ============================================
     if (!columns.includes('last_season_reset')) {
       await db.execute({
@@ -1261,7 +1261,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 019: Колонка weekly_reset_week (безопасное добавление, фикс стабильности)
+    // РњРёРіСЂР°С†РёСЏ 019: РљРѕР»РѕРЅРєР° weekly_reset_week (Р±РµР·РѕРїР°СЃРЅРѕРµ РґРѕР±Р°РІР»РµРЅРёРµ, С„РёРєСЃ СЃС‚Р°Р±РёР»СЊРЅРѕСЃС‚Рё)
     // ============================================
     try {
       await db.execute({
@@ -1270,7 +1270,7 @@ async function migrateSchema() {
       });
       console.log('[Migrate] Added column: weekly_reset_week');
     } catch (colErr: any) {
-      // Игнорируем ошибку, если колонка уже существует
+      // РРіРЅРѕСЂРёСЂСѓРµРј РѕС€РёР±РєСѓ, РµСЃР»Рё РєРѕР»РѕРЅРєР° СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚
       const errMsg = String(colErr?.message || colErr || '');
       if (!errMsg.toLowerCase().includes('duplicate column')) {
         console.error('[Migrate] Error adding weekly_reset_week column (ignored):', colErr);
@@ -1278,8 +1278,8 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 021: Колонка next_boss_spawn_at для редкого спавна боссов
-    // (интервал между появлениями Мирового Босса: 60-120 часов после поражения/побега)
+    // РњРёРіСЂР°С†РёСЏ 021: РљРѕР»РѕРЅРєР° next_boss_spawn_at РґР»СЏ СЂРµРґРєРѕРіРѕ СЃРїР°РІРЅР° Р±РѕСЃСЃРѕРІ
+    // (РёРЅС‚РµСЂРІР°Р» РјРµР¶РґСѓ РїРѕСЏРІР»РµРЅРёСЏРјРё РњРёСЂРѕРІРѕРіРѕ Р‘РѕСЃСЃР°: 60-120 С‡Р°СЃРѕРІ РїРѕСЃР»Рµ РїРѕСЂР°Р¶РµРЅРёСЏ/РїРѕР±РµРіР°)
     // ============================================
     if (!columns.includes('next_boss_spawn_at')) {
       await db.execute({
@@ -1290,7 +1290,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 012: Колонки для годовой активности и максимального стрика (Этап 8)
+    // РњРёРіСЂР°С†РёСЏ 012: РљРѕР»РѕРЅРєРё РґР»СЏ РіРѕРґРѕРІРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё Рё РјР°РєСЃРёРјР°Р»СЊРЅРѕРіРѕ СЃС‚СЂРёРєР° (Р­С‚Р°Рї 8)
     // ============================================
     if (!columns.includes('online_seconds')) {
       await db.execute({
@@ -1309,7 +1309,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 013: Колонка prestige_count для системы престижа (Этап 9)
+    // РњРёРіСЂР°С†РёСЏ 013: РљРѕР»РѕРЅРєР° prestige_count РґР»СЏ СЃРёСЃС‚РµРјС‹ РїСЂРµСЃС‚РёР¶Р° (Р­С‚Р°Рї 9)
     // ============================================
     if (!columns.includes('prestige_count')) {
       await db.execute({
@@ -1320,7 +1320,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 014: Колонка coins и таблица user_inventory (Этап 11 - Экономика Монет)
+    // РњРёРіСЂР°С†РёСЏ 014: РљРѕР»РѕРЅРєР° coins Рё С‚Р°Р±Р»РёС†Р° user_inventory (Р­С‚Р°Рї 11 - Р­РєРѕРЅРѕРјРёРєР° РњРѕРЅРµС‚)
     // ============================================
     if (!columns.includes('coins')) {
       await db.execute({
@@ -1331,7 +1331,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 015: Колонка class_id для системы RPG-классов (Этап 12)
+    // РњРёРіСЂР°С†РёСЏ 015: РљРѕР»РѕРЅРєР° class_id РґР»СЏ СЃРёСЃС‚РµРјС‹ RPG-РєР»Р°СЃСЃРѕРІ (Р­С‚Р°Рї 12)
     // ============================================
     if (!columns.includes('class_id')) {
       await db.execute({
@@ -1342,7 +1342,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 016: Колонка last_activity_at для проклятия дезертира (Этап 12+)
+    // РњРёРіСЂР°С†РёСЏ 016: РљРѕР»РѕРЅРєР° last_activity_at РґР»СЏ РїСЂРѕРєР»СЏС‚РёСЏ РґРµР·РµСЂС‚РёСЂР° (Р­С‚Р°Рї 12+)
     // ============================================
     if (!columns.includes('last_activity_at')) {
       await db.execute({
@@ -1351,16 +1351,16 @@ async function migrateSchema() {
       });
       console.log('[Migrate] Added column: last_activity_at');
 
-      // Заполняем существующие записи текущим временем
+      // Р—Р°РїРѕР»РЅСЏРµРј СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёРµ Р·Р°РїРёСЃРё С‚РµРєСѓС‰РёРј РІСЂРµРјРµРЅРµРј
       await db.execute({
         sql: 'UPDATE users SET last_activity_at = ? WHERE last_activity_at = 0 OR last_activity_at IS NULL',
         args: [Date.now()],
       });
       console.log('[Migrate] Filled last_activity_at for existing users');
 
-      // ИСПРАВЛЕНИЕ: конвертируем старые записи, которые были сохранены в СЕКУНДАХ
-      // Если last_activity_at < 1000000000000, это явно секунды (не миллисекунды)
-      // Такие значения преобразуем в миллисекунды
+      // РРЎРџР РђР’Р›Р•РќРР•: РєРѕРЅРІРµСЂС‚РёСЂСѓРµРј СЃС‚Р°СЂС‹Рµ Р·Р°РїРёСЃРё, РєРѕС‚РѕСЂС‹Рµ Р±С‹Р»Рё СЃРѕС…СЂР°РЅРµРЅС‹ РІ РЎР•РљРЈРќР”РђРҐ
+      // Р•СЃР»Рё last_activity_at < 1000000000000, СЌС‚Рѕ СЏРІРЅРѕ СЃРµРєСѓРЅРґС‹ (РЅРµ РјРёР»Р»РёСЃРµРєСѓРЅРґС‹)
+      // РўР°РєРёРµ Р·РЅР°С‡РµРЅРёСЏ РїСЂРµРѕР±СЂР°Р·СѓРµРј РІ РјРёР»Р»РёСЃРµРєСѓРЅРґС‹
       await db.execute({
         sql: 'UPDATE users SET last_activity_at = last_activity_at * 1000 WHERE last_activity_at > 0 AND last_activity_at < 1000000000000',
         args: [],
@@ -1369,7 +1369,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 017: Колонка last_boss_attack_at для Мирового Босса (Этап 13)
+    // РњРёРіСЂР°С†РёСЏ 017: РљРѕР»РѕРЅРєР° last_boss_attack_at РґР»СЏ РњРёСЂРѕРІРѕРіРѕ Р‘РѕСЃСЃР° (Р­С‚Р°Рї 13)
     // ============================================
     if (!columns.includes('last_boss_attack_at')) {
       await db.execute({
@@ -1380,10 +1380,10 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 018: Система Мирового Босса (Этап 13)
+    // РњРёРіСЂР°С†РёСЏ 018: РЎРёСЃС‚РµРјР° РњРёСЂРѕРІРѕРіРѕ Р‘РѕСЃСЃР° (Р­С‚Р°Рї 13)
     // ============================================
 
-    // Создаём таблицу world_boss
+    // РЎРѕР·РґР°С‘Рј С‚Р°Р±Р»РёС†Сѓ world_boss
     const worldBossCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='world_boss'",
       args: [],
@@ -1414,7 +1414,7 @@ async function migrateSchema() {
       console.log('[Migrate] Created table: world_boss');
     }
 
-    // Создаём таблицу boss_damage_logs
+    // РЎРѕР·РґР°С‘Рј С‚Р°Р±Р»РёС†Сѓ boss_damage_logs
     const bossDamageLogsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='boss_damage_logs'",
       args: [],
@@ -1445,13 +1445,13 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 017 (переиндексация): Система реликвий, экипировки и рынка (Этап 14)
+    // РњРёРіСЂР°С†РёСЏ 017 (РїРµСЂРµРёРЅРґРµРєСЃР°С†РёСЏ): РЎРёСЃС‚РµРјР° СЂРµР»РёРєРІРёР№, СЌРєРёРїРёСЂРѕРІРєРё Рё СЂС‹РЅРєР° (Р­С‚Р°Рї 14)
     // ============================================
 
-    // C11: CREATE TABLE user_inventory ОБЯЗАН идти ДО ALTER TABLE ниже.
-    // На чистой БД первый же ALTER бросал "no such table: user_inventory",
-    // исключение глоталось внешним catch и все последующие миграции не выполнялись.
-    // Таблица user_inventory (Этап 11 - Система инвентаря)
+    // C11: CREATE TABLE user_inventory РћР‘РЇР—РђРќ РёРґС‚Рё Р”Рћ ALTER TABLE РЅРёР¶Рµ.
+    // РќР° С‡РёСЃС‚РѕР№ Р‘Р” РїРµСЂРІС‹Р№ Р¶Рµ ALTER Р±СЂРѕСЃР°Р» "no such table: user_inventory",
+    // РёСЃРєР»СЋС‡РµРЅРёРµ РіР»РѕС‚Р°Р»РѕСЃСЊ РІРЅРµС€РЅРёРј catch Рё РІСЃРµ РїРѕСЃР»РµРґСѓСЋС‰РёРµ РјРёРіСЂР°С†РёРё РЅРµ РІС‹РїРѕР»РЅСЏР»РёСЃСЊ.
+    // РўР°Р±Р»РёС†Р° user_inventory (Р­С‚Р°Рї 11 - РЎРёСЃС‚РµРјР° РёРЅРІРµРЅС‚Р°СЂСЏ)
     const userInventoryCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_inventory'",
       args: [],
@@ -1478,9 +1478,9 @@ async function migrateSchema() {
       console.log('[Migrate] Created table: user_inventory');
     }
 
-    // Добавляем колонки в user_inventory (если ещё нет)
-    // C14: Каждый ALTER TABLE обёрнут в try/catch, чтобы дублирующиеся колонки игнорировались
-    // и не обрывали остальные миграции БД
+    // Р”РѕР±Р°РІР»СЏРµРј РєРѕР»РѕРЅРєРё РІ user_inventory (РµСЃР»Рё РµС‰С‘ РЅРµС‚)
+    // C14: РљР°Р¶РґС‹Р№ ALTER TABLE РѕР±С‘СЂРЅСѓС‚ РІ try/catch, С‡С‚РѕР±С‹ РґСѓР±Р»РёСЂСѓСЋС‰РёРµСЃСЏ РєРѕР»РѕРЅРєРё РёРіРЅРѕСЂРёСЂРѕРІР°Р»РёСЃСЊ
+    // Рё РЅРµ РѕР±СЂС‹РІР°Р»Рё РѕСЃС‚Р°Р»СЊРЅС‹Рµ РјРёРіСЂР°С†РёРё Р‘Р”
     try {
       await db.execute({
         sql: 'ALTER TABLE user_inventory ADD COLUMN item_id TEXT NOT NULL DEFAULT \'junk\'',
@@ -1585,14 +1585,14 @@ async function migrateSchema() {
       }
     }
 
-    // Создаём уникальный индекс для реликвий (только не-junk предметов)
+    // РЎРѕР·РґР°С‘Рј СѓРЅРёРєР°Р»СЊРЅС‹Р№ РёРЅРґРµРєСЃ РґР»СЏ СЂРµР»РёРєРІРёР№ (С‚РѕР»СЊРєРѕ РЅРµ-junk РїСЂРµРґРјРµС‚РѕРІ)
     await db.execute({
       sql: 'CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_guild_item ON user_inventory(guild_id, item_id) WHERE item_id != \'junk\'',
       args: [],
     });
     console.log('[Migrate] Created unique index: idx_unique_guild_item');
 
-    // Создаём таблицу рынка
+    // РЎРѕР·РґР°С‘Рј С‚Р°Р±Р»РёС†Сѓ СЂС‹РЅРєР°
     const marketListingsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='market_listings'",
       args: [],
@@ -1621,7 +1621,7 @@ async function migrateSchema() {
       console.log('[Migrate] Created table: market_listings');
     }
 
-    // Создаём таблицу прямых сделок
+    // РЎРѕР·РґР°С‘Рј С‚Р°Р±Р»РёС†Сѓ РїСЂСЏРјС‹С… СЃРґРµР»РѕРє
     const directTradesCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='direct_trades'",
       args: [],
@@ -1649,7 +1649,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 007: Таблица user_cosmetics (Этап 5 - Кастомизация карточки)
+    // РњРёРіСЂР°С†РёСЏ 007: РўР°Р±Р»РёС†Р° user_cosmetics (Р­С‚Р°Рї 5 - РљР°СЃС‚РѕРјРёР·Р°С†РёСЏ РєР°СЂС‚РѕС‡РєРё)
     // ============================================
     const userCosmeticsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_cosmetics'",
@@ -1662,7 +1662,7 @@ async function migrateSchema() {
           user_id TEXT NOT NULL,
           guild_id TEXT NOT NULL,
           theme_id TEXT DEFAULT 'default',
-          title_id TEXT DEFAULT 'Новичок',
+          title_id TEXT DEFAULT 'РќРѕРІРёС‡РѕРє',
           badges TEXT DEFAULT '[]',
           PRIMARY KEY (user_id, guild_id)
         )`,
@@ -1672,7 +1672,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 008: Таблица user_achievements (Этап 6 - Система достижений)
+    // РњРёРіСЂР°С†РёСЏ 008: РўР°Р±Р»РёС†Р° user_achievements (Р­С‚Р°Рї 6 - РЎРёСЃС‚РµРјР° РґРѕСЃС‚РёР¶РµРЅРёР№)
     // ============================================
     const userAchievementsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_achievements'",
@@ -1694,7 +1694,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 009: Таблица achievements_pool (Этап 6 - Система достижений)
+    // РњРёРіСЂР°С†РёСЏ 009: РўР°Р±Р»РёС†Р° achievements_pool (Р­С‚Р°Рї 6 - РЎРёСЃС‚РµРјР° РґРѕСЃС‚РёР¶РµРЅРёР№)
     // ============================================
     const achievementsPoolCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='achievements_pool'",
@@ -1714,42 +1714,42 @@ async function migrateSchema() {
       });
       console.log('[Migrate] Created table: achievements_pool');
 
-      // Заполняем таблицу достижениями из константы
+      // Р—Р°РїРѕР»РЅСЏРµРј С‚Р°Р±Р»РёС†Сѓ РґРѕСЃС‚РёР¶РµРЅРёСЏРјРё РёР· РєРѕРЅСЃС‚Р°РЅС‚С‹
       const achievements = [
-        // Ведьмак 3
-        ['witcher_plod', '🐺 Шевелись, Плотва!', 'Отправить сообщение ровно через 30-35 сек после предыдущего', 'Лютик, бл#ть...', 150],
-        ['witcher_gwent', '🃏 В Гвинт не сыграешь?', 'Сыграть 3 дуэли за один день', 'Кивает молча и достаёт колоду Королевств Севера.', 200],
-        ['witcher_damn', '🐺 Зараза...', 'Проиграть дуэль с броском кубика меньше 10', 'Ветер воет...', 100],
-        ['witcher_blaviken', '⚔️ Мясник из Блавикена', 'Выиграть 3 дуэли подряд без поражений', 'Если приходится выбирать между злом и злом...', 350],
-        ['witcher_coin', '🪙 Чеканная монета', 'Зафиксировать ровно 1000, 2000, 3000 или 5000 XP', 'Зачтётся всё это вам!', 250],
+        // Р’РµРґСЊРјР°Рє 3
+        ['witcher_plod', 'рџђє РЁРµРІРµР»РёСЃСЊ, РџР»РѕС‚РІР°!', 'РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЂРѕРІРЅРѕ С‡РµСЂРµР· 30-35 СЃРµРє РїРѕСЃР»Рµ РїСЂРµРґС‹РґСѓС‰РµРіРѕ', 'Р›СЋС‚РёРє, Р±Р»#С‚СЊ...', 150],
+        ['witcher_gwent', 'рџѓЏ Р’ Р“РІРёРЅС‚ РЅРµ СЃС‹РіСЂР°РµС€СЊ?', 'РЎС‹РіСЂР°С‚СЊ 3 РґСѓСЌР»Рё Р·Р° РѕРґРёРЅ РґРµРЅСЊ', 'РљРёРІР°РµС‚ РјРѕР»С‡Р° Рё РґРѕСЃС‚Р°С‘С‚ РєРѕР»РѕРґСѓ РљРѕСЂРѕР»РµРІСЃС‚РІ РЎРµРІРµСЂР°.', 200],
+        ['witcher_damn', 'рџђє Р—Р°СЂР°Р·Р°...', 'РџСЂРѕРёРіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃ Р±СЂРѕСЃРєРѕРј РєСѓР±РёРєР° РјРµРЅСЊС€Рµ 10', 'Р’РµС‚РµСЂ РІРѕРµС‚...', 100],
+        ['witcher_blaviken', 'вљ”пёЏ РњСЏСЃРЅРёРє РёР· Р‘Р»Р°РІРёРєРµРЅР°', 'Р’С‹РёРіСЂР°С‚СЊ 3 РґСѓСЌР»Рё РїРѕРґСЂСЏРґ Р±РµР· РїРѕСЂР°Р¶РµРЅРёР№', 'Р•СЃР»Рё РїСЂРёС…РѕРґРёС‚СЃСЏ РІС‹Р±РёСЂР°С‚СЊ РјРµР¶РґСѓ Р·Р»РѕРј Рё Р·Р»РѕРј...', 350],
+        ['witcher_coin', 'рџЄ™ Р§РµРєР°РЅРЅР°СЏ РјРѕРЅРµС‚Р°', 'Р—Р°С„РёРєСЃРёСЂРѕРІР°С‚СЊ СЂРѕРІРЅРѕ 1000, 2000, 3000 РёР»Рё 5000 XP', 'Р—Р°С‡С‚С‘С‚СЃСЏ РІСЃС‘ СЌС‚Рѕ РІР°Рј!', 250],
         // Red Dead Redemption 2
-        ['rdr_plan', '🤠 У меня есть ПЛАН!', 'Накопить 3000+ XP, ни разу не проиграв в дуэлях', 'Нам просто нужно больше денег, Артур!', 300],
-        ['rdr_lenny', '🍻 ЛИИИННИИИИ!', 'Отправить капс-сообщение 10+ букв ночью с 02:00 до 05:00', 'YNNEL?! ГДЕ ТЫ, ЛЕННИ?!', 150],
-        ['rdr_quickdraw', '🎯 Быстрая рука', 'Выиграть дуэль с броском 95+', 'На этом сервере место только для одного.', 250],
-        ['rdr_tahiti', '🥭 Билет на Таити', 'Провести более 5 часов в войсе за день', 'Мы будем выращивать манго и жить припеваючи.', 300],
-        ['rdr_tax', '💰 Капитализм, Артур', 'Сжечь более 200 XP на налоге с дуэлей', 'Мы воры в мире, которому мы больше не нужны.', 200],
-        // Владивосток и ДВ
-        ['vlad_2000', '🌊 Владивосток 2000', 'Оказаться ровно с 2000 XP на балансе', 'Уходим, уходим, уходят кометы...', 200],
-        ['vlad_midnight', '⚓ Полночь на Эгершельде', 'Отправить сообщение ровно в 00:00 (Владивосток)', 'Маяк светит, квесты сбросились.', 200],
-        ['vlad_pyanse', '🥟 Пян-се на Луговой', 'Быть активным в чате во время обеда с 12:00 до 13:00 (Владивосток)', 'С пылу с жару, с перцем и капустой.', 120],
-        ['vlad_typhoon', '🌪️ Тайфун прошёл стороной', 'Спасти стрик с помощью заморозки', 'Опять передавали штормовое, но обошлось.', 250],
-        ['vlad_right_hand', '🚗 Истинный праворульщик', 'Сменить тему на Киберпанк или Магму', 'Руль в бардачке, едем боком.', 100],
-        ['vlad_golden_horn', '🌉 Хозяин Золотого Рога', 'Занять 1-е место в лидерборде сервера', 'Мост построили, сервер держим.', 500],
+        ['rdr_plan', 'рџ¤  РЈ РјРµРЅСЏ РµСЃС‚СЊ РџР›РђРќ!', 'РќР°РєРѕРїРёС‚СЊ 3000+ XP, РЅРё СЂР°Р·Сѓ РЅРµ РїСЂРѕРёРіСЂР°РІ РІ РґСѓСЌР»СЏС…', 'РќР°Рј РїСЂРѕСЃС‚Рѕ РЅСѓР¶РЅРѕ Р±РѕР»СЊС€Рµ РґРµРЅРµРі, РђСЂС‚СѓСЂ!', 300],
+        ['rdr_lenny', 'рџЌ» Р›РРРРќРќРРРР!', 'РћС‚РїСЂР°РІРёС‚СЊ РєР°РїСЃ-СЃРѕРѕР±С‰РµРЅРёРµ 10+ Р±СѓРєРІ РЅРѕС‡СЊСЋ СЃ 02:00 РґРѕ 05:00', 'YNNEL?! Р“Р”Р• РўР«, Р›Р•РќРќР?!', 150],
+        ['rdr_quickdraw', 'рџЋЇ Р‘С‹СЃС‚СЂР°СЏ СЂСѓРєР°', 'Р’С‹РёРіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃ Р±СЂРѕСЃРєРѕРј 95+', 'РќР° СЌС‚РѕРј СЃРµСЂРІРµСЂРµ РјРµСЃС‚Рѕ С‚РѕР»СЊРєРѕ РґР»СЏ РѕРґРЅРѕРіРѕ.', 250],
+        ['rdr_tahiti', 'рџҐ­ Р‘РёР»РµС‚ РЅР° РўР°РёС‚Рё', 'РџСЂРѕРІРµСЃС‚Рё Р±РѕР»РµРµ 5 С‡Р°СЃРѕРІ РІ РІРѕР№СЃРµ Р·Р° РґРµРЅСЊ', 'РњС‹ Р±СѓРґРµРј РІС‹СЂР°С‰РёРІР°С‚СЊ РјР°РЅРіРѕ Рё Р¶РёС‚СЊ РїСЂРёРїРµРІР°СЋС‡Рё.', 300],
+        ['rdr_tax', 'рџ’° РљР°РїРёС‚Р°Р»РёР·Рј, РђСЂС‚СѓСЂ', 'РЎР¶РµС‡СЊ Р±РѕР»РµРµ 200 XP РЅР° РЅР°Р»РѕРіРµ СЃ РґСѓСЌР»РµР№', 'РњС‹ РІРѕСЂС‹ РІ РјРёСЂРµ, РєРѕС‚РѕСЂРѕРјСѓ РјС‹ Р±РѕР»СЊС€Рµ РЅРµ РЅСѓР¶РЅС‹.', 200],
+        // Р’Р»Р°РґРёРІРѕСЃС‚РѕРє Рё Р”Р’
+        ['vlad_2000', 'рџЊЉ Р’Р»Р°РґРёРІРѕСЃС‚РѕРє 2000', 'РћРєР°Р·Р°С‚СЊСЃСЏ СЂРѕРІРЅРѕ СЃ 2000 XP РЅР° Р±Р°Р»Р°РЅСЃРµ', 'РЈС…РѕРґРёРј, СѓС…РѕРґРёРј, СѓС…РѕРґСЏС‚ РєРѕРјРµС‚С‹...', 200],
+        ['vlad_midnight', 'вљ“ РџРѕР»РЅРѕС‡СЊ РЅР° Р­РіРµСЂС€РµР»СЊРґРµ', 'РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЂРѕРІРЅРѕ РІ 00:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)', 'РњР°СЏРє СЃРІРµС‚РёС‚, РєРІРµСЃС‚С‹ СЃР±СЂРѕСЃРёР»РёСЃСЊ.', 200],
+        ['vlad_pyanse', 'рџҐџ РџСЏРЅ-СЃРµ РЅР° Р›СѓРіРѕРІРѕР№', 'Р‘С‹С‚СЊ Р°РєС‚РёРІРЅС‹Рј РІ С‡Р°С‚Рµ РІРѕ РІСЂРµРјСЏ РѕР±РµРґР° СЃ 12:00 РґРѕ 13:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)', 'РЎ РїС‹Р»Сѓ СЃ Р¶Р°СЂСѓ, СЃ РїРµСЂС†РµРј Рё РєР°РїСѓСЃС‚РѕР№.', 120],
+        ['vlad_typhoon', 'рџЊЄпёЏ РўР°Р№С„СѓРЅ РїСЂРѕС€С‘Р» СЃС‚РѕСЂРѕРЅРѕР№', 'РЎРїР°СЃС‚Рё СЃС‚СЂРёРє СЃ РїРѕРјРѕС‰СЊСЋ Р·Р°РјРѕСЂРѕР·РєРё', 'РћРїСЏС‚СЊ РїРµСЂРµРґР°РІР°Р»Рё С€С‚РѕСЂРјРѕРІРѕРµ, РЅРѕ РѕР±РѕС€Р»РѕСЃСЊ.', 250],
+        ['vlad_right_hand', 'рџљ— РСЃС‚РёРЅРЅС‹Р№ РїСЂР°РІРѕСЂСѓР»СЊС‰РёРє', 'РЎРјРµРЅРёС‚СЊ С‚РµРјСѓ РЅР° РљРёР±РµСЂРїР°РЅРє РёР»Рё РњР°РіРјСѓ', 'Р СѓР»СЊ РІ Р±Р°СЂРґР°С‡РєРµ, РµРґРµРј Р±РѕРєРѕРј.', 100],
+        ['vlad_golden_horn', 'рџЊ‰ РҐРѕР·СЏРёРЅ Р—РѕР»РѕС‚РѕРіРѕ Р РѕРіР°', 'Р—Р°РЅСЏС‚СЊ 1-Рµ РјРµСЃС‚Рѕ РІ Р»РёРґРµСЂР±РѕСЂРґРµ СЃРµСЂРІРµСЂР°', 'РњРѕСЃС‚ РїРѕСЃС‚СЂРѕРёР»Рё, СЃРµСЂРІРµСЂ РґРµСЂР¶РёРј.', 500],
         // Half-Life 2
-        ['hl_wakeup', '🚆 Проснитесь и попойте', 'Отправить сообщение с 06:00 до 07:00 утра (Владивосток)', 'Нужный человек не в том месте...', 150],
-        ['hl_can', '🥫 Подними эту банку', 'Выполнить свой первый ежедневный квест', 'А теперь брось её в урну.', 100],
-        ['hl_water', '💧 Не пейте воду', 'Провести 2 часа непрерывно в войсе', 'Они туда что-то подмешивают...', 250],
-        ['hl_crowbar', '🪓 Монтировка против страйдера', 'Победить в дуэли оппонента, у которого уровень выше твоего на 2+', 'Физика Source на твоей стороне.', 300],
-        ['hl_airdrop', '📦 Ящик сопротивления', 'Первым забрать контейнер войс-дропа', 'Сигнальная ракета сработала.', 150],
-        // Мемы / Навальный
-        ['fbk_hello', '📣 Привет, это Навальный', 'Написать сообщение после 3+ дней отсутствия на сервере', 'Я не молчал, я просто был в оффлайне!', 150],
-        ['fbk_sandwich', '🥪 Не бутерброд', 'Удержать стрик активности ровно 14 дней', 'Стрик — он что, бутерброд, чтобы его сбрасывать?', 250],
-        ['fbk_final_battle', '⚔️ Финальная битва', 'Сыграть дуэль со ставкой от 1000 XP', 'Финальная битва добра с нейтралитетом!', 300],
-        ['fbk_investigation', '🕵️ Команда расследователей', 'Посмотреть карточки /rank 5 разных людей за день', 'Мы нашли у него незадекларированный уровень.', 150],
-        ['fbk_prb', '☀️ Прекрасный Сервер Будущего', 'Закрыть все 3 дейлика за один день', 'Россия будет счастливой, а опыт нафармлен.', 250],
-        // Классика
-        ['lucky_777', '🎰 Три топора', 'Зафиксировать ровно 777 XP на балансе', 'Поднял бабла, теперь в топе.', 250],
-        ['casino_house', '🎲 Казино всегда в плюсе', 'Сжечь более 100 XP налога в одной дуэли', 'Карты с самого начала были краплеными.', 150],
+        ['hl_wakeup', 'рџљ† РџСЂРѕСЃРЅРёС‚РµСЃСЊ Рё РїРѕРїРѕР№С‚Рµ', 'РћС‚РїСЂР°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ СЃ 06:00 РґРѕ 07:00 СѓС‚СЂР° (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)', 'РќСѓР¶РЅС‹Р№ С‡РµР»РѕРІРµРє РЅРµ РІ С‚РѕРј РјРµСЃС‚Рµ...', 150],
+        ['hl_can', 'рџҐ« РџРѕРґРЅРёРјРё СЌС‚Сѓ Р±Р°РЅРєСѓ', 'Р’С‹РїРѕР»РЅРёС‚СЊ СЃРІРѕР№ РїРµСЂРІС‹Р№ РµР¶РµРґРЅРµРІРЅС‹Р№ РєРІРµСЃС‚', 'Рђ С‚РµРїРµСЂСЊ Р±СЂРѕСЃСЊ РµС‘ РІ СѓСЂРЅСѓ.', 100],
+        ['hl_water', 'рџ’§ РќРµ РїРµР№С‚Рµ РІРѕРґСѓ', 'РџСЂРѕРІРµСЃС‚Рё 2 С‡Р°СЃР° РЅРµРїСЂРµСЂС‹РІРЅРѕ РІ РІРѕР№СЃРµ', 'РћРЅРё С‚СѓРґР° С‡С‚Рѕ-С‚Рѕ РїРѕРґРјРµС€РёРІР°СЋС‚...', 250],
+        ['hl_crowbar', 'рџЄ“ РњРѕРЅС‚РёСЂРѕРІРєР° РїСЂРѕС‚РёРІ СЃС‚СЂР°Р№РґРµСЂР°', 'РџРѕР±РµРґРёС‚СЊ РІ РґСѓСЌР»Рё РѕРїРїРѕРЅРµРЅС‚Р°, Сѓ РєРѕС‚РѕСЂРѕРіРѕ СѓСЂРѕРІРµРЅСЊ РІС‹С€Рµ С‚РІРѕРµРіРѕ РЅР° 2+', 'Р¤РёР·РёРєР° Source РЅР° С‚РІРѕРµР№ СЃС‚РѕСЂРѕРЅРµ.', 300],
+        ['hl_airdrop', 'рџ“¦ РЇС‰РёРє СЃРѕРїСЂРѕС‚РёРІР»РµРЅРёСЏ', 'РџРµСЂРІС‹Рј Р·Р°Р±СЂР°С‚СЊ РєРѕРЅС‚РµР№РЅРµСЂ РІРѕР№СЃ-РґСЂРѕРїР°', 'РЎРёРіРЅР°Р»СЊРЅР°СЏ СЂР°РєРµС‚Р° СЃСЂР°Р±РѕС‚Р°Р»Р°.', 150],
+        // РњРµРјС‹ / РќР°РІР°Р»СЊРЅС‹Р№
+        ['fbk_hello', 'рџ“Ј РџСЂРёРІРµС‚, СЌС‚Рѕ РќР°РІР°Р»СЊРЅС‹Р№', 'РќР°РїРёСЃР°С‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РїРѕСЃР»Рµ 3+ РґРЅРµР№ РѕС‚СЃСѓС‚СЃС‚РІРёСЏ РЅР° СЃРµСЂРІРµСЂРµ', 'РЇ РЅРµ РјРѕР»С‡Р°Р», СЏ РїСЂРѕСЃС‚Рѕ Р±С‹Р» РІ РѕС„С„Р»Р°Р№РЅРµ!', 150],
+        ['fbk_sandwich', 'рџҐЄ РќРµ Р±СѓС‚РµСЂР±СЂРѕРґ', 'РЈРґРµСЂР¶Р°С‚СЊ СЃС‚СЂРёРє Р°РєС‚РёРІРЅРѕСЃС‚Рё СЂРѕРІРЅРѕ 14 РґРЅРµР№', 'РЎС‚СЂРёРє вЂ” РѕРЅ С‡С‚Рѕ, Р±СѓС‚РµСЂР±СЂРѕРґ, С‡С‚РѕР±С‹ РµРіРѕ СЃР±СЂР°СЃС‹РІР°С‚СЊ?', 250],
+        ['fbk_final_battle', 'вљ”пёЏ Р¤РёРЅР°Р»СЊРЅР°СЏ Р±РёС‚РІР°', 'РЎС‹РіСЂР°С‚СЊ РґСѓСЌР»СЊ СЃРѕ СЃС‚Р°РІРєРѕР№ РѕС‚ 1000 XP', 'Р¤РёРЅР°Р»СЊРЅР°СЏ Р±РёС‚РІР° РґРѕР±СЂР° СЃ РЅРµР№С‚СЂР°Р»РёС‚РµС‚РѕРј!', 300],
+        ['fbk_investigation', 'рџ•µпёЏ РљРѕРјР°РЅРґР° СЂР°СЃСЃР»РµРґРѕРІР°С‚РµР»РµР№', 'РџРѕСЃРјРѕС‚СЂРµС‚СЊ РєР°СЂС‚РѕС‡РєРё /rank 5 СЂР°Р·РЅС‹С… Р»СЋРґРµР№ Р·Р° РґРµРЅСЊ', 'РњС‹ РЅР°С€Р»Рё Сѓ РЅРµРіРѕ РЅРµР·Р°РґРµРєР»Р°СЂРёСЂРѕРІР°РЅРЅС‹Р№ СѓСЂРѕРІРµРЅСЊ.', 150],
+        ['fbk_prb', 'вЂпёЏ РџСЂРµРєСЂР°СЃРЅС‹Р№ РЎРµСЂРІРµСЂ Р‘СѓРґСѓС‰РµРіРѕ', 'Р—Р°РєСЂС‹С‚СЊ РІСЃРµ 3 РґРµР№Р»РёРєР° Р·Р° РѕРґРёРЅ РґРµРЅСЊ', 'Р РѕСЃСЃРёСЏ Р±СѓРґРµС‚ СЃС‡Р°СЃС‚Р»РёРІРѕР№, Р° РѕРїС‹С‚ РЅР°С„Р°СЂРјР»РµРЅ.', 250],
+        // РљР»Р°СЃСЃРёРєР°
+        ['lucky_777', 'рџЋ° РўСЂРё С‚РѕРїРѕСЂР°', 'Р—Р°С„РёРєСЃРёСЂРѕРІР°С‚СЊ СЂРѕРІРЅРѕ 777 XP РЅР° Р±Р°Р»Р°РЅСЃРµ', 'РџРѕРґРЅСЏР» Р±Р°Р±Р»Р°, С‚РµРїРµСЂСЊ РІ С‚РѕРїРµ.', 250],
+        ['casino_house', 'рџЋІ РљР°Р·РёРЅРѕ РІСЃРµРіРґР° РІ РїР»СЋСЃРµ', 'РЎР¶РµС‡СЊ Р±РѕР»РµРµ 100 XP РЅР°Р»РѕРіР° РІ РѕРґРЅРѕР№ РґСѓСЌР»Рё', 'РљР°СЂС‚С‹ СЃ СЃР°РјРѕРіРѕ РЅР°С‡Р°Р»Р° Р±С‹Р»Рё РєСЂР°РїР»РµРЅС‹РјРё.', 150],
       ];
       const placeholders = achievements.map(() => '(?, ?, ?, ?, ?)').join(', ');
       const values = achievements.flat();
@@ -1761,7 +1761,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 004: Таблица duels (Этап 3)
+    // РњРёРіСЂР°С†РёСЏ 004: РўР°Р±Р»РёС†Р° duels (Р­С‚Р°Рї 3)
     // ============================================
     const duelsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='duels'",
@@ -1795,7 +1795,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 020: Колонки message_id и channel_id для дуэлей (Этап 11+)
+    // РњРёРіСЂР°С†РёСЏ 020: РљРѕР»РѕРЅРєРё message_id Рё channel_id РґР»СЏ РґСѓСЌР»РµР№ (Р­С‚Р°Рї 11+)
     // ============================================
     try {
       const duelsColumnsCheck = await db.execute({
@@ -1824,7 +1824,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 005: Таблица guild_events (Этап 4 - Happy Hours)
+    // РњРёРіСЂР°С†РёСЏ 005: РўР°Р±Р»РёС†Р° guild_events (Р­С‚Р°Рї 4 - Happy Hours)
     // ============================================
     const guildEventsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_events'",
@@ -1850,7 +1850,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 006: Таблица air_drops (Этап 4 - Voice Drops)
+    // РњРёРіСЂР°С†РёСЏ 006: РўР°Р±Р»РёС†Р° air_drops (Р­С‚Р°Рї 4 - Voice Drops)
     // ============================================
     const airDropsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='air_drops'",
@@ -1883,7 +1883,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 002: Таблицы ежедневной активности и квестов
+    // РњРёРіСЂР°С†РёСЏ 002: РўР°Р±Р»РёС†С‹ РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё Рё РєРІРµСЃС‚РѕРІ
     // ============================================
     const dailyActivityCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='user_daily_activity'",
@@ -1967,10 +1967,10 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 010: Таблицы сезонов и недель (Этап 7)
+    // РњРёРіСЂР°С†РёСЏ 010: РўР°Р±Р»РёС†С‹ СЃРµР·РѕРЅРѕРІ Рё РЅРµРґРµР»СЊ (Р­С‚Р°Рї 7)
     // ============================================
 
-    // Добавляем колонку season_xp в users
+    // Р”РѕР±Р°РІР»СЏРµРј РєРѕР»РѕРЅРєСѓ season_xp РІ users
     if (!columns.includes('season_xp')) {
       await db.execute({
         sql: 'ALTER TABLE users ADD COLUMN season_xp INTEGER NOT NULL DEFAULT 0',
@@ -1979,7 +1979,7 @@ async function migrateSchema() {
       console.log('[Migrate] Added column: season_xp');
     }
 
-    // Таблица weekly_activity для еженедельной активности
+    // РўР°Р±Р»РёС†Р° weekly_activity РґР»СЏ РµР¶РµРЅРµРґРµР»СЊРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё
     const weeklyActivityCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='weekly_activity'",
       args: [],
@@ -1999,7 +1999,7 @@ async function migrateSchema() {
       console.log('[Migrate] Created table: weekly_activity');
     }
 
-    // Таблица season_archive для архива сезонов
+    // РўР°Р±Р»РёС†Р° season_archive РґР»СЏ Р°СЂС…РёРІР° СЃРµР·РѕРЅРѕРІ
     const seasonArchiveCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='season_archive'",
       args: [],
@@ -2021,7 +2021,7 @@ async function migrateSchema() {
       console.log('[Migrate] Created table: season_archive');
     }
 
-    // Проверка таблицы guild_settings
+    // РџСЂРѕРІРµСЂРєР° С‚Р°Р±Р»РёС†С‹ guild_settings
     const settingsCheck = await db.execute({
       sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_settings'",
       args: [],
@@ -2040,7 +2040,7 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 022: Таблицы биржи компаний
+    // РњРёРіСЂР°С†РёСЏ 022: РўР°Р±Р»РёС†С‹ Р±РёСЂР¶Рё РєРѕРјРїР°РЅРёР№
     // (server_reserve, companies, company_shares, company_crises)
     // ============================================
     await db.execute({
@@ -2120,9 +2120,9 @@ async function migrateSchema() {
     console.log('[Migrate] Exchange tables ensured (server_reserve, companies, company_shares, company_crises)');
 
     // ============================================
-    // Миграция 024: колонки настроения компаний (mood_bps, mood_updated_at).
-    // ALTER TABLE идемпотентен: сначала PRAGMA table_info(companies).
-    // Таблица companies гарантированно существует — создана выше (миграция 022).
+    // РњРёРіСЂР°С†РёСЏ 024: РєРѕР»РѕРЅРєРё РЅР°СЃС‚СЂРѕРµРЅРёСЏ РєРѕРјРїР°РЅРёР№ (mood_bps, mood_updated_at).
+    // ALTER TABLE РёРґРµРјРїРѕС‚РµРЅС‚РµРЅ: СЃРЅР°С‡Р°Р»Р° PRAGMA table_info(companies).
+    // РўР°Р±Р»РёС†Р° companies РіР°СЂР°РЅС‚РёСЂРѕРІР°РЅРЅРѕ СЃСѓС‰РµСЃС‚РІСѓРµС‚ вЂ” СЃРѕР·РґР°РЅР° РІС‹С€Рµ (РјРёРіСЂР°С†РёСЏ 022).
     // ============================================
     const companiesColumnsCheck = await db.execute({
       sql: "PRAGMA table_info(companies)",
@@ -2147,10 +2147,10 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 025: история биржи и outbox публичных событий
+    // РњРёРіСЂР°С†РёСЏ 025: РёСЃС‚РѕСЂРёСЏ Р±РёСЂР¶Рё Рё outbox РїСѓР±Р»РёС‡РЅС‹С… СЃРѕР±С‹С‚РёР№
     // (company_trades, company_nav_history, market_events, exchange_guild_state).
-    // company_trades и company_nav_history при сезонной ликвидации НЕ удаляются:
-    // нужны для рейтинга сезона; чистка — по возрасту, отдельной задачей.
+    // company_trades Рё company_nav_history РїСЂРё СЃРµР·РѕРЅРЅРѕР№ Р»РёРєРІРёРґР°С†РёРё РќР• СѓРґР°Р»СЏСЋС‚СЃСЏ:
+    // РЅСѓР¶РЅС‹ РґР»СЏ СЂРµР№С‚РёРЅРіР° СЃРµР·РѕРЅР°; С‡РёСЃС‚РєР° вЂ” РїРѕ РІРѕР·СЂР°СЃС‚Сѓ, РѕС‚РґРµР»СЊРЅРѕР№ Р·Р°РґР°С‡РµР№.
     // ============================================
     await db.execute({
       sql: `CREATE TABLE IF NOT EXISTS company_trades (
@@ -2199,8 +2199,8 @@ async function migrateSchema() {
       args: [],
     });
 
-    // Outbox: события пишутся в той же транзакции, что и операция,
-    // доставляются в Discord после коммита, чистятся после отправки.
+    // Outbox: СЃРѕР±С‹С‚РёСЏ РїРёС€СѓС‚СЃСЏ РІ С‚РѕР№ Р¶Рµ С‚СЂР°РЅР·Р°РєС†РёРё, С‡С‚Рѕ Рё РѕРїРµСЂР°С†РёСЏ,
+    // РґРѕСЃС‚Р°РІР»СЏСЋС‚СЃСЏ РІ Discord РїРѕСЃР»Рµ РєРѕРјРјРёС‚Р°, С‡РёСЃС‚СЏС‚СЃСЏ РїРѕСЃР»Рµ РѕС‚РїСЂР°РІРєРё.
     await db.execute({
       sql: `CREATE TABLE IF NOT EXISTS market_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2220,7 +2220,7 @@ async function migrateSchema() {
       args: [],
     });
 
-    // Служебное состояние биржи по гильдии (канал ленты, дайджесты, расписание кризисов)
+    // РЎР»СѓР¶РµР±РЅРѕРµ СЃРѕСЃС‚РѕСЏРЅРёРµ Р±РёСЂР¶Рё РїРѕ РіРёР»СЊРґРёРё (РєР°РЅР°Р» Р»РµРЅС‚С‹, РґР°Р№РґР¶РµСЃС‚С‹, СЂР°СЃРїРёСЃР°РЅРёРµ РєСЂРёР·РёСЃРѕРІ)
     await db.execute({
       sql: `CREATE TABLE IF NOT EXISTS exchange_guild_state (
         guild_id TEXT PRIMARY KEY,
@@ -2234,9 +2234,9 @@ async function migrateSchema() {
     console.log('[Migrate] Exchange history tables ensured (company_trades, company_nav_history, market_events, exchange_guild_state)');
 
     // ============================================
-    // Миграция 026: колонки кризисов (options_json, timeout_json, resolved_option,
-    // resolved_at). ALTER TABLE идемпотентен: сначала PRAGMA table_info(company_crises).
-    // Таблица company_crises гарантированно существует — создана выше (миграция 022).
+    // РњРёРіСЂР°С†РёСЏ 026: РєРѕР»РѕРЅРєРё РєСЂРёР·РёСЃРѕРІ (options_json, timeout_json, resolved_option,
+    // resolved_at). ALTER TABLE РёРґРµРјРїРѕС‚РµРЅС‚РµРЅ: СЃРЅР°С‡Р°Р»Р° PRAGMA table_info(company_crises).
+    // РўР°Р±Р»РёС†Р° company_crises РіР°СЂР°РЅС‚РёСЂРѕРІР°РЅРЅРѕ СЃСѓС‰РµСЃС‚РІСѓРµС‚ вЂ” СЃРѕР·РґР°РЅР° РІС‹С€Рµ (РјРёРіСЂР°С†РёСЏ 022).
     // ============================================
     const crisesColumnsCheck = await db.execute({
       sql: "PRAGMA table_info(company_crises)",
@@ -2277,10 +2277,10 @@ async function migrateSchema() {
     }
 
     // ============================================
-    // Миграция 027: итоги сезонов биржи (Шаг 8 — сезонный рейтинг ROI).
-    // season_results заполняется при сезонной ликвидации
-    // (liquidateCompaniesOnSeasonChange) и читается командой /exchange-top
-    // для завершившихся сезонов.
+    // РњРёРіСЂР°С†РёСЏ 027: РёС‚РѕРіРё СЃРµР·РѕРЅРѕРІ Р±РёСЂР¶Рё (РЁР°Рі 8 вЂ” СЃРµР·РѕРЅРЅС‹Р№ СЂРµР№С‚РёРЅРі ROI).
+    // season_results Р·Р°РїРѕР»РЅСЏРµС‚СЃСЏ РїСЂРё СЃРµР·РѕРЅРЅРѕР№ Р»РёРєРІРёРґР°С†РёРё
+    // (liquidateCompaniesOnSeasonChange) Рё С‡РёС‚Р°РµС‚СЃСЏ РєРѕРјР°РЅРґРѕР№ /exchange-top
+    // РґР»СЏ Р·Р°РІРµСЂС€РёРІС€РёС…СЃСЏ СЃРµР·РѕРЅРѕРІ.
     // ============================================
     await db.execute({
       sql: `CREATE TABLE IF NOT EXISTS season_results (
@@ -2306,11 +2306,11 @@ async function migrateSchema() {
     console.log('[Migrate] Season results table ensured (season_results)');
 
     // ============================================
-    // Миграция 028: Система Недвижимости и Города (Шаг 1).
-    // city_plots — 12 фиксированных участков на гильдию (id 1-12);
-    // zone/title берутся из PLOTS_CATALOG по id, price — текущая цена
-    // участка (изначально base_price из каталога).
-    // plot_auctions — аукционы продажи участков.
+    // РњРёРіСЂР°С†РёСЏ 028: РЎРёСЃС‚РµРјР° РќРµРґРІРёР¶РёРјРѕСЃС‚Рё Рё Р“РѕСЂРѕРґР° (РЁР°Рі 1).
+    // city_plots вЂ” 12 С„РёРєСЃРёСЂРѕРІР°РЅРЅС‹С… СѓС‡Р°СЃС‚РєРѕРІ РЅР° РіРёР»СЊРґРёСЋ (id 1-12);
+    // zone/title Р±РµСЂСѓС‚СЃСЏ РёР· PLOTS_CATALOG РїРѕ id, price вЂ” С‚РµРєСѓС‰Р°СЏ С†РµРЅР°
+    // СѓС‡Р°СЃС‚РєР° (РёР·РЅР°С‡Р°Р»СЊРЅРѕ base_price РёР· РєР°С‚Р°Р»РѕРіР°).
+    // plot_auctions вЂ” Р°СѓРєС†РёРѕРЅС‹ РїСЂРѕРґР°Р¶Рё СѓС‡Р°СЃС‚РєРѕРІ.
     // ============================================
     await db.execute({
       sql: `CREATE TABLE IF NOT EXISTS city_plots (
@@ -2361,10 +2361,10 @@ async function migrateSchema() {
 }
 
 // ============================================
-// Функции для работы с квестами и ежедневной активностью
+// Р¤СѓРЅРєС†РёРё РґР»СЏ СЂР°Р±РѕС‚С‹ СЃ РєРІРµСЃС‚Р°РјРё Рё РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚СЊСЋ
 // ============================================
 
-// Получение текущей даты по времени Владивостока (UTC+10, 00:00 сброс)
+// РџРѕР»СѓС‡РµРЅРёРµ С‚РµРєСѓС‰РµР№ РґР°С‚С‹ РїРѕ РІСЂРµРјРµРЅРё Р’Р»Р°РґРёРІРѕСЃС‚РѕРєР° (UTC+10, 00:00 СЃР±СЂРѕСЃ)
 function getVladivostokDate(): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Vladivostok',
@@ -2375,23 +2375,23 @@ function getVladivostokDate(): string {
 }
 
 /**
- * Проверяет, разрешено ли запускать ивенты в текущее время по Владивостоку
- * В будние дни (пн-пт): с 17:00 до 22:00
- * В выходные дни (сб-вс): с 10:00 до 23:59
+ * РџСЂРѕРІРµСЂСЏРµС‚, СЂР°Р·СЂРµС€РµРЅРѕ Р»Рё Р·Р°РїСѓСЃРєР°С‚СЊ РёРІРµРЅС‚С‹ РІ С‚РµРєСѓС‰РµРµ РІСЂРµРјСЏ РїРѕ Р’Р»Р°РґРёРІРѕСЃС‚РѕРєСѓ
+ * Р’ Р±СѓРґРЅРёРµ РґРЅРё (РїРЅ-РїС‚): СЃ 17:00 РґРѕ 22:00
+ * Р’ РІС‹С…РѕРґРЅС‹Рµ РґРЅРё (СЃР±-РІСЃ): СЃ 10:00 РґРѕ 23:59
  */
 function isEventTimeAllowed(timeZone: string = 'Asia/Vladivostok'): boolean {
   const now = new Date();
   const vladivostokDate = new Date(now.getTime() + 10 * 60 * 60 * 1000);
 
-  const dayOfWeek = vladivostokDate.getUTCDay(); // 0 = воскресенье, 6 = суббота
-  const hour = vladivostokDate.getUTCHours(); // 0-23 по Владивостоку
+  const dayOfWeek = vladivostokDate.getUTCDay(); // 0 = РІРѕСЃРєСЂРµСЃРµРЅСЊРµ, 6 = СЃСѓР±Р±РѕС‚Р°
+  const hour = vladivostokDate.getUTCHours(); // 0-23 РїРѕ Р’Р»Р°РґРёРІРѕСЃС‚РѕРєСѓ
 
-  // В будние дни (понедельник-пятница: 1-5)
+  // Р’ Р±СѓРґРЅРёРµ РґРЅРё (РїРѕРЅРµРґРµР»СЊРЅРёРє-РїСЏС‚РЅРёС†Р°: 1-5)
   if (dayOfWeek >= 1 && dayOfWeek <= 5) {
     return hour >= 17 && hour < 22;
   }
 
-  // В выходные дни (суббота-воскресенье: 0, 6)
+  // Р’ РІС‹С…РѕРґРЅС‹Рµ РґРЅРё (СЃСѓР±Р±РѕС‚Р°-РІРѕСЃРєСЂРµСЃРµРЅСЊРµ: 0, 6)
   if (dayOfWeek === 0 || dayOfWeek === 6) {
     return hour >= 10 && hour <= 23;
   }
@@ -2400,29 +2400,29 @@ function isEventTimeAllowed(timeZone: string = 'Asia/Vladivostok'): boolean {
 }
 
 // ============================================
-// Функции для работы с сезонами и неделями (Этап 7)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ СЂР°Р±РѕС‚С‹ СЃ СЃРµР·РѕРЅР°РјРё Рё РЅРµРґРµР»СЏРјРё (Р­С‚Р°Рї 7)
 // ============================================
 
 // ============================================
-// Функции для работы с сезонами и неделями (Этап 7)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ СЂР°Р±РѕС‚С‹ СЃ СЃРµР·РѕРЅР°РјРё Рё РЅРµРґРµР»СЏРјРё (Р­С‚Р°Рї 7)
 // ============================================
 
-// Получение ключа недели в формате ISO (YYYY-Www) по времени Владивостока
+// РџРѕР»СѓС‡РµРЅРёРµ РєР»СЋС‡Р° РЅРµРґРµР»Рё РІ С„РѕСЂРјР°С‚Рµ ISO (YYYY-Www) РїРѕ РІСЂРµРјРµРЅРё Р’Р»Р°РґРёРІРѕСЃС‚РѕРєР°
 function getWeekKey(date: Date = new Date()): string {
-  // Сдвигаем дату на UTC+10 (Владивосток)
+  // РЎРґРІРёРіР°РµРј РґР°С‚Сѓ РЅР° UTC+10 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)
   const vladivostokDate = new Date(date.getTime() + 10 * 60 * 60 * 1000);
 
-  // Получаем год и номер недели
+  // РџРѕР»СѓС‡Р°РµРј РіРѕРґ Рё РЅРѕРјРµСЂ РЅРµРґРµР»Рё
   const year = vladivostokDate.getFullYear();
   const dayOfYear = getDayOfYear(vladivostokDate);
 
-  // Номер недели по ISO (понедельник - начало недели)
+  // РќРѕРјРµСЂ РЅРµРґРµР»Рё РїРѕ ISO (РїРѕРЅРµРґРµР»СЊРЅРёРє - РЅР°С‡Р°Р»Рѕ РЅРµРґРµР»Рё)
   const weekNum = Math.ceil(dayOfYear / 7);
 
   return `Y${year}-W${weekNum.toString().padStart(2, '0')}`;
 }
 
-// Получение номера дня в году
+// РџРѕР»СѓС‡РµРЅРёРµ РЅРѕРјРµСЂР° РґРЅСЏ РІ РіРѕРґСѓ
 function getDayOfYear(date: Date): number {
   const start = new Date(date.getFullYear(), 0, 0);
   const diff = date.getTime() - start.getTime();
@@ -2430,17 +2430,17 @@ function getDayOfYear(date: Date): number {
   return Math.floor(diff / oneDay);
 }
 
-// Определение текущего сезона по месяцу
+// РћРїСЂРµРґРµР»РµРЅРёРµ С‚РµРєСѓС‰РµРіРѕ СЃРµР·РѕРЅР° РїРѕ РјРµСЃСЏС†Сѓ
 function getCurrentSeason(date: Date = new Date()): string {
   const month = date.getUTCMonth() + 1; // 1-12
 
-  if (month >= 3 && month <= 5) return '🌸 Весенний кубок';
-  if (month >= 6 && month <= 8) return '☀️ Летний драйв';
-  if (month >= 9 && month <= 11) return '🍂 Осенний марафон';
-  return '❄️ Зимняя битва'; // 12, 1, 2
+  if (month >= 3 && month <= 5) return 'рџЊё Р’РµСЃРµРЅРЅРёР№ РєСѓР±РѕРє';
+  if (month >= 6 && month <= 8) return 'вЂпёЏ Р›РµС‚РЅРёР№ РґСЂР°Р№РІ';
+  if (month >= 9 && month <= 11) return 'рџЌ‚ РћСЃРµРЅРЅРёР№ РјР°СЂР°С„РѕРЅ';
+  return 'вќ„пёЏ Р—РёРјРЅСЏСЏ Р±РёС‚РІР°'; // 12, 1, 2
 }
 
-// Получение ID сезона для архива (например: '2026-spring')
+// РџРѕР»СѓС‡РµРЅРёРµ ID СЃРµР·РѕРЅР° РґР»СЏ Р°СЂС…РёРІР° (РЅР°РїСЂРёРјРµСЂ: '2026-spring')
 function getSeasonId(date: Date = new Date()): string {
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth() + 1;
@@ -2455,10 +2455,10 @@ function getSeasonId(date: Date = new Date()): string {
 }
 
 // ============================================
-// Функции для работы со стриками активности (Этап 2)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ СЂР°Р±РѕС‚С‹ СЃРѕ СЃС‚СЂРёРєР°РјРё Р°РєС‚РёРІРЅРѕСЃС‚Рё (Р­С‚Р°Рї 2)
 // ============================================
 
-// Вычисление множителя XP от длины стрика
+// Р’С‹С‡РёСЃР»РµРЅРёРµ РјРЅРѕР¶РёС‚РµР»СЏ XP РѕС‚ РґР»РёРЅС‹ СЃС‚СЂРёРєР°
 function getXpMultiplier(streakDays: number): number {
   if (streakDays >= 30) return 1.25;  // +25%
   if (streakDays >= 14) return 1.15;  // +15%
@@ -2467,17 +2467,17 @@ function getXpMultiplier(streakDays: number): number {
   return 1.0;
 }
 
-// Проверка условий для активности пользователя (для стрика)
+// РџСЂРѕРІРµСЂРєР° СѓСЃР»РѕРІРёР№ РґР»СЏ Р°РєС‚РёРІРЅРѕСЃС‚Рё РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ (РґР»СЏ СЃС‚СЂРёРєР°)
 function checkActivityCondition(activity: { messages_count: number; voice_seconds: number }, questCompleted: boolean): boolean {
-  // Условия: 20+ сообщений ИЛИ 15+ минут (900 секунд) в войсе ИЛИ закрыт хотя бы 1 квест
+  // РЈСЃР»РѕРІРёСЏ: 20+ СЃРѕРѕР±С‰РµРЅРёР№ РР›Р 15+ РјРёРЅСѓС‚ (900 СЃРµРєСѓРЅРґ) РІ РІРѕР№СЃРµ РР›Р Р·Р°РєСЂС‹С‚ С…РѕС‚СЏ Р±С‹ 1 РєРІРµСЃС‚
   return activity.messages_count >= 20 || activity.voice_seconds >= 900 || questCompleted;
 }
 
-// Получение данных для проверки стрика (активность + квесты)
+// РџРѕР»СѓС‡РµРЅРёРµ РґР°РЅРЅС‹С… РґР»СЏ РїСЂРѕРІРµСЂРєРё СЃС‚СЂРёРєР° (Р°РєС‚РёРІРЅРѕСЃС‚СЊ + РєРІРµСЃС‚С‹)
 async function getUserStreakData(db: any, userId: string, guildId: string): Promise<{ activity: any; questCompleted: boolean }> {
   const today = getVladivostokDate();
 
-  // Получаем ежедневную активность
+  // РџРѕР»СѓС‡Р°РµРј РµР¶РµРґРЅРµРІРЅСѓСЋ Р°РєС‚РёРІРЅРѕСЃС‚СЊ
   const activityResult = await db.execute({
     sql: 'SELECT messages_count, voice_seconds FROM user_daily_activity WHERE user_id = ? AND guild_id = ? AND activity_date = ?',
     args: [userId, guildId, today],
@@ -2487,9 +2487,9 @@ async function getUserStreakData(db: any, userId: string, guildId: string): Prom
     ? { messages_count: (activityResult.rows[0].messages_count as number) || 0, voice_seconds: (activityResult.rows[0].voice_seconds as number) || 0 }
     : { messages_count: 0, voice_seconds: 0 };
 
-  // Проверяем, закрыт ли хотя бы 1 квест СЕГОДНЯ
-  // ИСПРАВЛЕНИЕ: раньше учитывались все квесты за всё время (без фильтра по дате),
-  // из-за чего стрик поддерживался давно закрытыми квестами. Добавлен фильтр по active_date.
+  // РџСЂРѕРІРµСЂСЏРµРј, Р·Р°РєСЂС‹С‚ Р»Рё С…РѕС‚СЏ Р±С‹ 1 РєРІРµСЃС‚ РЎР•Р“РћР”РќРЇ
+  // РРЎРџР РђР’Р›Р•РќРР•: СЂР°РЅСЊС€Рµ СѓС‡РёС‚С‹РІР°Р»РёСЃСЊ РІСЃРµ РєРІРµСЃС‚С‹ Р·Р° РІСЃС‘ РІСЂРµРјСЏ (Р±РµР· С„РёР»СЊС‚СЂР° РїРѕ РґР°С‚Рµ),
+  // РёР·-Р·Р° С‡РµРіРѕ СЃС‚СЂРёРє РїРѕРґРґРµСЂР¶РёРІР°Р»СЃСЏ РґР°РІРЅРѕ Р·Р°РєСЂС‹С‚С‹РјРё РєРІРµСЃС‚Р°РјРё. Р”РѕР±Р°РІР»РµРЅ С„РёР»СЊС‚СЂ РїРѕ active_date.
   const questResult = await db.execute({
     sql: `SELECT COUNT(*) as completed
           FROM user_quest_progress uqp
@@ -2503,19 +2503,19 @@ async function getUserStreakData(db: any, userId: string, guildId: string): Prom
   return { activity, questCompleted };
 }
 
-// Обновление стрика пользователя
+// РћР±РЅРѕРІР»РµРЅРёРµ СЃС‚СЂРёРєР° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
 async function updateUserStreak(db: any, userId: string, guildId: string): Promise<{ streakDays: number; streakFreezes: number; updated: boolean }> {
   const today = getVladivostokDate();
 
   try {
-    // Получаем текущие данные пользователя
+    // РџРѕР»СѓС‡Р°РµРј С‚РµРєСѓС‰РёРµ РґР°РЅРЅС‹Рµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
     const userResult = await db.execute({
       sql: 'SELECT streak_days, last_streak_date, streak_freezes FROM users WHERE user_id = ? AND guild_id = ?',
       args: [userId, guildId],
     });
 
     if (userResult.rows.length === 0) {
-      // Пользователь не найден - создаём запись с дефолтными значениями
+      // РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РЅР°Р№РґРµРЅ - СЃРѕР·РґР°С‘Рј Р·Р°РїРёСЃСЊ СЃ РґРµС„РѕР»С‚РЅС‹РјРё Р·РЅР°С‡РµРЅРёСЏРјРё
       await db.execute({
         sql: 'UPDATE users SET streak_days = 1, last_streak_date = ? WHERE user_id = ? AND guild_id = ?',
         args: [today, userId, guildId],
@@ -2528,17 +2528,17 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
     const lastStreakDate = userRow.last_streak_date as string | null;
     let streakFreezes = (userRow.streak_freezes as number) || 0;
 
-    // Если сегодня уже обновляли стрик - ничего не делаем
+    // Р•СЃР»Рё СЃРµРіРѕРґРЅСЏ СѓР¶Рµ РѕР±РЅРѕРІР»СЏР»Рё СЃС‚СЂРёРє - РЅРёС‡РµРіРѕ РЅРµ РґРµР»Р°РµРј
     if (lastStreakDate === today) {
       return { streakDays, streakFreezes, updated: false };
     }
 
-    // Получаем данные для проверки активности
+    // РџРѕР»СѓС‡Р°РµРј РґР°РЅРЅС‹Рµ РґР»СЏ РїСЂРѕРІРµСЂРєРё Р°РєС‚РёРІРЅРѕСЃС‚Рё
     const { activity, questCompleted } = await getUserStreakData(db, userId, guildId);
 
-    // Проверяем условие активности
+    // РџСЂРѕРІРµСЂСЏРµРј СѓСЃР»РѕРІРёРµ Р°РєС‚РёРІРЅРѕСЃС‚Рё
     if (!checkActivityCondition(activity, questCompleted)) {
-      // Условие не выполнено - сброс стрика
+      // РЈСЃР»РѕРІРёРµ РЅРµ РІС‹РїРѕР»РЅРµРЅРѕ - СЃР±СЂРѕСЃ СЃС‚СЂРёРєР°
       await db.execute({
         sql: 'UPDATE users SET streak_days = 1, last_streak_date = ? WHERE user_id = ? AND guild_id = ?',
         args: [today, userId, guildId],
@@ -2546,17 +2546,17 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
       return { streakDays: 1, streakFreezes, updated: true };
     }
 
-    // Пользователь активен - проверяем разницу с вчерашним днём
+    // РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ Р°РєС‚РёРІРµРЅ - РїСЂРѕРІРµСЂСЏРµРј СЂР°Р·РЅРёС†Сѓ СЃ РІС‡РµСЂР°С€РЅРёРј РґРЅС‘Рј
     let newStreakDays = streakDays;
     let needUpdate = false;
 
     if (lastStreakDate === null) {
-      // Первый день активности
+      // РџРµСЂРІС‹Р№ РґРµРЅСЊ Р°РєС‚РёРІРЅРѕСЃС‚Рё
       newStreakDays = 1;
       needUpdate = true;
     } else {
-      // Вычисляем разницу в днях между today и last_streak_date
-      // Формат даты: YYYY-MM-DD
+      // Р’С‹С‡РёСЃР»СЏРµРј СЂР°Р·РЅРёС†Сѓ РІ РґРЅСЏС… РјРµР¶РґСѓ today Рё last_streak_date
+      // Р¤РѕСЂРјР°С‚ РґР°С‚С‹: YYYY-MM-DD
       const todayParts = today.split('-').map(Number);
       const lastParts = lastStreakDate.split('-').map(Number);
 
@@ -2567,27 +2567,27 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
       if (diffDays === 1) {
-        // Вчера был последний день стрика - продолжаем
+        // Р’С‡РµСЂР° Р±С‹Р» РїРѕСЃР»РµРґРЅРёР№ РґРµРЅСЊ СЃС‚СЂРёРєР° - РїСЂРѕРґРѕР»Р¶Р°РµРј
         newStreakDays = streakDays + 1;
         needUpdate = true;
       } else if (diffDays > 1) {
-        // Прошло 2+ дня - проверяем заморозки
+        // РџСЂРѕС€Р»Рѕ 2+ РґРЅСЏ - РїСЂРѕРІРµСЂСЏРµРј Р·Р°РјРѕСЂРѕР·РєРё
         if (streakFreezes > 0) {
-          // Есть заморозка - тратим её и сохраняем стрик
+          // Р•СЃС‚СЊ Р·Р°РјРѕСЂРѕР·РєР° - С‚СЂР°С‚РёРј РµС‘ Рё СЃРѕС…СЂР°РЅСЏРµРј СЃС‚СЂРёРє
           streakFreezes -= 1;
           needUpdate = true;
           console.log(`[Streak] User ${userId} used freeze to preserve streak`);
-          // vlad_typhoon: спасли стрик заморозкой
+          // vlad_typhoon: СЃРїР°СЃР»Рё СЃС‚СЂРёРє Р·Р°РјРѕСЂРѕР·РєРѕР№
           await unlockAchievement(db, userId, guildId, 'vlad_typhoon', client, undefined);
         } else {
-          // Нет заморозки - сброс
+          // РќРµС‚ Р·Р°РјРѕСЂРѕР·РєРё - СЃР±СЂРѕСЃ
           newStreakDays = 1;
           needUpdate = true;
         }
       }
-      // Если diffDays === 0 (уже обновляли сегодня) - ничего не делаем
+      // Р•СЃР»Рё diffDays === 0 (СѓР¶Рµ РѕР±РЅРѕРІР»СЏР»Рё СЃРµРіРѕРґРЅСЏ) - РЅРёС‡РµРіРѕ РЅРµ РґРµР»Р°РµРј
 
-      // fbk_sandwich: стрик достиг 14 дней
+      // fbk_sandwich: СЃС‚СЂРёРє РґРѕСЃС‚РёРі 14 РґРЅРµР№
       if (newStreakDays === 14 && needUpdate) {
         await unlockAchievement(db, userId, guildId, 'fbk_sandwich', client, undefined);
       }
@@ -2600,7 +2600,7 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
       });
     }
 
-    // Обновление максимального стрика
+    // РћР±РЅРѕРІР»РµРЅРёРµ РјР°РєСЃРёРјР°Р»СЊРЅРѕРіРѕ СЃС‚СЂРёРєР°
     if (newStreakDays > (userRow.max_streak as number || 0)) {
       await db.execute({
         sql: 'UPDATE users SET max_streak = ? WHERE user_id = ? AND guild_id = ?',
@@ -2615,12 +2615,12 @@ async function updateUserStreak(db: any, userId: string, guildId: string): Promi
   }
 }
 
-// Начисление XP с множителем стрика
+// РќР°С‡РёСЃР»РµРЅРёРµ XP СЃ РјРЅРѕР¶РёС‚РµР»РµРј СЃС‚СЂРёРєР°
 async function awardXpWithStreak(db: any, userId: string, guildId: string, baseXp: number): Promise<number> {
-  // Сначала обновляем стрик
+  // РЎРЅР°С‡Р°Р»Р° РѕР±РЅРѕРІР»СЏРµРј СЃС‚СЂРёРє
   const { streakDays } = await updateUserStreak(db, userId, guildId);
 
-  // Применяем множитель
+  // РџСЂРёРјРµРЅСЏРµРј РјРЅРѕР¶РёС‚РµР»СЊ
   const multiplier = getXpMultiplier(streakDays);
   const finalXp = Math.round(baseXp * multiplier);
 
@@ -2635,12 +2635,12 @@ async function awardXpWithStreak(db: any, userId: string, guildId: string, baseX
 }
 
 // ============================================
-// Функции для сезонного и недельного начисления XP (Этап 7)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ СЃРµР·РѕРЅРЅРѕРіРѕ Рё РЅРµРґРµР»СЊРЅРѕРіРѕ РЅР°С‡РёСЃР»РµРЅРёСЏ XP (Р­С‚Р°Рї 7)
 // ============================================
 
 /**
- * Начисляет опыт с учётом стрика и сезонного/недельного начисления
- * @returns {finalXp, seasonXp, weekXp} - итоговый XP, сезонный опыт, недельный опыт
+ * РќР°С‡РёСЃР»СЏРµС‚ РѕРїС‹С‚ СЃ СѓС‡С‘С‚РѕРј СЃС‚СЂРёРєР° Рё СЃРµР·РѕРЅРЅРѕРіРѕ/РЅРµРґРµР»СЊРЅРѕРіРѕ РЅР°С‡РёСЃР»РµРЅРёСЏ
+ * @returns {finalXp, seasonXp, weekXp} - РёС‚РѕРіРѕРІС‹Р№ XP, СЃРµР·РѕРЅРЅС‹Р№ РѕРїС‹С‚, РЅРµРґРµР»СЊРЅС‹Р№ РѕРїС‹С‚
  */
 async function awardXpWithAllMultipliers(
   db: any,
@@ -2648,24 +2648,24 @@ async function awardXpWithAllMultipliers(
   guildId: string,
   baseXp: number
 ): Promise<{ finalXp: number; seasonXp: number; weekXp: number }> {
-  // Сначала обновляем стрик
+  // РЎРЅР°С‡Р°Р»Р° РѕР±РЅРѕРІР»СЏРµРј СЃС‚СЂРёРє
   const { streakDays } = await updateUserStreak(db, userId, guildId);
 
-  // Получаем множители
+  // РџРѕР»СѓС‡Р°РµРј РјРЅРѕР¶РёС‚РµР»Рё
   const streakMultiplier = getXpMultiplier(streakDays);
 
-  // Получаем текущие сезон и неделю
+  // РџРѕР»СѓС‡Р°РµРј С‚РµРєСѓС‰РёРµ СЃРµР·РѕРЅ Рё РЅРµРґРµР»СЋ
   const seasonName = getCurrentSeason();
   const weekKey = getWeekKey();
 
-  // Начисляем сезонный XP
+  // РќР°С‡РёСЃР»СЏРµРј СЃРµР·РѕРЅРЅС‹Р№ XP
   const seasonXp = Math.round(baseXp * streakMultiplier);
   await db.execute({
     sql: 'UPDATE users SET season_xp = season_xp + ? WHERE user_id = ? AND guild_id = ?',
     args: [seasonXp, userId, guildId],
   });
 
-  // UPSERT в weekly_activity
+  // UPSERT РІ weekly_activity
   await db.execute({
     sql: `INSERT INTO weekly_activity (user_id, guild_id, week_key, xp_earned)
           VALUES (?, ?, ?, ?)
@@ -2674,7 +2674,7 @@ async function awardXpWithAllMultipliers(
     args: [userId, guildId, weekKey, seasonXp, seasonXp],
   });
 
-  // Применяем множитель стрика к итоговому XP
+  // РџСЂРёРјРµРЅСЏРµРј РјРЅРѕР¶РёС‚РµР»СЊ СЃС‚СЂРёРєР° Рє РёС‚РѕРіРѕРІРѕРјСѓ XP
   const finalXp = seasonXp;
 
   await db.execute({
@@ -2690,21 +2690,21 @@ async function awardXpWithAllMultipliers(
 }
 
 /**
- * Проверяет смену недели и проводит еженедельный сброс
- * Вызывается раз в час
+ * РџСЂРѕРІРµСЂСЏРµС‚ СЃРјРµРЅСѓ РЅРµРґРµР»Рё Рё РїСЂРѕРІРѕРґРёС‚ РµР¶РµРЅРµРґРµР»СЊРЅС‹Р№ СЃР±СЂРѕСЃ
+ * Р’С‹Р·С‹РІР°РµС‚СЃСЏ СЂР°Р· РІ С‡Р°СЃ
  */
 async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
   const currentWeekKey = getWeekKey();
   const currentSeasonId = getSeasonId();
 
-  // C7: здесь был мёртвый запрос
-  //   'SELECT weekly_reset_week FROM guild_settings WHERE guild_id = ?' с args: [],
-  // Он падал на каждом вызове (несовпадение числа плейсхолдеров и аргументов),
-  // исключение глоталось внешним catch — и весь checkWeeklyReset был мёртв.
-  // Колонки weekly_reset_week в guild_settings не существует вовсе (она есть
-  // только у users), а результат запроса нигде не использовался, поэтому он удалён.
+  // C7: Р·РґРµСЃСЊ Р±С‹Р» РјС‘СЂС‚РІС‹Р№ Р·Р°РїСЂРѕСЃ
+  //   'SELECT weekly_reset_week FROM guild_settings WHERE guild_id = ?' СЃ args: [],
+  // РћРЅ РїР°РґР°Р» РЅР° РєР°Р¶РґРѕРј РІС‹Р·РѕРІРµ (РЅРµСЃРѕРІРїР°РґРµРЅРёРµ С‡РёСЃР»Р° РїР»РµР№СЃС…РѕР»РґРµСЂРѕРІ Рё Р°СЂРіСѓРјРµРЅС‚РѕРІ),
+  // РёСЃРєР»СЋС‡РµРЅРёРµ РіР»РѕС‚Р°Р»РѕСЃСЊ РІРЅРµС€РЅРёРј catch вЂ” Рё РІРµСЃСЊ checkWeeklyReset Р±С‹Р» РјС‘СЂС‚РІ.
+  // РљРѕР»РѕРЅРєРё weekly_reset_week РІ guild_settings РЅРµ СЃСѓС‰РµСЃС‚РІСѓРµС‚ РІРѕРІСЃРµ (РѕРЅР° РµСЃС‚СЊ
+  // С‚РѕР»СЊРєРѕ Сѓ users), Р° СЂРµР·СѓР»СЊС‚Р°С‚ Р·Р°РїСЂРѕСЃР° РЅРёРіРґРµ РЅРµ РёСЃРїРѕР»СЊР·РѕРІР°Р»СЃСЏ, РїРѕСЌС‚РѕРјСѓ РѕРЅ СѓРґР°Р»С‘РЅ.
   try {
-    // Получаем все guild_id из users
+    // РџРѕР»СѓС‡Р°РµРј РІСЃРµ guild_id РёР· users
     const guildsResult = await db.execute({
       sql: 'SELECT DISTINCT guild_id FROM users',
       args: [],
@@ -2713,25 +2713,25 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
     const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
 
     for (const guildId of guildIds) {
-      // lastWeekKey читается заново для КАЖДОЙ гильдии — раньше значение
-      // протекало из предыдущей итерации цикла и гильдия могла пропустить сброс.
+      // lastWeekKey С‡РёС‚Р°РµС‚СЃСЏ Р·Р°РЅРѕРІРѕ РґР»СЏ РљРђР–Р”РћР™ РіРёР»СЊРґРёРё вЂ” СЂР°РЅСЊС€Рµ Р·РЅР°С‡РµРЅРёРµ
+      // РїСЂРѕС‚РµРєР°Р»Рѕ РёР· РїСЂРµРґС‹РґСѓС‰РµР№ РёС‚РµСЂР°С†РёРё С†РёРєР»Р° Рё РіРёР»СЊРґРёСЏ РјРѕРіР»Р° РїСЂРѕРїСѓСЃС‚РёС‚СЊ СЃР±СЂРѕСЃ.
       let lastWeekKey: string | null = null;
 
-      // Получаем дату последнего сброса из пользовательской записи
+      // РџРѕР»СѓС‡Р°РµРј РґР°С‚Сѓ РїРѕСЃР»РµРґРЅРµРіРѕ СЃР±СЂРѕСЃР° РёР· РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРѕР№ Р·Р°РїРёСЃРё
       const userResult = await db.execute({
         sql: 'SELECT last_week_reset FROM users WHERE user_id = ? AND guild_id = ?',
-        args: [guildId, guildId], // Используем guild_id как user_id для хранения метаданных
+        args: [guildId, guildId], // РСЃРїРѕР»СЊР·СѓРµРј guild_id РєР°Рє user_id РґР»СЏ С…СЂР°РЅРµРЅРёСЏ РјРµС‚Р°РґР°РЅРЅС‹С…
       });
 
       if (userResult.rows.length > 0) {
         lastWeekKey = userResult.rows[0].last_week_reset as string | null;
       }
 
-      // Если неделя изменилась
+      // Р•СЃР»Рё РЅРµРґРµР»СЏ РёР·РјРµРЅРёР»Р°СЃСЊ
       if (lastWeekKey !== currentWeekKey) {
         console.log(`[WeeklyReset] Week changed from ${lastWeekKey} to ${currentWeekKey} for guild ${guildId}`);
 
-        // Находим победителя прошлой недели
+        // РќР°С…РѕРґРёРј РїРѕР±РµРґРёС‚РµР»СЏ РїСЂРѕС€Р»РѕР№ РЅРµРґРµР»Рё
         const winnerResult = await db.execute({
           sql: `SELECT user_id, xp_earned FROM weekly_activity
                 WHERE guild_id = ? AND week_key = ?
@@ -2744,13 +2744,13 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
           const winnerId = winner.user_id as string;
           const xpEarned = winner.xp_earned as number;
 
-          // Начисляем +500 XP победителю
+          // РќР°С‡РёСЃР»СЏРµРј +500 XP РїРѕР±РµРґРёС‚РµР»СЋ
           await db.execute({
             sql: 'UPDATE users SET xp = xp + 500 WHERE user_id = ? AND guild_id = ?',
             args: [winnerId, guildId],
           });
 
-          // Обновляем уровень
+          // РћР±РЅРѕРІР»СЏРµРј СѓСЂРѕРІРµРЅСЊ
           const userXpResult = await db.execute({
             sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
             args: [winnerId, guildId],
@@ -2766,20 +2766,20 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
 
           console.log(`[WeeklyReset] User ${winnerId} wins guild ${guildId} week - +500 XP`);
 
-          // Отправляем Embed в канал
+          // РћС‚РїСЂР°РІР»СЏРµРј Embed РІ РєР°РЅР°Р»
           try {
             const guild = bot.guilds.cache.get(guildId);
             if (guild) {
-              // Анонс Чемпиона Недели всегда публикуем в главном канале ивентов
+              // РђРЅРѕРЅСЃ Р§РµРјРїРёРѕРЅР° РќРµРґРµР»Рё РІСЃРµРіРґР° РїСѓР±Р»РёРєСѓРµРј РІ РіР»Р°РІРЅРѕРј РєР°РЅР°Р»Рµ РёРІРµРЅС‚РѕРІ
               const channel = getEventTargetChannel(guild) as any;
 
               if (channel) {
                 const embed = {
                   embeds: [{
-                    title: '👑 ЧЕМПИОН НЕДЕЛИ ОПРЕДЕЛЁН!',
-                    description: `**<@${winnerId}>** набрал больше всех опыта за прошлую неделю (**${xpEarned.toLocaleString()} XP**) и получает звание Чемпиона Недели и +500 XP!`,
+                    title: 'рџ‘‘ Р§Р•РњРџРРћРќ РќР•Р”Р•Р›Р РћРџР Р•Р”Р•Р›РЃРќ!',
+                    description: `**<@${winnerId}>** РЅР°Р±СЂР°Р» Р±РѕР»СЊС€Рµ РІСЃРµС… РѕРїС‹С‚Р° Р·Р° РїСЂРѕС€Р»СѓСЋ РЅРµРґРµР»СЋ (**${xpEarned.toLocaleString()} XP**) Рё РїРѕР»СѓС‡Р°РµС‚ Р·РІР°РЅРёРµ Р§РµРјРїРёРѕРЅР° РќРµРґРµР»Рё Рё +500 XP!`,
                     color: 0xFFD700,
-                    footer: { text: 'Неделя завершается в 00:00 (Владивосток)' },
+                    footer: { text: 'РќРµРґРµР»СЏ Р·Р°РІРµСЂС€Р°РµС‚СЃСЏ РІ 00:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)' },
                   }],
                 };
 
@@ -2796,17 +2796,17 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
           }
         }
 
-        // Обновляем дату последнего сброса
-        // ИСПРАВЛЕНИЕ: INSERT OR REPLACE удалял существующую строку users целиком
-        // (вместе с xp, level, стриками и т.д.), если служебная запись уже была в БД.
-        // Теперь безопасный UPDATE, а INSERT — только если записи ещё нет.
+        // РћР±РЅРѕРІР»СЏРµРј РґР°С‚Сѓ РїРѕСЃР»РµРґРЅРµРіРѕ СЃР±СЂРѕСЃР°
+        // РРЎРџР РђР’Р›Р•РќРР•: INSERT OR REPLACE СѓРґР°Р»СЏР» СЃСѓС‰РµСЃС‚РІСѓСЋС‰СѓСЋ СЃС‚СЂРѕРєСѓ users С†РµР»РёРєРѕРј
+        // (РІРјРµСЃС‚Рµ СЃ xp, level, СЃС‚СЂРёРєР°РјРё Рё С‚.Рґ.), РµСЃР»Рё СЃР»СѓР¶РµР±РЅР°СЏ Р·Р°РїРёСЃСЊ СѓР¶Рµ Р±С‹Р»Р° РІ Р‘Р”.
+        // РўРµРїРµСЂСЊ Р±РµР·РѕРїР°СЃРЅС‹Р№ UPDATE, Р° INSERT вЂ” С‚РѕР»СЊРєРѕ РµСЃР»Рё Р·Р°РїРёСЃРё РµС‰С‘ РЅРµС‚.
         const updateResetResult = await db.execute({
           sql: 'UPDATE users SET last_week_reset = ? WHERE user_id = ? AND guild_id = ?',
           args: [currentWeekKey, guildId, guildId],
         });
 
         if (!updateResetResult.rowsAffected || updateResetResult.rowsAffected === 0) {
-          // Служебной записи ещё нет — создаём её с нулевыми значениями
+          // РЎР»СѓР¶РµР±РЅРѕР№ Р·Р°РїРёСЃРё РµС‰С‘ РЅРµС‚ вЂ” СЃРѕР·РґР°С‘Рј РµС‘ СЃ РЅСѓР»РµРІС‹РјРё Р·РЅР°С‡РµРЅРёСЏРјРё
           await db.execute({
             sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, last_week_reset)
                   VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
@@ -2821,19 +2821,19 @@ async function checkWeeklyReset(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Функция проверки дезертиров (Этап 12+)
+// Р¤СѓРЅРєС†РёСЏ РїСЂРѕРІРµСЂРєРё РґРµР·РµСЂС‚РёСЂРѕРІ (Р­С‚Р°Рї 12+)
 // ============================================
 
 /**
- * Проверяет пользователей на дезертирство (7 дней неактивности)
- * Вызывается каждые 6 часов
+ * РџСЂРѕРІРµСЂСЏРµС‚ РїРѕР»СЊР·РѕРІР°С‚РµР»РµР№ РЅР° РґРµР·РµСЂС‚РёСЂСЃС‚РІРѕ (7 РґРЅРµР№ РЅРµР°РєС‚РёРІРЅРѕСЃС‚Рё)
+ * Р’С‹Р·С‹РІР°РµС‚СЃСЏ РєР°Р¶РґС‹Рµ 6 С‡Р°СЃРѕРІ
  */
 async function checkDeserters(db: any, bot: Client): Promise<void> {
   const now = Date.now();
-  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000; // 7 дней в мс
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000; // 7 РґРЅРµР№ РІ РјСЃ
 
   try {
-    // Получаем все гильдии
+    // РџРѕР»СѓС‡Р°РµРј РІСЃРµ РіРёР»СЊРґРёРё
     const guildsResult = await db.execute({
       sql: 'SELECT DISTINCT guild_id FROM users',
       args: [],
@@ -2843,8 +2843,8 @@ async function checkDeserters(db: any, bot: Client): Promise<void> {
     console.log(`[DeserterCheck] Checking ${guildIds.length} guilds for deserters...`);
 
     for (const guildId of guildIds) {
-      // Находим всех пользователей с классом, которые не проявляли активность 7+ дней
-      // last_activity_at > 0 - защита от обнуления пользователей с пустым значением
+      // РќР°С…РѕРґРёРј РІСЃРµС… РїРѕР»СЊР·РѕРІР°С‚РµР»РµР№ СЃ РєР»Р°СЃСЃРѕРј, РєРѕС‚РѕСЂС‹Рµ РЅРµ РїСЂРѕСЏРІР»СЏР»Рё Р°РєС‚РёРІРЅРѕСЃС‚СЊ 7+ РґРЅРµР№
+      // last_activity_at > 0 - Р·Р°С‰РёС‚Р° РѕС‚ РѕР±РЅСѓР»РµРЅРёСЏ РїРѕР»СЊР·РѕРІР°С‚РµР»РµР№ СЃ РїСѓСЃС‚С‹Рј Р·РЅР°С‡РµРЅРёРµРј
       const desertersResult = await db.execute({
         sql: `SELECT user_id, class_id, last_activity_at
               FROM users
@@ -2865,7 +2865,7 @@ async function checkDeserters(db: any, bot: Client): Promise<void> {
       let systemChannel: any = null;
 
       if (guild) {
-        // Анонсы о дезертирстве — строго в главный канал ивентов
+        // РђРЅРѕРЅСЃС‹ Рѕ РґРµР·РµСЂС‚РёСЂСЃС‚РІРµ вЂ” СЃС‚СЂРѕРіРѕ РІ РіР»Р°РІРЅС‹Р№ РєР°РЅР°Р» РёРІРµРЅС‚РѕРІ
         systemChannel = getEventTargetChannel(guild);
       }
 
@@ -2874,22 +2874,22 @@ async function checkDeserters(db: any, bot: Client): Promise<void> {
         const classId = deseter.class_id as string;
         const classDisplayName = getClassDisplayNameForDeserter(classId);
 
-        // 1. Аннулировать класс
+        // 1. РђРЅРЅСѓР»РёСЂРѕРІР°С‚СЊ РєР»Р°СЃСЃ
         await db.execute({
           sql: 'UPDATE users SET class_id = ? WHERE user_id = ? AND guild_id = ?',
           args: ['stripped', userId, guildId],
         });
         console.log(`[DeserterCheck] User ${userId} stripped of class ${classId} in guild ${guildId}`);
 
-        // 2. Отправить позорный анонс
+        // 2. РћС‚РїСЂР°РІРёС‚СЊ РїРѕР·РѕСЂРЅС‹Р№ Р°РЅРѕРЅСЃ
         if (systemChannel) {
           try {
             const embed = {
               embeds: [{
-                title: '🥀 Классовые навыки атрофировались!',
-                description: `<@${userId}> отсутствовал на сервере 7 дней подряд! За дезертирство его классовые регалии обратились в прах.\n\n*Восстановить право на выбор боевого пути можно только доказав верность — совершив сброс Престижа на 100 уровне!*`,
+                title: 'рџҐЂ РљР»Р°СЃСЃРѕРІС‹Рµ РЅР°РІС‹РєРё Р°С‚СЂРѕС„РёСЂРѕРІР°Р»РёСЃСЊ!',
+                description: `<@${userId}> РѕС‚СЃСѓС‚СЃС‚РІРѕРІР°Р» РЅР° СЃРµСЂРІРµСЂРµ 7 РґРЅРµР№ РїРѕРґСЂСЏРґ! Р—Р° РґРµР·РµСЂС‚РёСЂСЃС‚РІРѕ РµРіРѕ РєР»Р°СЃСЃРѕРІС‹Рµ СЂРµРіР°Р»РёРё РѕР±СЂР°С‚РёР»РёСЃСЊ РІ РїСЂР°С….\n\n*Р’РѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ РїСЂР°РІРѕ РЅР° РІС‹Р±РѕСЂ Р±РѕРµРІРѕРіРѕ РїСѓС‚Рё РјРѕР¶РЅРѕ С‚РѕР»СЊРєРѕ РґРѕРєР°Р·Р°РІ РІРµСЂРЅРѕСЃС‚СЊ вЂ” СЃРѕРІРµСЂС€РёРІ СЃР±СЂРѕСЃ РџСЂРµСЃС‚РёР¶Р° РЅР° 100 СѓСЂРѕРІРЅРµ!*`,
                 color: 0x747f8d,
-                footer: { text: 'Учтите: при сбросе Престижа на 100 уровне проклятие снимется автоматически' },
+                footer: { text: 'РЈС‡С‚РёС‚Рµ: РїСЂРё СЃР±СЂРѕСЃРµ РџСЂРµСЃС‚РёР¶Р° РЅР° 100 СѓСЂРѕРІРЅРµ РїСЂРѕРєР»СЏС‚РёРµ СЃРЅРёРјРµС‚СЃСЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё' },
               }],
             };
             await systemChannel.send(embed);
@@ -2905,32 +2905,32 @@ async function checkDeserters(db: any, bot: Client): Promise<void> {
   }
 }
 
-// Вспомогательная функция для отображения класса (без префиксов)
+// Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅР°СЏ С„СѓРЅРєС†РёСЏ РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ РєР»Р°СЃСЃР° (Р±РµР· РїСЂРµС„РёРєСЃРѕРІ)
 function getClassDisplayNameForDeserter(classId: string): string {
   const classes: Record<string, string> = {
-    warrior: 'Паладин',
-    berserker: 'Берсерк',
-    mage: 'Архимаг',
-    necromancer: 'Некромант',
-    ranger: 'Следопыт',
-    assassin: 'Ассасин',
-    artificer: 'Техномаг',
-    bard: 'Бард',
+    warrior: 'РџР°Р»Р°РґРёРЅ',
+    berserker: 'Р‘РµСЂСЃРµСЂРє',
+    mage: 'РђСЂС…РёРјР°Рі',
+    necromancer: 'РќРµРєСЂРѕРјР°РЅС‚',
+    ranger: 'РЎР»РµРґРѕРїС‹С‚',
+    assassin: 'РђСЃСЃР°СЃРёРЅ',
+    artificer: 'РўРµС…РЅРѕРјР°Рі',
+    bard: 'Р‘Р°СЂРґ',
   };
   return classes[classId] || classId;
 }
 
 // ============================================
-// Функции для начисления онлайн-секунд (Этап 8 - Server King)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ РЅР°С‡РёСЃР»РµРЅРёСЏ РѕРЅР»Р°Р№РЅ-СЃРµРєСѓРЅРґ (Р­С‚Р°Рї 8 - Server King)
 // ============================================
 
 /**
- * Начисляет +300 секунд онлайн-времени всем активным пользователям
- * Вызывается раз в 5 минут через setInterval
+ * РќР°С‡РёСЃР»СЏРµС‚ +300 СЃРµРєСѓРЅРґ РѕРЅР»Р°Р№РЅ-РІСЂРµРјРµРЅРё РІСЃРµРј Р°РєС‚РёРІРЅС‹Рј РїРѕР»СЊР·РѕРІР°С‚РµР»СЏРј
+ * Р’С‹Р·С‹РІР°РµС‚СЃСЏ СЂР°Р· РІ 5 РјРёРЅСѓС‚ С‡РµСЂРµР· setInterval
  */
 async function awardOnlineSeconds(db: any, bot: Client): Promise<void> {
   const now = Date.now();
-  const onlineSeconds = 300; // 5 минут
+  const onlineSeconds = 300; // 5 РјРёРЅСѓС‚
 
   try {
     const guilds = bot.guilds.cache;
@@ -2940,22 +2940,22 @@ async function awardOnlineSeconds(db: any, bot: Client): Promise<void> {
       const members = guild.members.cache;
 
       for (const [memberId, member] of members) {
-        // Пропускаем ботов
+        // РџСЂРѕРїСѓСЃРєР°РµРј Р±РѕС‚РѕРІ
         if (member.user.bot) continue;
 
-        // Проверяем статус пользователя (online, idle, dnd)
-        // status === 'offline' означает оффлайн
+        // РџСЂРѕРІРµСЂСЏРµРј СЃС‚Р°С‚СѓСЃ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ (online, idle, dnd)
+        // status === 'offline' РѕР·РЅР°С‡Р°РµС‚ РѕС„С„Р»Р°Р№РЅ
         const status = member.presence?.status;
         if (!status || status === 'offline') continue;
 
-        // Начисляем +300 секунд онлайн-времени и обновляем last_activity_at
+        // РќР°С‡РёСЃР»СЏРµРј +300 СЃРµРєСѓРЅРґ РѕРЅР»Р°Р№РЅ-РІСЂРµРјРµРЅРё Рё РѕР±РЅРѕРІР»СЏРµРј last_activity_at
         try {
           await db.execute({
             sql: 'UPDATE users SET online_seconds = online_seconds + ?, last_activity_at = ? WHERE user_id = ? AND guild_id = ?',
             args: [onlineSeconds, Date.now(), memberId, guildId],
           });
         } catch (err) {
-          // Если пользователя нет в базе - пропускаем
+          // Р•СЃР»Рё РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ РЅРµС‚ РІ Р±Р°Р·Рµ - РїСЂРѕРїСѓСЃРєР°РµРј
           console.debug(`[OnlineSeconds] User ${memberId} not found in DB for guild ${guildId}`);
         }
       }
@@ -2968,85 +2968,85 @@ async function awardOnlineSeconds(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Мировой Босс Сервера (Этап 13 - 4 босса в ротации)
+// РњРёСЂРѕРІРѕР№ Р‘РѕСЃСЃ РЎРµСЂРІРµСЂР° (Р­С‚Р°Рї 13 - 4 Р±РѕСЃСЃР° РІ СЂРѕС‚Р°С†РёРё)
 // ============================================
 
 const BOSS_CHANNEL_ID = '1051085743839260694';
 
-// 4 пресета боссов
+// 4 РїСЂРµСЃРµС‚Р° Р±РѕСЃСЃРѕРІ
 const WORLD_BOSS_PRESETS = [
   {
     boss_id: 'dragon',
-    boss_name: '🔥 Пепельный Дракон Золотого Рога',
+    boss_name: 'рџ”Ґ РџРµРїРµР»СЊРЅС‹Р№ Р”СЂР°РєРѕРЅ Р—РѕР»РѕС‚РѕРіРѕ Р РѕРіР°',
     boss_type: 'dragon',
     max_hp: 7500,
     hours: 24,
     xp_reward: 800,
     coins_reward: 200,
-    desc: 'Обычные тычки наносят -25% урона. Пробивают скиллы и ульты!'
+    desc: 'РћР±С‹С‡РЅС‹Рµ С‚С‹С‡РєРё РЅР°РЅРѕСЃСЏС‚ -25% СѓСЂРѕРЅР°. РџСЂРѕР±РёРІР°СЋС‚ СЃРєРёР»Р»С‹ Рё СѓР»СЊС‚С‹!'
   },
   {
     boss_id: 'mimic',
-    boss_name: '💰 Жадный Мимик с Шаморы',
+    boss_name: 'рџ’° Р–Р°РґРЅС‹Р№ РњРёРјРёРє СЃ РЁР°РјРѕСЂС‹',
     boss_type: 'mimic',
     max_hp: 4200,
     hours: 12,
     xp_reward: 300,
     coins_reward: 600,
-    desc: 'Быстрый босс на 12ч! Каждый удар выбивает +15..40 🪙 прямо в карман!'
+    desc: 'Р‘С‹СЃС‚СЂС‹Р№ Р±РѕСЃСЃ РЅР° 12С‡! РљР°Р¶РґС‹Р№ СѓРґР°СЂ РІС‹Р±РёРІР°РµС‚ +15..40 рџЄ™ РїСЂСЏРјРѕ РІ РєР°СЂРјР°РЅ!'
   },
   {
     boss_id: 'leviathan',
-    boss_name: '🌊 Кибер-Левиафан Японского Моря',
+    boss_name: 'рџЊЉ РљРёР±РµСЂ-Р›РµРІРёР°С„Р°РЅ РЇРїРѕРЅСЃРєРѕРіРѕ РњРѕСЂСЏ',
     boss_type: 'leviathan',
     max_hp: 6000,
     hours: 24,
     xp_reward: 500,
     coins_reward: 350,
-    desc: 'Войс-буст работает в 2 раза сильнее (+50%/час, кап +100%)!'
+    desc: 'Р’РѕР№СЃ-Р±СѓСЃС‚ СЂР°Р±РѕС‚Р°РµС‚ РІ 2 СЂР°Р·Р° СЃРёР»СЊРЅРµРµ (+50%/С‡Р°СЃ, РєР°Рї +100%)!'
   },
   {
     boss_id: 'phantom',
-    boss_name: '👁️ Фантомный Архитектор Бездны',
+    boss_name: 'рџ‘ЃпёЏ Р¤Р°РЅС‚РѕРјРЅС‹Р№ РђСЂС…РёС‚РµРєС‚РѕСЂ Р‘РµР·РґРЅС‹',
     boss_type: 'phantom',
     max_hp: 5500,
     hours: 24,
     xp_reward: 600,
     coins_reward: 250,
-    desc: 'Кулдаун ударов 6 минут вместо 10! Скоростной бой.'
+    desc: 'РљСѓР»РґР°СѓРЅ СѓРґР°СЂРѕРІ 6 РјРёРЅСѓС‚ РІРјРµСЃС‚Рѕ 10! РЎРєРѕСЂРѕСЃС‚РЅРѕР№ Р±РѕР№.'
   }
 ] as const;
 
 /**
- * Формирует описание текущего состояния босса для Embed
+ * Р¤РѕСЂРјРёСЂСѓРµС‚ РѕРїРёСЃР°РЅРёРµ С‚РµРєСѓС‰РµРіРѕ СЃРѕСЃС‚РѕСЏРЅРёСЏ Р±РѕСЃСЃР° РґР»СЏ Embed
  */
 function renderBossEmbed(boss: any): any {
   const maxHp = boss.max_hp as number;
   const currentHp = boss.current_hp as number;
   const hoursLeft = Math.ceil((boss.expires_at - Date.now()) / 3600000);
 
-  // Прогресс-бар HP (20 символов)
+  // РџСЂРѕРіСЂРµСЃСЃ-Р±Р°СЂ HP (20 СЃРёРјРІРѕР»РѕРІ)
   const hpRatio = Math.max(0, Math.min(currentHp / maxHp, 1));
   const filled = Math.round(hpRatio * 20);
   const empty = 20 - filled;
-  const hpBar = '█'.repeat(filled) + '░'.repeat(empty);
+  const hpBar = 'в–€'.repeat(filled) + 'в–‘'.repeat(empty);
 
   return {
     embeds: [{
-      title: `⚔️ МИРОВОЙ БОСС: ${boss.boss_name as string}`,
+      title: `вљ”пёЏ РњРР РћР’РћР™ Р‘РћРЎРЎ: ${boss.boss_name as string}`,
       description: `${boss.desc as string}\n\n` +
-        `❤️ **HP:** \`${hpBar}\` **${currentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
-        `⏳ **Исчезнет через:** ${hoursLeft} ч.\n\n` +
-        `💥 **Топ охотников:**`,
+        `вќ¤пёЏ **HP:** \`${hpBar}\` **${currentHp.toLocaleString()} / ${maxHp.toLocaleString()}**\n` +
+        `вЏі **РСЃС‡РµР·РЅРµС‚ С‡РµСЂРµР·:** ${hoursLeft} С‡.\n\n` +
+        `рџ’Ґ **РўРѕРї РѕС…РѕС‚РЅРёРєРѕРІ:**`,
       color: 0xE74C3C,
     }],
     components: [
       {
         type: 1,
         components: [
-          { type: 2, custom_id: 'boss_atk_basic', style: 4, label: '⚔️ Обычный удар' },
-          { type: 2, custom_id: 'boss_atk_skill', style: 1, label: '✨ Спец-скилл' },
-          { type: 2, custom_id: 'boss_atk_ult', style: 3, label: '👑 Ульта' },
+          { type: 2, custom_id: 'boss_atk_basic', style: 4, label: 'вљ”пёЏ РћР±С‹С‡РЅС‹Р№ СѓРґР°СЂ' },
+          { type: 2, custom_id: 'boss_atk_skill', style: 1, label: 'вњЁ РЎРїРµС†-СЃРєРёР»Р»' },
+          { type: 2, custom_id: 'boss_atk_ult', style: 3, label: 'рџ‘‘ РЈР»СЊС‚Р°' },
         ],
       },
     ],
@@ -3054,29 +3054,29 @@ function renderBossEmbed(boss: any): any {
 }
 
 /**
- * Формирует победный Embed для босса
+ * Р¤РѕСЂРјРёСЂСѓРµС‚ РїРѕР±РµРґРЅС‹Р№ Embed РґР»СЏ Р±РѕСЃСЃР°
  */
 function renderVictoryEmbed(boss: any, topDamageers: Array<{ user_id: string; total_dmg: number }>): any {
   const maxHp = boss.max_hp as number;
-  const hpBar = '█'.repeat(20) + '░'.repeat(0);
+  const hpBar = 'в–€'.repeat(20) + 'в–‘'.repeat(0);
 
   let topDescription = '';
   topDamageers.forEach((d, i) => {
-    const pos = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`;
-    topDescription += `${pos} <@${d.user_id as string}> — **${(d.total_dmg as number).toLocaleString()}** урона\n`;
+    const pos = i === 0 ? 'рџҐ‡' : i === 1 ? 'рџҐ€' : i === 2 ? 'рџҐ‰' : `#${i + 1}`;
+    topDescription += `${pos} <@${d.user_id as string}> вЂ” **${(d.total_dmg as number).toLocaleString()}** СѓСЂРѕРЅР°\n`;
   });
   if (topDamageers.length === 0) {
-    topDescription = '*Ударов пока не нанесено*';
+    topDescription = '*РЈРґР°СЂРѕРІ РїРѕРєР° РЅРµ РЅР°РЅРµСЃРµРЅРѕ*';
   }
 
   return {
     embeds: [{
-      title: `🎉 МИРОВОЙ БОСС ${boss.boss_name as string} ПОВЕРЖЕН!`,
-      description: `Победа! Босс повержен!\n\n` +
-        `**Награда каждому участнику:**\n` +
-        `• 🎯 **+${boss.xp_reward as number} XP**\n` +
-        `• 🪙 **+${boss.coins_reward as number} монет**\n\n` +
-        `**Топ дамагеров:**\n${topDescription}`,
+      title: `рџЋ‰ РњРР РћР’РћР™ Р‘РћРЎРЎ ${boss.boss_name as string} РџРћР’Р•Р Р–Р•Рќ!`,
+      description: `РџРѕР±РµРґР°! Р‘РѕСЃСЃ РїРѕРІРµСЂР¶РµРЅ!\n\n` +
+        `**РќР°РіСЂР°РґР° РєР°Р¶РґРѕРјСѓ СѓС‡Р°СЃС‚РЅРёРєСѓ:**\n` +
+        `вЂў рџЋЇ **+${boss.xp_reward as number} XP**\n` +
+        `вЂў рџЄ™ **+${boss.coins_reward as number} РјРѕРЅРµС‚**\n\n` +
+        `**РўРѕРї РґР°РјР°РіРµСЂРѕРІ:**\n${topDescription}`,
       color: 0xF1C40F,
     }],
     components: [],
@@ -3084,20 +3084,20 @@ function renderVictoryEmbed(boss: any, topDamageers: Array<{ user_id: string; to
 }
 
 /**
- * Получает целевой канал для всех игровых оповещений, анонсов и системных сообщений.
- * Главный целевой канал — закреплённый '1051085743839260694'.
- * Fallback на системный канал — только если закреплённый не найден или недоступен.
+ * РџРѕР»СѓС‡Р°РµС‚ С†РµР»РµРІРѕР№ РєР°РЅР°Р» РґР»СЏ РІСЃРµС… РёРіСЂРѕРІС‹С… РѕРїРѕРІРµС‰РµРЅРёР№, Р°РЅРѕРЅСЃРѕРІ Рё СЃРёСЃС‚РµРјРЅС‹С… СЃРѕРѕР±С‰РµРЅРёР№.
+ * Р“Р»Р°РІРЅС‹Р№ С†РµР»РµРІРѕР№ РєР°РЅР°Р» вЂ” Р·Р°РєСЂРµРїР»С‘РЅРЅС‹Р№ '1051085743839260694'.
+ * Fallback РЅР° СЃРёСЃС‚РµРјРЅС‹Р№ РєР°РЅР°Р» вЂ” С‚РѕР»СЊРєРѕ РµСЃР»Рё Р·Р°РєСЂРµРїР»С‘РЅРЅС‹Р№ РЅРµ РЅР°Р№РґРµРЅ РёР»Рё РЅРµРґРѕСЃС‚СѓРїРµРЅ.
  */
 function getEventTargetChannel(guild: any): any | null {
   const EVENT_CHANNEL_ID = '1051085743839260694';
 
-  // 1. Закреплённый канал — строго главный целевой канал для всех анонсов
+  // 1. Р—Р°РєСЂРµРїР»С‘РЅРЅС‹Р№ РєР°РЅР°Р» вЂ” СЃС‚СЂРѕРіРѕ РіР»Р°РІРЅС‹Р№ С†РµР»РµРІРѕР№ РєР°РЅР°Р» РґР»СЏ РІСЃРµС… Р°РЅРѕРЅСЃРѕРІ
   const pinned = guild.channels.cache.get(EVENT_CHANNEL_ID);
   if (pinned && pinned.type === 0 && pinned.permissionsFor(guild.members.me!)?.has('SendMessages')) {
     return pinned;
   }
 
-  // 2. Fallback: системный канал гильдии (только если закреплённый не найден)
+  // 2. Fallback: СЃРёСЃС‚РµРјРЅС‹Р№ РєР°РЅР°Р» РіРёР»СЊРґРёРё (С‚РѕР»СЊРєРѕ РµСЃР»Рё Р·Р°РєСЂРµРїР»С‘РЅРЅС‹Р№ РЅРµ РЅР°Р№РґРµРЅ)
   if (guild.systemChannelId) {
     const system = guild.channels.cache.get(guild.systemChannelId);
     if (system && system.type === 0 && system.permissionsFor(guild.members.me!)?.has('SendMessages')) {
@@ -3105,7 +3105,7 @@ function getEventTargetChannel(guild: any): any | null {
     }
   }
 
-  // 3. Последний резерв: любой доступный текстовый канал с правами отправки
+  // 3. РџРѕСЃР»РµРґРЅРёР№ СЂРµР·РµСЂРІ: Р»СЋР±РѕР№ РґРѕСЃС‚СѓРїРЅС‹Р№ С‚РµРєСЃС‚РѕРІС‹Р№ РєР°РЅР°Р» СЃ РїСЂР°РІР°РјРё РѕС‚РїСЂР°РІРєРё
   return (guild.channels.cache.find((c: any) =>
     c.type === 0 && // GuildText
     c.permissionsFor(guild.members.me!)?.has('SendMessages')
@@ -3113,15 +3113,15 @@ function getEventTargetChannel(guild: any): any | null {
 }
 
 // ============================================
-// Редкий спавн Мирового Босса: расписание 60-120 часов между появлениями
+// Р РµРґРєРёР№ СЃРїР°РІРЅ РњРёСЂРѕРІРѕРіРѕ Р‘РѕСЃСЃР°: СЂР°СЃРїРёСЃР°РЅРёРµ 60-120 С‡Р°СЃРѕРІ РјРµР¶РґСѓ РїРѕСЏРІР»РµРЅРёСЏРјРё
 // ============================================
 
 /**
- * Планирует следующий спавн босса: now + случайные 60-120 часов (2.5-5 дней).
- * Время хранится в служебной записи users (user_id = guild_id), колонка next_boss_spawn_at.
+ * РџР»Р°РЅРёСЂСѓРµС‚ СЃР»РµРґСѓСЋС‰РёР№ СЃРїР°РІРЅ Р±РѕСЃСЃР°: now + СЃР»СѓС‡Р°Р№РЅС‹Рµ 60-120 С‡Р°СЃРѕРІ (2.5-5 РґРЅРµР№).
+ * Р’СЂРµРјСЏ С…СЂР°РЅРёС‚СЃСЏ РІ СЃР»СѓР¶РµР±РЅРѕР№ Р·Р°РїРёСЃРё users (user_id = guild_id), РєРѕР»РѕРЅРєР° next_boss_spawn_at.
  */
 async function scheduleNextBossSpawn(db: any, guildId: string): Promise<number> {
-  const delayHours = 60 + Math.random() * 60; // 60-120 часов
+  const delayHours = 60 + Math.random() * 60; // 60-120 С‡Р°СЃРѕРІ
   const nextSpawnAt = Date.now() + Math.round(delayHours * 3600 * 1000);
 
   try {
@@ -3131,7 +3131,7 @@ async function scheduleNextBossSpawn(db: any, guildId: string): Promise<number> 
     });
 
     if (!updateResult.rowsAffected || updateResult.rowsAffected === 0) {
-      // Служебной записи ещё нет — создаём её (как в checkWeeklyReset)
+      // РЎР»СѓР¶РµР±РЅРѕР№ Р·Р°РїРёСЃРё РµС‰С‘ РЅРµС‚ вЂ” СЃРѕР·РґР°С‘Рј РµС‘ (РєР°Рє РІ checkWeeklyReset)
       await db.execute({
         sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, next_boss_spawn_at)
               VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
@@ -3148,7 +3148,7 @@ async function scheduleNextBossSpawn(db: any, guildId: string): Promise<number> 
 }
 
 /**
- * Возвращает запланированное время следующего спавна босса (0 — спавн разрешён сразу)
+ * Р’РѕР·РІСЂР°С‰Р°РµС‚ Р·Р°РїР»Р°РЅРёСЂРѕРІР°РЅРЅРѕРµ РІСЂРµРјСЏ СЃР»РµРґСѓСЋС‰РµРіРѕ СЃРїР°РІРЅР° Р±РѕСЃСЃР° (0 вЂ” СЃРїР°РІРЅ СЂР°Р·СЂРµС€С‘РЅ СЃСЂР°Р·Сѓ)
  */
 async function getNextBossSpawnAt(db: any, guildId: string): Promise<number> {
   try {
@@ -3163,19 +3163,19 @@ async function getNextBossSpawnAt(db: any, guildId: string): Promise<number> {
 }
 
 /**
- * Проверяет и спавнит Мирового Босса для одной гильдии
+ * РџСЂРѕРІРµСЂСЏРµС‚ Рё СЃРїР°РІРЅРёС‚ РњРёСЂРѕРІРѕРіРѕ Р‘РѕСЃСЃР° РґР»СЏ РѕРґРЅРѕР№ РіРёР»СЊРґРёРё
  */
 async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: string): Promise<void> {
   try {
     const now = Date.now();
 
-    // Проверка: разрешено ли сейчас запускать ивенты
+    // РџСЂРѕРІРµСЂРєР°: СЂР°Р·СЂРµС€РµРЅРѕ Р»Рё СЃРµР№С‡Р°СЃ Р·Р°РїСѓСЃРєР°С‚СЊ РёРІРµРЅС‚С‹
     if (!isEventTimeAllowed('Asia/Vladivostok')) {
-      console.log(`[WorldBoss] Guild ${guildId}: Skipped - вне разрешённого времени ивентов`);
+      console.log(`[WorldBoss] Guild ${guildId}: Skipped - РІРЅРµ СЂР°Р·СЂРµС€С‘РЅРЅРѕРіРѕ РІСЂРµРјРµРЅРё РёРІРµРЅС‚РѕРІ`);
       return;
     }
 
-    // Ищем активного босса для конкретной гильдии
+    // РС‰РµРј Р°РєС‚РёРІРЅРѕРіРѕ Р±РѕСЃСЃР° РґР»СЏ РєРѕРЅРєСЂРµС‚РЅРѕР№ РіРёР»СЊРґРёРё
     const activeBossResult = await db.execute({
       sql: 'SELECT * FROM world_boss WHERE guild_id = ? AND status = ? LIMIT 1',
       args: [guildId, 'active'],
@@ -3185,18 +3185,18 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
       const boss = activeBossResult.rows[0];
       const expiresAt = boss.expires_at as number;
 
-      // Проверяем истек ли срок босса
+      // РџСЂРѕРІРµСЂСЏРµРј РёСЃС‚РµРє Р»Рё СЃСЂРѕРє Р±РѕСЃСЃР°
       if (now > expiresAt) {
-        // Босс сбежал
+        // Р‘РѕСЃСЃ СЃР±РµР¶Р°Р»
         await db.execute({
           sql: "UPDATE world_boss SET status = ? WHERE guild_id = ? AND id = ?",
           args: ['escaped', guildId, boss.id],
         });
 
-        // Планируем редкий следующий спавн: now + 60-120 часов (2.5-5 дней)
+        // РџР»Р°РЅРёСЂСѓРµРј СЂРµРґРєРёР№ СЃР»РµРґСѓСЋС‰РёР№ СЃРїР°РІРЅ: now + 60-120 С‡Р°СЃРѕРІ (2.5-5 РґРЅРµР№)
         await scheduleNextBossSpawn(db, guildId);
 
-        // Редактируем сообщение в канале
+        // Р РµРґР°РєС‚РёСЂСѓРµРј СЃРѕРѕР±С‰РµРЅРёРµ РІ РєР°РЅР°Р»Рµ
         const channelId = boss.channel_id as string;
         const messageId = boss.message_id as string;
 
@@ -3209,8 +3209,8 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
                 await (channel as any).messages.fetch(messageId).then((msg: any) => {
                   return msg.edit({
                     embeds: [{
-                      title: '💨 Босс скрылся в тумане!',
-                      description: 'Рейд не успел одолеть босса за отведенное время.',
+                      title: 'рџ’Ё Р‘РѕСЃСЃ СЃРєСЂС‹Р»СЃСЏ РІ С‚СѓРјР°РЅРµ!',
+                      description: 'Р РµР№Рґ РЅРµ СѓСЃРїРµР» РѕРґРѕР»РµС‚СЊ Р±РѕСЃСЃР° Р·Р° РѕС‚РІРµРґРµРЅРЅРѕРµ РІСЂРµРјСЏ.',
                       color: 0x747f8d,
                     }],
                     components: [],
@@ -3225,14 +3225,14 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
         }
       }
     } else {
-      // Нет активного босса - проверяем расписание редкого спавна.
-      // Спавн ТОЛЬКО если вышло окно ожидания next_boss_spawn_at (60-120 ч после
-      // поражения/побега прошлого босса). Разрешённое время ивентов (17:00-22:00 Влд)
-      // уже проверено через isEventTimeAllowed в начале функции.
+      // РќРµС‚ Р°РєС‚РёРІРЅРѕРіРѕ Р±РѕСЃСЃР° - РїСЂРѕРІРµСЂСЏРµРј СЂР°СЃРїРёСЃР°РЅРёРµ СЂРµРґРєРѕРіРѕ СЃРїР°РІРЅР°.
+      // РЎРїР°РІРЅ РўРћР›Р¬РљРћ РµСЃР»Рё РІС‹С€Р»Рѕ РѕРєРЅРѕ РѕР¶РёРґР°РЅРёСЏ next_boss_spawn_at (60-120 С‡ РїРѕСЃР»Рµ
+      // РїРѕСЂР°Р¶РµРЅРёСЏ/РїРѕР±РµРіР° РїСЂРѕС€Р»РѕРіРѕ Р±РѕСЃСЃР°). Р Р°Р·СЂРµС€С‘РЅРЅРѕРµ РІСЂРµРјСЏ РёРІРµРЅС‚РѕРІ (17:00-22:00 Р’Р»Рґ)
+      // СѓР¶Рµ РїСЂРѕРІРµСЂРµРЅРѕ С‡РµСЂРµР· isEventTimeAllowed РІ РЅР°С‡Р°Р»Рµ С„СѓРЅРєС†РёРё.
       const nextSpawnAt = await getNextBossSpawnAt(db, guildId);
       if (Date.now() < nextSpawnAt) {
         const hoursLeft = Math.ceil((nextSpawnAt - Date.now()) / 3600000);
-        console.log(`[WorldBoss] Guild ${guildId}: Spawn skipped - редкий спавн, следующий босс через ~${hoursLeft} ч.`);
+        console.log(`[WorldBoss] Guild ${guildId}: Spawn skipped - СЂРµРґРєРёР№ СЃРїР°РІРЅ, СЃР»РµРґСѓСЋС‰РёР№ Р±РѕСЃСЃ С‡РµСЂРµР· ~${hoursLeft} С‡.`);
         return;
       }
 
@@ -3240,21 +3240,21 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
       const spawnedAt = now;
       const expiresAt = now + preset.hours * 3600 * 1000;
 
-      // Вставляем запись босса с guild_id
+      // Р’СЃС‚Р°РІР»СЏРµРј Р·Р°РїРёСЃСЊ Р±РѕСЃСЃР° СЃ guild_id
       const insertResult = await db.execute({
         sql: `INSERT INTO world_boss (guild_id, channel_id, boss_id, boss_name, boss_type, max_hp, current_hp, status, spawned_at, expires_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
         args: [guildId, BOSS_CHANNEL_ID, preset.boss_id, preset.boss_name, preset.boss_type, preset.max_hp, preset.max_hp, spawnedAt, expiresAt],
       });
 
-      // Обновляем message_id строго к последней активной записи для этой гильдии
+      // РћР±РЅРѕРІР»СЏРµРј message_id СЃС‚СЂРѕРіРѕ Рє РїРѕСЃР»РµРґРЅРµР№ Р°РєС‚РёРІРЅРѕР№ Р·Р°РїРёСЃРё РґР»СЏ СЌС‚РѕР№ РіРёР»СЊРґРёРё
       const lastBossResult = await db.execute({
         sql: 'SELECT * FROM world_boss WHERE guild_id = ? AND status = ? ORDER BY id DESC LIMIT 1',
         args: [guildId, 'active'],
       });
       const boss = lastBossResult.rows[0];
 
-      // Отправляем Embed в канал
+      // РћС‚РїСЂР°РІР»СЏРµРј Embed РІ РєР°РЅР°Р»
       if (boss) {
         const guild = bot.guilds.cache.get(guildId);
         if (guild) {
@@ -3295,11 +3295,11 @@ async function checkAndSpawnWorldBossForGuild(db: any, bot: Client, guildId: str
 }
 
 /**
- * Проверяет и спавнит Мирового Босса для всех гильдий
+ * РџСЂРѕРІРµСЂСЏРµС‚ Рё СЃРїР°РІРЅРёС‚ РњРёСЂРѕРІРѕРіРѕ Р‘РѕСЃСЃР° РґР»СЏ РІСЃРµС… РіРёР»СЊРґРёР№
  */
 async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
   try {
-    // Перебираем все гильдии, в которых состоит бот
+    // РџРµСЂРµР±РёСЂР°РµРј РІСЃРµ РіРёР»СЊРґРёРё, РІ РєРѕС‚РѕСЂС‹С… СЃРѕСЃС‚РѕРёС‚ Р±РѕС‚
     for (const [guildId, guild] of bot.guilds.cache) {
       console.log(`[WorldBoss] Checking world boss for guild: ${guild.name} (${guildId})`);
       await checkAndSpawnWorldBossForGuild(db, bot, guildId);
@@ -3310,20 +3310,20 @@ async function checkAndSpawnWorldBoss(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Функции для автоматического истечения дуэлей (Этап 11+)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРѕРіРѕ РёСЃС‚РµС‡РµРЅРёСЏ РґСѓСЌР»РµР№ (Р­С‚Р°Рї 11+)
 // ============================================
 
 /**
- * Проверяет истёкшие дуэли и обновляет их статус на 'expired'
- * Вызывается каждые 20-30 секунд
+ * РџСЂРѕРІРµСЂСЏРµС‚ РёСЃС‚С‘РєС€РёРµ РґСѓСЌР»Рё Рё РѕР±РЅРѕРІР»СЏРµС‚ РёС… СЃС‚Р°С‚СѓСЃ РЅР° 'expired'
+ * Р’С‹Р·С‹РІР°РµС‚СЃСЏ РєР°Р¶РґС‹Рµ 20-30 СЃРµРєСѓРЅРґ
  */
 async function checkExpiredDuels(db: any, bot: Client): Promise<void> {
   const nowMs = Date.now();
   const nowSeconds = Math.floor(nowMs / 1000);
-  const duelTimeoutSeconds = 300; // 5 минут
+  const duelTimeoutSeconds = 300; // 5 РјРёРЅСѓС‚
 
   try {
-    // Ищем дуэли со статусом 'pending', созданные более 5 минут назад
+    // РС‰РµРј РґСѓСЌР»Рё СЃРѕ СЃС‚Р°С‚СѓСЃРѕРј 'pending', СЃРѕР·РґР°РЅРЅС‹Рµ Р±РѕР»РµРµ 5 РјРёРЅСѓС‚ РЅР°Р·Р°Рґ
     const expiredDuels = await db.execute({
       sql: "SELECT * FROM duels WHERE status = 'pending' AND (created_at + ?) < ?",
       args: [duelTimeoutSeconds, nowSeconds],
@@ -3335,27 +3335,27 @@ async function checkExpiredDuels(db: any, bot: Client): Promise<void> {
 
     console.log(`[Duel] Found ${expiredDuels.rows.length} expired duels, processing...`);
 
-    // Атомарно обновляем статус всех истёкших дуэлей
+    // РђС‚РѕРјР°СЂРЅРѕ РѕР±РЅРѕРІР»СЏРµРј СЃС‚Р°С‚СѓСЃ РІСЃРµС… РёСЃС‚С‘РєС€РёС… РґСѓСЌР»РµР№
     for (const duel of expiredDuels.rows) {
       const duelId = duel.id as string;
       const channelId = duel.channel_id as string;
       const messageId = duel.message_id as string;
       const guildId = duel.guild_id as string;
 
-      // Атомарное обновление: только если статус всё ещё 'pending'
+      // РђС‚РѕРјР°СЂРЅРѕРµ РѕР±РЅРѕРІР»РµРЅРёРµ: С‚РѕР»СЊРєРѕ РµСЃР»Рё СЃС‚Р°С‚СѓСЃ РІСЃС‘ РµС‰С‘ 'pending'
       const updateResult = await db.execute({
         sql: "UPDATE duels SET status = 'expired' WHERE id = ? AND status = 'pending'",
         args: [duelId],
       });
 
       if (!updateResult.rowsAffected || updateResult.rowsAffected === 0) {
-        // Дуэль уже была обработана другим тикером или изменена
+        // Р”СѓСЌР»СЊ СѓР¶Рµ Р±С‹Р»Р° РѕР±СЂР°Р±РѕС‚Р°РЅР° РґСЂСѓРіРёРј С‚РёРєРµСЂРѕРј РёР»Рё РёР·РјРµРЅРµРЅР°
         continue;
       }
 
       console.log(`[Duel] Duel ${duelId} expired, editing message...`);
 
-      // Редактируем сообщение в Discord, если есть channel_id и message_id
+      // Р РµРґР°РєС‚РёСЂСѓРµРј СЃРѕРѕР±С‰РµРЅРёРµ РІ Discord, РµСЃР»Рё РµСЃС‚СЊ channel_id Рё message_id
       if (channelId && messageId) {
         try {
           const guild = bot.guilds.cache.get(guildId);
@@ -3365,8 +3365,8 @@ async function checkExpiredDuels(db: any, bot: Client): Promise<void> {
               await (channel as any).messages.fetch(messageId).then((msg: any) => {
                 return msg.edit({
                   embeds: [{
-                    title: "⏳ Дуэль отклонена по таймауту",
-                    description: "Время на принятие вызова (5 минут) истекло. Дуэль автоматически аннулирована.",
+                    title: "вЏі Р”СѓСЌР»СЊ РѕС‚РєР»РѕРЅРµРЅР° РїРѕ С‚Р°Р№РјР°СѓС‚Сѓ",
+                    description: "Р’СЂРµРјСЏ РЅР° РїСЂРёРЅСЏС‚РёРµ РІС‹Р·РѕРІР° (5 РјРёРЅСѓС‚) РёСЃС‚РµРєР»Рѕ. Р”СѓСЌР»СЊ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё Р°РЅРЅСѓР»РёСЂРѕРІР°РЅР°.",
                     color: 0x747f8d,
                   }],
                   components: [],
@@ -3386,12 +3386,12 @@ async function checkExpiredDuels(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Функции для Happy Hours (Этап 4 - Счастливые часы)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ Happy Hours (Р­С‚Р°Рї 4 - РЎС‡Р°СЃС‚Р»РёРІС‹Рµ С‡Р°СЃС‹)
 // ============================================
 
 /**
- * Проверяет, активен ли Happy Hour для гильдии
- * @returns multiplier (2.0) если активен, иначе 1.0
+ * РџСЂРѕРІРµСЂСЏРµС‚, Р°РєС‚РёРІРµРЅ Р»Рё Happy Hour РґР»СЏ РіРёР»СЊРґРёРё
+ * @returns multiplier (2.0) РµСЃР»Рё Р°РєС‚РёРІРµРЅ, РёРЅР°С‡Рµ 1.0
  */
 async function isHappyHourActive(db: any, guildId: string): Promise<number> {
   try {
@@ -3414,17 +3414,17 @@ async function isHappyHourActive(db: any, guildId: string): Promise<number> {
 }
 
 /**
- * Запускает Happy Hour на 60 минут
+ * Р—Р°РїСѓСЃРєР°РµС‚ Happy Hour РЅР° 60 РјРёРЅСѓС‚
  */
 async function startHappyHour(db: any, guildId: string, bot: Client): Promise<void> {
-  // Проверка: разрешено ли сейчас запускать ивенты
+  // РџСЂРѕРІРµСЂРєР°: СЂР°Р·СЂРµС€РµРЅРѕ Р»Рё СЃРµР№С‡Р°СЃ Р·Р°РїСѓСЃРєР°С‚СЊ РёРІРµРЅС‚С‹
   if (!isEventTimeAllowed('Asia/Vladivostok')) {
-    console.log(`[HappyHour] Guild ${guildId}: Skipped - вне разрешённого времени ивентов`);
+    console.log(`[HappyHour] Guild ${guildId}: Skipped - РІРЅРµ СЂР°Р·СЂРµС€С‘РЅРЅРѕРіРѕ РІСЂРµРјРµРЅРё РёРІРµРЅС‚РѕРІ`);
     return;
   }
 
   const now = Date.now();
-  const endsAt = now + 60 * 60 * 1000; // 60 минут
+  const endsAt = now + 60 * 60 * 1000; // 60 РјРёРЅСѓС‚
 
   try {
     await db.execute({
@@ -3433,7 +3433,7 @@ async function startHappyHour(db: any, guildId: string, bot: Client): Promise<vo
     });
     console.log(`[HappyHour] Started for guild ${guildId}, ends at ${new Date(endsAt).toISOString()}`);
 
-    // Ищем закреплённый канал с fallback на систем��ый
+    // РС‰РµРј Р·Р°РєСЂРµРїР»С‘РЅРЅС‹Р№ РєР°РЅР°Р» СЃ fallback РЅР° СЃРёСЃС‚РµРјпїЅпїЅС‹Р№
     const guild = bot.guilds.cache.get(guildId);
     if (guild) {
       const channel = getEventTargetChannel(guild);
@@ -3441,10 +3441,10 @@ async function startHappyHour(db: any, guildId: string, bot: Client): Promise<vo
       if (channel) {
         const embed = {
           embeds: [{
-            title: '⚡ СЧАСТЛИВЫЙ ЧАС НАЧАЛСЯ!',
-            description: 'Двойной опыт (2X XP) за все сообщения и войс на ближайшие 60 минут!',
+            title: 'вљЎ РЎР§РђРЎРўР›РР’Р«Р™ Р§РђРЎ РќРђР§РђР›РЎРЇ!',
+            description: 'Р”РІРѕР№РЅРѕР№ РѕРїС‹С‚ (2X XP) Р·Р° РІСЃРµ СЃРѕРѕР±С‰РµРЅРёСЏ Рё РІРѕР№СЃ РЅР° Р±Р»РёР¶Р°Р№С€РёРµ 60 РјРёРЅСѓС‚!',
             color: 0xFFD700,
-            footer: { text: 'Не пропустите этот редкий ивент!' },
+            footer: { text: 'РќРµ РїСЂРѕРїСѓСЃС‚РёС‚Рµ СЌС‚РѕС‚ СЂРµРґРєРёР№ РёРІРµРЅС‚!' },
           }],
         };
 
@@ -3464,14 +3464,14 @@ async function startHappyHour(db: any, guildId: string, bot: Client): Promise<vo
 }
 
 /**
- * Проверяет и запускает Happy Hour для всех гильдий, где сегодня ещё не было
+ * РџСЂРѕРІРµСЂСЏРµС‚ Рё Р·Р°РїСѓСЃРєР°РµС‚ Happy Hour РґР»СЏ РІСЃРµС… РіРёР»СЊРґРёР№, РіРґРµ СЃРµРіРѕРґРЅСЏ РµС‰С‘ РЅРµ Р±С‹Р»Рѕ
  */
 async function checkAndStartHappyHours(db: any, bot: Client): Promise<void> {
   const today = getVladivostokDate();
   const now = Date.now();
 
   try {
-    // Получаем все гильдии (из таблицы users)
+    // РџРѕР»СѓС‡Р°РµРј РІСЃРµ РіРёР»СЊРґРёРё (РёР· С‚Р°Р±Р»РёС†С‹ users)
     const guildsResult = await db.execute({
       sql: 'SELECT DISTINCT guild_id FROM users',
       args: [],
@@ -3481,16 +3481,16 @@ async function checkAndStartHappyHours(db: any, bot: Client): Promise<void> {
     console.log(`[HappyHour] Checking ${guildIds.length} guilds for happy hour...`);
 
     for (const guildId of guildIds) {
-      // Проверяем, был ли уже запущен happy hour сегодня
+      // РџСЂРѕРІРµСЂСЏРµРј, Р±С‹Р» Р»Рё СѓР¶Рµ Р·Р°РїСѓС‰РµРЅ happy hour СЃРµРіРѕРґРЅСЏ
       const existingResult = await db.execute({
         sql: 'SELECT COUNT(*) as count FROM guild_events WHERE guild_id = ? AND event_type = ? AND ends_at > ?',
-        args: [guildId, 'happy_hour', now - 24 * 60 * 60 * 1000], // За последние 24 часа
+        args: [guildId, 'happy_hour', now - 24 * 60 * 60 * 1000], // Р—Р° РїРѕСЃР»РµРґРЅРёРµ 24 С‡Р°СЃР°
       });
 
       const existing = (existingResult.rows[0]?.count as number) || 0;
 
       if (existing === 0) {
-        // Шанс 30% что Happy Hour запустится (чтобы не спамить каждый час)
+        // РЁР°РЅСЃ 30% С‡С‚Рѕ Happy Hour Р·Р°РїСѓСЃС‚РёС‚СЃСЏ (С‡С‚РѕР±С‹ РЅРµ СЃРїР°РјРёС‚СЊ РєР°Р¶РґС‹Р№ С‡Р°СЃ)
         if (Math.random() < 0.3) {
           console.log(`[HappyHour] Rolling happy hour for guild ${guildId}...`);
           await startHappyHour(db, guildId, bot);
@@ -3507,30 +3507,30 @@ async function checkAndStartHappyHours(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Функции для Войс-дропов (Этап 4 - Air Drops)
+// Р¤СѓРЅРєС†РёРё РґР»СЏ Р’РѕР№СЃ-РґСЂРѕРїРѕРІ (Р­С‚Р°Рї 4 - Air Drops)
 // ============================================
 
-// Хранение кулдаунов дропов в памяти (channel_id -> timestamp)
+// РҐСЂР°РЅРµРЅРёРµ РєСѓР»РґР°СѓРЅРѕРІ РґСЂРѕРїРѕРІ РІ РїР°РјСЏС‚Рё (channel_id -> timestamp)
 const airDropCooldowns = new Map<string, number>();
 
 /**
- * Проверяет, можно ли сделать дроп в канале (учитывает кулдаун)
+ * РџСЂРѕРІРµСЂСЏРµС‚, РјРѕР¶РЅРѕ Р»Рё СЃРґРµР»Р°С‚СЊ РґСЂРѕРї РІ РєР°РЅР°Р»Рµ (СѓС‡РёС‚С‹РІР°РµС‚ РєСѓР»РґР°СѓРЅ)
  */
 function canSpawnDrop(channelId: string): boolean {
-  const cooldownMs = 30 * 60 * 1000; // 30 минут
+  const cooldownMs = 30 * 60 * 1000; // 30 РјРёРЅСѓС‚
   const lastSpawn = airDropCooldowns.get(channelId) || 0;
   return Date.now() - lastSpawn > cooldownMs;
 }
 
 /**
- * Помечает канал как использующий кулдаун дропа
+ * РџРѕРјРµС‡Р°РµС‚ РєР°РЅР°Р» РєР°Рє РёСЃРїРѕР»СЊР·СѓСЋС‰РёР№ РєСѓР»РґР°СѓРЅ РґСЂРѕРїР°
  */
 function setDropCooldown(channelId: string): void {
   airDropCooldowns.set(channelId, Date.now());
 }
 
 /**
- * Создаёт запись дропа в БД
+ * РЎРѕР·РґР°С‘С‚ Р·Р°РїРёСЃСЊ РґСЂРѕРїР° РІ Р‘Р”
  */
 async function createAirDrop(db: any, guildId: string, channelId: string, rewardXp: number, rewardType: 'xp' | 'freeze'): Promise<string> {
   const dropId = `drop_${Date.now()}_${channelId.slice(-4)}`;
@@ -3545,11 +3545,11 @@ async function createAirDrop(db: any, guildId: string, channelId: string, reward
 }
 
 /**
- * Осуществляет спавн войс-дропа в канале
- * Спавн только в разрешённое время ивентов
+ * РћСЃСѓС‰РµСЃС‚РІР»СЏРµС‚ СЃРїР°РІРЅ РІРѕР№СЃ-РґСЂРѕРїР° РІ РєР°РЅР°Р»Рµ
+ * РЎРїР°РІРЅ С‚РѕР»СЊРєРѕ РІ СЂР°Р·СЂРµС€С‘РЅРЅРѕРµ РІСЂРµРјСЏ РёРІРµРЅС‚РѕРІ
  */
 async function spawnAirDrop(db: any, channel: any, guildId: string, bot: Client): Promise<void> {
-  // Проверка: разрешено ли сейчас запускать ивенты
+  // РџСЂРѕРІРµСЂРєР°: СЂР°Р·СЂРµС€РµРЅРѕ Р»Рё СЃРµР№С‡Р°СЃ Р·Р°РїСѓСЃРєР°С‚СЊ РёРІРµРЅС‚С‹
   if (!isEventTimeAllowed('Asia/Vladivostok')) {
     return;
   }
@@ -3560,8 +3560,8 @@ async function spawnAirDrop(db: any, channel: any, guildId: string, bot: Client)
     return;
   }
 
-  // Рандомизация награды:
-  // 90% шанс - XP (50-200), 10% шанс - заморозка
+  // Р Р°РЅРґРѕРјРёР·Р°С†РёСЏ РЅР°РіСЂР°РґС‹:
+  // 90% С€Р°РЅСЃ - XP (50-200), 10% С€Р°РЅСЃ - Р·Р°РјРѕСЂРѕР·РєР°
   const isFreeze = Math.random() < 0.10;
   const rewardXp = isFreeze ? 0 : Math.floor(Math.random() * 151) + 50; // 50-200
   const rewardType = isFreeze ? 'freeze' : 'xp';
@@ -3571,13 +3571,13 @@ async function spawnAirDrop(db: any, channel: any, guildId: string, bot: Client)
 
   console.log(`[AirDrop] Spawned ${rewardType === 'freeze' ? 'freeze' : rewardXp + ' XP'} in ${channelId}`);
 
-  // Формируем Embed
+  // Р¤РѕСЂРјРёСЂСѓРµРј Embed
   const embed = {
     embeds: [{
-      title: '🎁 С неба упал контейнер с припасами!',
-      description: 'Кто первый вскроет ящик, заберёт ценный лут!',
+      title: 'рџЋЃ РЎ РЅРµР±Р° СѓРїР°Р» РєРѕРЅС‚РµР№РЅРµСЂ СЃ РїСЂРёРїР°СЃР°РјРё!',
+      description: 'РљС‚Рѕ РїРµСЂРІС‹Р№ РІСЃРєСЂРѕРµС‚ СЏС‰РёРє, Р·Р°Р±РµСЂС‘С‚ С†РµРЅРЅС‹Р№ Р»СѓС‚!',
       color: 0x3498DB,
-      footer: { text: 'Быстрее всех успеешь забрать!' },
+      footer: { text: 'Р‘С‹СЃС‚СЂРµРµ РІСЃРµС… СѓСЃРїРµРµС€СЊ Р·Р°Р±СЂР°С‚СЊ!' },
     }],
     components: [{
       type: 1,
@@ -3585,7 +3585,7 @@ async function spawnAirDrop(db: any, channel: any, guildId: string, bot: Client)
         type: 2,
         custom_id: `airdrop_claim_${dropId}`,
         style: 1, // Primary
-        label: '📦 Забрать дроп!',
+        label: 'рџ“¦ Р—Р°Р±СЂР°С‚СЊ РґСЂРѕРї!',
       }],
     }],
   };
@@ -3599,7 +3599,7 @@ async function spawnAirDrop(db: any, channel: any, guildId: string, bot: Client)
 }
 
 /**
- * Проверяет голосовые каналы и спавнит дропы
+ * РџСЂРѕРІРµСЂСЏРµС‚ РіРѕР»РѕСЃРѕРІС‹Рµ РєР°РЅР°Р»С‹ Рё СЃРїР°РІРЅРёС‚ РґСЂРѕРїС‹
  */
 async function checkAndSpawnAirDrops(db: any, bot: Client): Promise<void> {
   const guilds = bot.guilds.cache;
@@ -3612,7 +3612,7 @@ async function checkAndSpawnAirDrops(db: any, bot: Client): Promise<void> {
     for (const channel of voiceChannels.values()) {
       const members = channel.members;
 
-      // Фильтруем: >= 3 человек, не боты, не deaf + mute
+      // Р¤РёР»СЊС‚СЂСѓРµРј: >= 3 С‡РµР»РѕРІРµРє, РЅРµ Р±РѕС‚С‹, РЅРµ deaf + mute
       const eligibleMembers = members.filter((m: any) =>
         !m.user.bot &&
         !m.voice.selfDeaf &&
@@ -3628,7 +3628,7 @@ async function checkAndSpawnAirDrops(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Функции для работы с квестами и ежедневной активностью
+// Р¤СѓРЅРєС†РёРё РґР»СЏ СЂР°Р±РѕС‚С‹ СЃ РєРІРµСЃС‚Р°РјРё Рё РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚СЊСЋ
 // ============================================
 async function ensureQuestsPool(db: any): Promise<void> {
   try {
@@ -3645,7 +3645,7 @@ async function ensureQuestsPool(db: any): Promise<void> {
         q.id,
         q.title,
         q.desc,
-        q.type === 'combo' ? 'messages' : q.type, // Для combo используем messages как базовый тип
+        q.type === 'combo' ? 'messages' : q.type, // Р”Р»СЏ combo РёСЃРїРѕР»СЊР·СѓРµРј messages РєР°Рє Р±Р°Р·РѕРІС‹Р№ С‚РёРї
         q.target,
         q.xp,
         1
@@ -3662,7 +3662,7 @@ async function ensureQuestsPool(db: any): Promise<void> {
   }
 }
 
-// Получение активных квестов гильдии на сегодня
+// РџРѕР»СѓС‡РµРЅРёРµ Р°РєС‚РёРІРЅС‹С… РєРІРµСЃС‚РѕРІ РіРёР»СЊРґРёРё РЅР° СЃРµРіРѕРґРЅСЏ
 async function getDailyQuests(db: any, guildId: string): Promise<any[]> {
   const today = getVladivostokDate();
   try {
@@ -3680,16 +3680,16 @@ async function getDailyQuests(db: any, guildId: string): Promise<any[]> {
   }
 }
 
-// Генерация ID для daily quest записи
+// Р“РµРЅРµСЂР°С†РёСЏ ID РґР»СЏ daily quest Р·Р°РїРёСЃРё
 function generateDailyQuestId(guildId: string, questId: string, index: number): string {
   return `${guildId}_${getVladivostokDate()}_${index}`;
 }
 
-// Назначение квестов гильдии на сегодня (если не назначены)
+// РќР°Р·РЅР°С‡РµРЅРёРµ РєРІРµСЃС‚РѕРІ РіРёР»СЊРґРёРё РЅР° СЃРµРіРѕРґРЅСЏ (РµСЃР»Рё РЅРµ РЅР°Р·РЅР°С‡РµРЅС‹)
 async function ensureDailyQuests(db: any, guildId: string): Promise<any[]> {
   const today = getVladivostokDate();
   try {
-    // Проверяем, есть ли уже квесты на сегодня
+    // РџСЂРѕРІРµСЂСЏРµРј, РµСЃС‚СЊ Р»Рё СѓР¶Рµ РєРІРµСЃС‚С‹ РЅР° СЃРµРіРѕРґРЅСЏ
     const existing = await db.execute({
       sql: 'SELECT COUNT(*) as count FROM quests_daily WHERE guild_id = ? AND active_date = ?',
       args: [guildId, today],
@@ -3702,7 +3702,7 @@ async function ensureDailyQuests(db: any, guildId: string): Promise<any[]> {
 
     console.log(`[Quests] Assigning daily quests for guild ${guildId}...`);
 
-    // Получаем доступные квесты из пула
+    // РџРѕР»СѓС‡Р°РµРј РґРѕСЃС‚СѓРїРЅС‹Рµ РєРІРµСЃС‚С‹ РёР· РїСѓР»Р°
     const poolResult = await db.execute({
       sql: 'SELECT * FROM quests_pool WHERE is_active = 1',
       args: [],
@@ -3714,33 +3714,33 @@ async function ensureDailyQuests(db: any, guildId: string): Promise<any[]> {
       return [];
     }
 
-    // Выбираем 3-4 случайных квеста:
-    // 1 текстовый (messages), 1 голосовой (voice), 1 сложный/комбо
+    // Р’С‹Р±РёСЂР°РµРј 3-4 СЃР»СѓС‡Р°Р№РЅС‹С… РєРІРµСЃС‚Р°:
+    // 1 С‚РµРєСЃС‚РѕРІС‹Р№ (messages), 1 РіРѕР»РѕСЃРѕРІРѕР№ (voice), 1 СЃР»РѕР¶РЅС‹Р№/РєРѕРјР±Рѕ
     const messagesQuests = pool.filter((q: any) => q.quest_type === 'messages' && q.quest_type !== 'voice');
     const voiceQuests = pool.filter((q: any) => q.quest_type === 'voice');
     const otherQuests = pool.filter((q: any) => q.quest_type === 'combo' || (q.quest_type !== 'messages' && q.quest_type !== 'voice'));
 
     const selected: any[] = [];
 
-    // 1 текстовый квест (легкий)
+    // 1 С‚РµРєСЃС‚РѕРІС‹Р№ РєРІРµСЃС‚ (Р»РµРіРєРёР№)
     if (messagesQuests.length > 0) {
       const msg = messagesQuests[Math.floor(Math.random() * messagesQuests.length)];
       selected.push({ ...msg, quest_type: 'messages' });
     }
 
-    // 1 голосовой квест
+    // 1 РіРѕР»РѕСЃРѕРІРѕР№ РєРІРµСЃС‚
     if (voiceQuests.length > 0) {
       const vo = voiceQuests[Math.floor(Math.random() * voiceQuests.length)];
       selected.push({ ...vo, quest_type: 'voice' });
     }
 
-    // 1 сложный/комбо квест
+    // 1 СЃР»РѕР¶РЅС‹Р№/РєРѕРјР±Рѕ РєРІРµСЃС‚
     if (otherQuests.length > 0) {
       const oth = otherQuests[Math.floor(Math.random() * otherQuests.length)];
       selected.push({ ...oth, quest_type: oth.quest_type });
     }
 
-    // Вставляем daily quests
+    // Р’СЃС‚Р°РІР»СЏРµРј daily quests
     const insertValues: any[] = [];
     const insertPlaceholders: string[] = [];
     selected.forEach((quest, idx) => {
@@ -3770,10 +3770,10 @@ async function ensureDailyQuests(db: any, guildId: string): Promise<any[]> {
   }
 }
 
-// Обновление прогресса квеста пользователя
+// РћР±РЅРѕРІР»РµРЅРёРµ РїСЂРѕРіСЂРµСЃСЃР° РєРІРµСЃС‚Р° РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
 async function updateQuestProgress(db: any, userId: string, guildId: string, questDailyId: string, increment: number, questType: string): Promise<void> {
   try {
-    // UPSERT в прогресс
+    // UPSERT РІ РїСЂРѕРіСЂРµСЃСЃ
     const upsertResult = await db.execute({
       sql: `INSERT INTO user_quest_progress (user_id, guild_id, quest_daily_id, current_progress)
             VALUES (?, ?, ?, ?)
@@ -3782,7 +3782,7 @@ async function updateQuestProgress(db: any, userId: string, guildId: string, que
       args: [userId, guildId, questDailyId, increment, increment],
     });
 
-    // Получаем текущий прогресс и цель
+    // РџРѕР»СѓС‡Р°РµРј С‚РµРєСѓС‰РёР№ РїСЂРѕРіСЂРµСЃСЃ Рё С†РµР»СЊ
     const progressResult = await db.execute({
       sql: `SELECT uqp.current_progress, uqp.completed_at, qd.target, qd.reward_xp
             FROM user_quest_progress uqp
@@ -3799,13 +3799,13 @@ async function updateQuestProgress(db: any, userId: string, guildId: string, que
     const target = (row.target as number) || 0;
     const rewardXp = (row.reward_xp as number) || 0;
 
-    // Если завершен - пропускаем
+    // Р•СЃР»Рё Р·Р°РІРµСЂС€РµРЅ - РїСЂРѕРїСѓСЃРєР°РµРј
     if (completedAt !== null) return;
 
-    // Проверяем достижение цели
+    // РџСЂРѕРІРµСЂСЏРµРј РґРѕСЃС‚РёР¶РµРЅРёРµ С†РµР»Рё
     if (current >= target) {
-      // M1: атомарная пометка выполнения (условие completed_at IS NULL) —
-      // награда начисляется ТОЛЬКО если этот вызов выиграл гонку за выполнение
+      // M1: Р°С‚РѕРјР°СЂРЅР°СЏ РїРѕРјРµС‚РєР° РІС‹РїРѕР»РЅРµРЅРёСЏ (СѓСЃР»РѕРІРёРµ completed_at IS NULL) вЂ”
+      // РЅР°РіСЂР°РґР° РЅР°С‡РёСЃР»СЏРµС‚СЃСЏ РўРћР›Р¬РљРћ РµСЃР»Рё СЌС‚РѕС‚ РІС‹Р·РѕРІ РІС‹РёРіСЂР°Р» РіРѕРЅРєСѓ Р·Р° РІС‹РїРѕР»РЅРµРЅРёРµ
       const claimResult = await db.execute({
         sql: `UPDATE user_quest_progress SET completed_at = ?
               WHERE user_id = ? AND guild_id = ? AND quest_daily_id = ? AND completed_at IS NULL`,
@@ -3813,19 +3813,19 @@ async function updateQuestProgress(db: any, userId: string, guildId: string, que
       });
 
       if ((claimResult.rowsAffected as number) === 1) {
-        // Начисляем XP
+        // РќР°С‡РёСЃР»СЏРµРј XP
         await db.execute({
           sql: `UPDATE users SET xp = xp + ? WHERE user_id = ? AND guild_id = ?`,
           args: [rewardXp, userId, guildId],
         });
 
-        // Начисляем монеты за выполнение квеста (+100 🪙)
+        // РќР°С‡РёСЃР»СЏРµРј РјРѕРЅРµС‚С‹ Р·Р° РІС‹РїРѕР»РЅРµРЅРёРµ РєРІРµСЃС‚Р° (+100 рџЄ™)
         await db.execute({
           sql: `UPDATE users SET coins = coins + 100 WHERE user_id = ? AND guild_id = ?`,
           args: [userId, guildId],
         });
 
-        console.log(`[Quest] User ${userId} completed quest ${questDailyId} - +${rewardXp} XP, +100 🪙`);
+        console.log(`[Quest] User ${userId} completed quest ${questDailyId} - +${rewardXp} XP, +100 рџЄ™`);
       }
     }
   } catch (err) {
@@ -3833,7 +3833,7 @@ async function updateQuestProgress(db: any, userId: string, guildId: string, que
   }
 }
 
-// Обновление ежедневной активности пользователя
+// РћР±РЅРѕРІР»РµРЅРёРµ РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
 async function updateDailyActivity(db: any, userId: string, guildId: string, messages: number, voiceSeconds: number): Promise<void> {
   const today = getVladivostokDate();
   try {
@@ -3851,12 +3851,12 @@ async function updateDailyActivity(db: any, userId: string, guildId: string, mes
   }
 }
 
-// Проверка квестов типа messages при создании сообщения
+// РџСЂРѕРІРµСЂРєР° РєРІРµСЃС‚РѕРІ С‚РёРїР° messages РїСЂРё СЃРѕР·РґР°РЅРёРё СЃРѕРѕР±С‰РµРЅРёСЏ
 async function checkQuestsForMessage(db: any, userId: string, guildId: string, message: Message): Promise<void> {
   const today = getVladivostokDate();
 
   try {
-    // Получаем активные квесты гильдии на сегодня типа messages
+    // РџРѕР»СѓС‡Р°РµРј Р°РєС‚РёРІРЅС‹Рµ РєРІРµСЃС‚С‹ РіРёР»СЊРґРёРё РЅР° СЃРµРіРѕРґРЅСЏ С‚РёРїР° messages
     const questsResult = await db.execute({
       sql: `SELECT qd.*, qp.quest_type
             FROM quests_daily qd
@@ -3868,22 +3868,22 @@ async function checkQuestsForMessage(db: any, userId: string, guildId: string, m
     const quests = questsResult.rows || [];
     if (quests.length === 0) return;
 
-    // Для квестов типа combo проверяем и голос
+    // Р”Р»СЏ РєРІРµСЃС‚РѕРІ С‚РёРїР° combo РїСЂРѕРІРµСЂСЏРµРј Рё РіРѕР»РѕСЃ
     for (const quest of quests) {
       const questDailyId = quest.id as string;
       const questType = quest.quest_type as string;
 
       if (questType === 'messages') {
-        // Обычный текстовый квест - инкремент на 1
+        // РћР±С‹С‡РЅС‹Р№ С‚РµРєСЃС‚РѕРІС‹Р№ РєРІРµСЃС‚ - РёРЅРєСЂРµРјРµРЅС‚ РЅР° 1
         await updateQuestProgress(db, userId, guildId, questDailyId, 1, 'messages');
       } else if (questType === 'combo') {
-        // Комбо квест - проверяем текущий прогресс
-        // Для combo нужна специальная логика - обновляем на 1, но цель выше
+        // РљРѕРјР±Рѕ РєРІРµСЃС‚ - РїСЂРѕРІРµСЂСЏРµРј С‚РµРєСѓС‰РёР№ РїСЂРѕРіСЂРµСЃСЃ
+        // Р”Р»СЏ combo РЅСѓР¶РЅР° СЃРїРµС†РёР°Р»СЊРЅР°СЏ Р»РѕРіРёРєР° - РѕР±РЅРѕРІР»СЏРµРј РЅР° 1, РЅРѕ С†РµР»СЊ РІС‹С€Рµ
         await updateQuestProgress(db, userId, guildId, questDailyId, 1, 'combo');
       }
     }
 
-    // Проверка квеста "Философ" (сообщения > 100 символов)
+    // РџСЂРѕРІРµСЂРєР° РєРІРµСЃС‚Р° "Р¤РёР»РѕСЃРѕС„" (СЃРѕРѕР±С‰РµРЅРёСЏ > 100 СЃРёРјРІРѕР»РѕРІ)
     const longTextQuestResult = await db.execute({
       sql: `SELECT qd.id
             FROM quests_daily qd
@@ -3901,12 +3901,12 @@ async function checkQuestsForMessage(db: any, userId: string, guildId: string, m
   }
 }
 
-// Проверка квестов типа voice при изменении голосового статуса
+// РџСЂРѕРІРµСЂРєР° РєРІРµСЃС‚РѕРІ С‚РёРїР° voice РїСЂРё РёР·РјРµРЅРµРЅРёРё РіРѕР»РѕСЃРѕРІРѕРіРѕ СЃС‚Р°С‚СѓСЃР°
 async function checkQuestsForVoice(db: any, userId: string, guildId: string, voiceSeconds: number, now: Date): Promise<void> {
   const today = getVladivostokDate();
 
   try {
-    // Получаем активные квесты гильдии на сегодня типа voice
+    // РџРѕР»СѓС‡Р°РµРј Р°РєС‚РёРІРЅС‹Рµ РєРІРµСЃС‚С‹ РіРёР»СЊРґРёРё РЅР° СЃРµРіРѕРґРЅСЏ С‚РёРїР° voice
     const questsResult = await db.execute({
       sql: `SELECT qd.*, qp.quest_type
             FROM quests_daily qd
@@ -3918,25 +3918,25 @@ async function checkQuestsForVoice(db: any, userId: string, guildId: string, voi
     const quests = questsResult.rows || [];
     if (quests.length === 0) return;
 
-    // Переводим секунды в минуты
+    // РџРµСЂРµРІРѕРґРёРј СЃРµРєСѓРЅРґС‹ РІ РјРёРЅСѓС‚С‹
     const voiceMinutes = Math.floor(voiceSeconds / 60);
     if (voiceMinutes === 0) return;
 
-    // Для квестов типа voice и combo инкрементируем по минутам
+    // Р”Р»СЏ РєРІРµСЃС‚РѕРІ С‚РёРїР° voice Рё combo РёРЅРєСЂРµРјРµРЅС‚РёСЂСѓРµРј РїРѕ РјРёРЅСѓС‚Р°Рј
     for (const quest of quests) {
       const questDailyId = quest.id as string;
       const questType = quest.quest_type as string;
 
       if (questType === 'voice') {
-        // Голосовой квест - инкрементируем по минутам
+        // Р“РѕР»РѕСЃРѕРІРѕР№ РєРІРµСЃС‚ - РёРЅРєСЂРµРјРµРЅС‚РёСЂСѓРµРј РїРѕ РјРёРЅСѓС‚Р°Рј
         await updateQuestProgress(db, userId, guildId, questDailyId, voiceMinutes, 'voice');
       } else if (questType === 'combo') {
-        // Комбо квест - инкрементируем по минутам
+        // РљРѕРјР±Рѕ РєРІРµСЃС‚ - РёРЅРєСЂРµРјРµРЅС‚РёСЂСѓРµРј РїРѕ РјРёРЅСѓС‚Р°Рј
         await updateQuestProgress(db, userId, guildId, questDailyId, voiceMinutes, 'combo');
       }
     }
 
-    // Проверка квеста "Ночной дозор" (после 00:00 UTC)
+    // РџСЂРѕРІРµСЂРєР° РєРІРµСЃС‚Р° "РќРѕС‡РЅРѕР№ РґРѕР·РѕСЂ" (РїРѕСЃР»Рµ 00:00 UTC)
     const hour = now.getUTCHours();
     if (hour >= 0 && hour < 6) {
       const nightQuestResult = await db.execute({
@@ -3958,7 +3958,7 @@ async function checkQuestsForVoice(db: any, userId: string, guildId: string, voi
 }
 
 // ============================================
-// Еженедельная AI-газета (Хроника недели за 7 дней)
+// Р•Р¶РµРЅРµРґРµР»СЊРЅР°СЏ AI-РіР°Р·РµС‚Р° (РҐСЂРѕРЅРёРєР° РЅРµРґРµР»Рё Р·Р° 7 РґРЅРµР№)
 // ============================================
 
 const GAZETTE_CHANNEL_ID = '1051085743839260694';
@@ -3966,18 +3966,18 @@ const PROXYAPI_KEY = process.env.PROXYAPI_KEY || 'sk-7vNVmFz9SukzwvLQ7VEfd8ZLXG4
 const PROXYAPI_URL = 'https://api.proxyapi.ru/v1/chat/completions';
 const PROXYAPI_MODEL = 'z-ai/glm-5.3-flash';
 
-const GAZETTE_PROMPT = `Ты — автор еженедельной газеты Discord-сервера. Твоя задача — прочитать ВСЮ переписку участников за прошедшие 7 дней из этого канала и написать живой, связный и забавный пересказ основных событий недели.
-Опирайся СТРОГО на реальный контекст переписки:
-- О чем спорили или увлеченно общались участники в разные дни?
-- Какие забавные диалоги, факапы или локальные события произошли?
-- Кто был самым активным и чем отличился?
-Пиши бодро, с легким серверным юмором, без клише.
-Формат:
-**ГАЗЕТА СЕРВЕРА: ХРОНИКА СОБЫТИЙ ЗА НЕДЕЛЮ**
-(связный рассказ о главных темах и приколах недели с цитатами и тегами участников через никнейм)`;
+const GAZETTE_PROMPT = `РўС‹ вЂ” Р°РІС‚РѕСЂ РµР¶РµРЅРµРґРµР»СЊРЅРѕР№ РіР°Р·РµС‚С‹ Discord-СЃРµСЂРІРµСЂР°. РўРІРѕСЏ Р·Р°РґР°С‡Р° вЂ” РїСЂРѕС‡РёС‚Р°С‚СЊ Р’РЎР® РїРµСЂРµРїРёСЃРєСѓ СѓС‡Р°СЃС‚РЅРёРєРѕРІ Р·Р° РїСЂРѕС€РµРґС€РёРµ 7 РґРЅРµР№ РёР· СЌС‚РѕРіРѕ РєР°РЅР°Р»Р° Рё РЅР°РїРёСЃР°С‚СЊ Р¶РёРІРѕР№, СЃРІСЏР·РЅС‹Р№ Рё Р·Р°Р±Р°РІРЅС‹Р№ РїРµСЂРµСЃРєР°Р· РѕСЃРЅРѕРІРЅС‹С… СЃРѕР±С‹С‚РёР№ РЅРµРґРµР»Рё.
+РћРїРёСЂР°Р№СЃСЏ РЎРўР РћР“Рћ РЅР° СЂРµР°Р»СЊРЅС‹Р№ РєРѕРЅС‚РµРєСЃС‚ РїРµСЂРµРїРёСЃРєРё:
+- Рћ С‡РµРј СЃРїРѕСЂРёР»Рё РёР»Рё СѓРІР»РµС‡РµРЅРЅРѕ РѕР±С‰Р°Р»РёСЃСЊ СѓС‡Р°СЃС‚РЅРёРєРё РІ СЂР°Р·РЅС‹Рµ РґРЅРё?
+- РљР°РєРёРµ Р·Р°Р±Р°РІРЅС‹Рµ РґРёР°Р»РѕРіРё, С„Р°РєР°РїС‹ РёР»Рё Р»РѕРєР°Р»СЊРЅС‹Рµ СЃРѕР±С‹С‚РёСЏ РїСЂРѕРёР·РѕС€Р»Рё?
+- РљС‚Рѕ Р±С‹Р» СЃР°РјС‹Рј Р°РєС‚РёРІРЅС‹Рј Рё С‡РµРј РѕС‚Р»РёС‡РёР»СЃСЏ?
+РџРёС€Рё Р±РѕРґСЂРѕ, СЃ Р»РµРіРєРёРј СЃРµСЂРІРµСЂРЅС‹Рј СЋРјРѕСЂРѕРј, Р±РµР· РєР»РёС€Рµ.
+Р¤РѕСЂРјР°С‚:
+**Р“РђР—Р•РўРђ РЎР•Р Р’Р•Р Рђ: РҐР РћРќРРљРђ РЎРћР‘Р«РўРР™ Р—Рђ РќР•Р”Р•Р›Р®**
+(СЃРІСЏР·РЅС‹Р№ СЂР°СЃСЃРєР°Р· Рѕ РіР»Р°РІРЅС‹С… С‚РµРјР°С… Рё РїСЂРёРєРѕР»Р°С… РЅРµРґРµР»Рё СЃ С†РёС‚Р°С‚Р°РјРё Рё С‚РµРіР°РјРё СѓС‡Р°СЃС‚РЅРёРєРѕРІ С‡РµСЂРµР· РЅРёРєРЅРµР№Рј)`;
 
 /**
- * Форматирует дату сообщения по времени Владивостока: "YYYY-MM-DD HH:mm"
+ * Р¤РѕСЂРјР°С‚РёСЂСѓРµС‚ РґР°С‚Сѓ СЃРѕРѕР±С‰РµРЅРёСЏ РїРѕ РІСЂРµРјРµРЅРё Р’Р»Р°РґРёРІРѕСЃС‚РѕРєР°: "YYYY-MM-DD HH:mm"
  */
 function formatVladivostokDateTime(timestamp: number): string {
   const shifted = new Date(timestamp + 10 * 60 * 60 * 1000); // UTC+10
@@ -3987,8 +3987,8 @@ function formatVladivostokDateTime(timestamp: number): string {
 }
 
 /**
- * Собирает хронологию ВСЕХ сообщений канала за последние 7 дней
- * через цикл пагинации Discord (fetch + before)
+ * РЎРѕР±РёСЂР°РµС‚ С…СЂРѕРЅРѕР»РѕРіРёСЋ Р’РЎР•РҐ СЃРѕРѕР±С‰РµРЅРёР№ РєР°РЅР°Р»Р° Р·Р° РїРѕСЃР»РµРґРЅРёРµ 7 РґРЅРµР№
+ * С‡РµСЂРµР· С†РёРєР» РїР°РіРёРЅР°С†РёРё Discord (fetch + before)
  */
 async function collectWeeklyChronology(channel: any): Promise<string[]> {
   const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -4008,7 +4008,7 @@ async function collectWeeklyChronology(channel: any): Promise<string[]> {
         reachedCutoff = true;
         break;
       }
-      // Игнорируем ботов и сообщения без текста (вложения/стикеры)
+      // РРіРЅРѕСЂРёСЂСѓРµРј Р±РѕС‚РѕРІ Рё СЃРѕРѕР±С‰РµРЅРёСЏ Р±РµР· С‚РµРєСЃС‚Р° (РІР»РѕР¶РµРЅРёСЏ/СЃС‚РёРєРµСЂС‹)
       if (msg.author.bot) continue;
       const content = (msg.content || '').trim();
       if (!content) continue;
@@ -4019,16 +4019,16 @@ async function collectWeeklyChronology(channel: any): Promise<string[]> {
     lastId = messages.last().id;
   }
 
-  // Хронология от старых к новым
+  // РҐСЂРѕРЅРѕР»РѕРіРёСЏ РѕС‚ СЃС‚Р°СЂС‹С… Рє РЅРѕРІС‹Рј
   return lines.reverse();
 }
 
 /**
- * Отправляет хронографию недели в ProxyAPI и получает текст газеты
+ * РћС‚РїСЂР°РІР»СЏРµС‚ С…СЂРѕРЅРѕРіСЂР°С„РёСЋ РЅРµРґРµР»Рё РІ ProxyAPI Рё РїРѕР»СѓС‡Р°РµС‚ С‚РµРєСЃС‚ РіР°Р·РµС‚С‹
  */
 async function generateDigestWithAI(chronology: string[]): Promise<string> {
   const response = await fetch(PROXYAPI_URL, {
-    method: 'POST', // Именно POST: GET на этом эндпоинте даёт "Method Not Allowed"
+    method: 'POST', // РРјРµРЅРЅРѕ POST: GET РЅР° СЌС‚РѕРј СЌРЅРґРїРѕРёРЅС‚Рµ РґР°С‘С‚ "Method Not Allowed"
     headers: {
       'Authorization': `Bearer ${PROXYAPI_KEY}`,
       'Content-Type': 'application/json',
@@ -4037,7 +4037,7 @@ async function generateDigestWithAI(chronology: string[]): Promise<string> {
       model: PROXYAPI_MODEL,
       messages: [
         { role: 'system', content: GAZETTE_PROMPT },
-        { role: 'user', content: `Хроника сообщений за последние 7 дней:\n\n${chronology.join('\n')}` },
+        { role: 'user', content: `РҐСЂРѕРЅРёРєР° СЃРѕРѕР±С‰РµРЅРёР№ Р·Р° РїРѕСЃР»РµРґРЅРёРµ 7 РґРЅРµР№:\n\n${chronology.join('\n')}` },
       ],
       temperature: 0.8,
     }),
@@ -4051,25 +4051,25 @@ async function generateDigestWithAI(chronology: string[]): Promise<string> {
   const data: any = await response.json();
   const digest = data?.choices?.[0]?.message?.content;
   if (!digest || typeof digest !== 'string') {
-    throw new Error('ProxyAPI вернул пустой ответ');
+    throw new Error('ProxyAPI РІРµСЂРЅСѓР» РїСѓСЃС‚РѕР№ РѕС‚РІРµС‚');
   }
   return digest.trim();
 }
 
 /**
- * Публикует еженедельную AI-газету в канал ивентов
+ * РџСѓР±Р»РёРєСѓРµС‚ РµР¶РµРЅРµРґРµР»СЊРЅСѓСЋ AI-РіР°Р·РµС‚Сѓ РІ РєР°РЅР°Р» РёРІРµРЅС‚РѕРІ
  */
 async function runWeeklyDigest(guild: any): Promise<void> {
   const channel = guild.channels.cache.get(GAZETTE_CHANNEL_ID);
   if (!channel || channel.type !== 0) {
-    throw new Error(`Канал ${GAZETTE_CHANNEL_ID} не найден на сервере ${guild.id}`);
+    throw new Error(`РљР°РЅР°Р» ${GAZETTE_CHANNEL_ID} РЅРµ РЅР°Р№РґРµРЅ РЅР° СЃРµСЂРІРµСЂРµ ${guild.id}`);
   }
 
   console.log(`[Gazeta] Collecting messages for guild ${guild.id}...`);
   const chronology = await collectWeeklyChronology(channel);
 
   if (chronology.length === 0) {
-    throw new Error('За последние 7 дней не найдено сообщений — выпуск отменён');
+    throw new Error('Р—Р° РїРѕСЃР»РµРґРЅРёРµ 7 РґРЅРµР№ РЅРµ РЅР°Р№РґРµРЅРѕ СЃРѕРѕР±С‰РµРЅРёР№ вЂ” РІС‹РїСѓСЃРє РѕС‚РјРµРЅС‘РЅ');
   }
 
   console.log(`[Gazeta] Collected ${chronology.length} messages, generating digest...`);
@@ -4077,10 +4077,10 @@ async function runWeeklyDigest(guild: any): Promise<void> {
 
   const embed = {
     embeds: [{
-      title: '📰 Свежий выпуск: Хроника недели',
-      description: digest.slice(0, 4000), // Лимит описания Embed — 4096 символов
+      title: 'рџ“° РЎРІРµР¶РёР№ РІС‹РїСѓСЃРє: РҐСЂРѕРЅРёРєР° РЅРµРґРµР»Рё',
+      description: digest.slice(0, 4000), // Р›РёРјРёС‚ РѕРїРёСЃР°РЅРёСЏ Embed вЂ” 4096 СЃРёРјРІРѕР»РѕРІ
       color: 0x5865F2,
-      footer: { text: 'Еженедельная AI-газета • События за последние 7 дней' },
+      footer: { text: 'Р•Р¶РµРЅРµРґРµР»СЊРЅР°СЏ AI-РіР°Р·РµС‚Р° вЂў РЎРѕР±С‹С‚РёСЏ Р·Р° РїРѕСЃР»РµРґРЅРёРµ 7 РґРЅРµР№' },
       timestamp: new Date().toISOString(),
     }],
   };
@@ -4090,20 +4090,20 @@ async function runWeeklyDigest(guild: any): Promise<void> {
 }
 
 /**
- * Планирует еженедельный запуск газеты: каждое воскресенье в 20:00 (Asia/Vladivostok)
+ * РџР»Р°РЅРёСЂСѓРµС‚ РµР¶РµРЅРµРґРµР»СЊРЅС‹Р№ Р·Р°РїСѓСЃРє РіР°Р·РµС‚С‹: РєР°Р¶РґРѕРµ РІРѕСЃРєСЂРµСЃРµРЅСЊРµ РІ 20:00 (Asia/Vladivostok)
  */
 function scheduleWeeklyDigest(bot: Client): void {
   const scheduleNext = () => {
     const now = new Date();
-    // Владивосток: фиксированный UTC+10, без перевода часов
+    // Р’Р»Р°РґРёРІРѕСЃС‚РѕРє: С„РёРєСЃРёСЂРѕРІР°РЅРЅС‹Р№ UTC+10, Р±РµР· РїРµСЂРµРІРѕРґР° С‡Р°СЃРѕРІ
     const vlad = new Date(now.getTime() + 10 * 60 * 60 * 1000);
-    const dayOfWeek = vlad.getUTCDay(); // 0 = воскресенье
+    const dayOfWeek = vlad.getUTCDay(); // 0 = РІРѕСЃРєСЂРµСЃРµРЅСЊРµ
     const secondsOfDay = vlad.getUTCHours() * 3600 + vlad.getUTCMinutes() * 60 + vlad.getUTCSeconds();
     const targetSeconds = 20 * 3600; // 20:00
 
     let daysAhead = (7 - dayOfWeek) % 7;
     if (daysAhead === 0 && secondsOfDay >= targetSeconds) {
-      // Сегодня воскресенье, но 20:00 уже прошло — ждём следующую неделю
+      // РЎРµРіРѕРґРЅСЏ РІРѕСЃРєСЂРµСЃРµРЅСЊРµ, РЅРѕ 20:00 СѓР¶Рµ РїСЂРѕС€Р»Рѕ вЂ” Р¶РґС‘Рј СЃР»РµРґСѓСЋС‰СѓСЋ РЅРµРґРµР»СЋ
       daysAhead = 7;
     }
 
@@ -4121,7 +4121,7 @@ function scheduleWeeklyDigest(bot: Client): void {
           }
         }
       } finally {
-        scheduleNext(); // Планируем следующий выпуск
+        scheduleNext(); // РџР»Р°РЅРёСЂСѓРµРј СЃР»РµРґСѓСЋС‰РёР№ РІС‹РїСѓСЃРє
       }
     }, Math.max(delayMs, 1000));
   };
@@ -4130,14 +4130,14 @@ function scheduleWeeklyDigest(bot: Client): void {
 }
 
 // ============================================
-// Идемпотентный суточный рост казны компаний (Биржа)
+// РРґРµРјРїРѕС‚РµРЅС‚РЅС‹Р№ СЃСѓС‚РѕС‡РЅС‹Р№ СЂРѕСЃС‚ РєР°Р·РЅС‹ РєРѕРјРїР°РЅРёР№ (Р‘РёСЂР¶Р°)
 // ============================================
 
 /**
- * Раз в сутки начисляет компаниям рост казны из резерва сервера.
- * Идемпотентность: компания обрабатывается только если last_growth_day
- * пуст или меньше сегодняшней даты (Владивосток). Компании выбираются
- * в случайном порядке (ORDER BY RANDOM()), каждая — в своей транзакции.
+ * Р Р°Р· РІ СЃСѓС‚РєРё РЅР°С‡РёСЃР»СЏРµС‚ РєРѕРјРїР°РЅРёСЏРј СЂРѕСЃС‚ РєР°Р·РЅС‹ РёР· СЂРµР·РµСЂРІР° СЃРµСЂРІРµСЂР°.
+ * РРґРµРјРїРѕС‚РµРЅС‚РЅРѕСЃС‚СЊ: РєРѕРјРїР°РЅРёСЏ РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚СЃСЏ С‚РѕР»СЊРєРѕ РµСЃР»Рё last_growth_day
+ * РїСѓСЃС‚ РёР»Рё РјРµРЅСЊС€Рµ СЃРµРіРѕРґРЅСЏС€РЅРµР№ РґР°С‚С‹ (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє). РљРѕРјРїР°РЅРёРё РІС‹Р±РёСЂР°СЋС‚СЃСЏ
+ * РІ СЃР»СѓС‡Р°Р№РЅРѕРј РїРѕСЂСЏРґРєРµ (ORDER BY RANDOM()), РєР°Р¶РґР°СЏ вЂ” РІ СЃРІРѕРµР№ С‚СЂР°РЅР·Р°РєС†РёРё.
  */
 async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
   const todayStr = new Intl.DateTimeFormat('en-CA', {
@@ -4146,11 +4146,11 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
-  // Единый ts для строк истории NAV этого запуска (секунды, как в остальных таблицах биржи)
+  // Р•РґРёРЅС‹Р№ ts РґР»СЏ СЃС‚СЂРѕРє РёСЃС‚РѕСЂРёРё NAV СЌС‚РѕРіРѕ Р·Р°РїСѓСЃРєР° (СЃРµРєСѓРЅРґС‹, РєР°Рє РІ РѕСЃС‚Р°Р»СЊРЅС‹С… С‚Р°Р±Р»РёС†Р°С… Р±РёСЂР¶Рё)
   const nowSec = Math.floor(Date.now() / 1000);
 
   try {
-    // Гильдии, в которых есть компании
+    // Р“РёР»СЊРґРёРё, РІ РєРѕС‚РѕСЂС‹С… РµСЃС‚СЊ РєРѕРјРїР°РЅРёРё
     const guildsResult = await db.execute({
       sql: 'SELECT DISTINCT guild_id FROM companies',
       args: [],
@@ -4158,7 +4158,7 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
     const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
 
     for (const guildId of guildIds) {
-      // Компании, готовые к росту, строго в случайном порядке
+      // РљРѕРјРїР°РЅРёРё, РіРѕС‚РѕРІС‹Рµ Рє СЂРѕСЃС‚Сѓ, СЃС‚СЂРѕРіРѕ РІ СЃР»СѓС‡Р°Р№РЅРѕРј РїРѕСЂСЏРґРєРµ
       const companiesResult = await db.execute({
         sql: 'SELECT id FROM companies WHERE guild_id = ? AND (last_growth_day IS NULL OR last_growth_day < ?) ORDER BY RANDOM()',
         args: [guildId, todayStr],
@@ -4171,8 +4171,8 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
 
       for (const it of companies) {
         try {
-          // C2: интерактивные транзакции недоступны в @libsql/client/web —
-          // заменяем на атомарный batch с условными UPDATE
+          // C2: РёРЅС‚РµСЂР°РєС‚РёРІРЅС‹Рµ С‚СЂР°РЅР·Р°РєС†РёРё РЅРµРґРѕСЃС‚СѓРїРЅС‹ РІ @libsql/client/web вЂ”
+          // Р·Р°РјРµРЅСЏРµРј РЅР° Р°С‚РѕРјР°СЂРЅС‹Р№ batch СЃ СѓСЃР»РѕРІРЅС‹РјРё UPDATE
           // (balance >= grant, last_growth_day < todayStr)
           const companyResult = await db.execute({
             sql: 'SELECT treasury FROM companies WHERE id = ?',
@@ -4181,21 +4181,21 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
           if (companyResult.rows.length === 0) continue;
           const freshTreasury = companyResult.rows[0].treasury;
 
-          // Перечитываем свежий баланс резерва (0, если строки нет)
+          // РџРµСЂРµС‡РёС‚С‹РІР°РµРј СЃРІРµР¶РёР№ Р±Р°Р»Р°РЅСЃ СЂРµР·РµСЂРІР° (0, РµСЃР»Рё СЃС‚СЂРѕРєРё РЅРµС‚)
           const reserveResult = await db.execute({
             sql: 'SELECT balance FROM server_reserve WHERE guild_id = ?',
             args: [guildId],
           });
           const reserveBalance = reserveResult.rows.length > 0 ? reserveResult.rows[0].balance : 0;
 
-          // Желаемый рост: 1% от казны, но не более 100
+          // Р–РµР»Р°РµРјС‹Р№ СЂРѕСЃС‚: 1% РѕС‚ РєР°Р·РЅС‹, РЅРѕ РЅРµ Р±РѕР»РµРµ 100
           const desired = Math.min(Math.floor(Number(freshTreasury) * 0.01), 100);
           const grant = Math.min(desired, Number(reserveBalance));
 
           if (grant > 0) {
-            // Атомарный batch (одна транзакция, последовательное выполнение):
-            // 1) компания кредитуется только если сегодня ещё не росла И в резерве хватает средств
-            // 2) резерв списывается только если компания реально была прокредитована (маркер last_growth_day = todayStr)
+            // РђС‚РѕРјР°СЂРЅС‹Р№ batch (РѕРґРЅР° С‚СЂР°РЅР·Р°РєС†РёСЏ, РїРѕСЃР»РµРґРѕРІР°С‚РµР»СЊРЅРѕРµ РІС‹РїРѕР»РЅРµРЅРёРµ):
+            // 1) РєРѕРјРїР°РЅРёСЏ РєСЂРµРґРёС‚СѓРµС‚СЃСЏ С‚РѕР»СЊРєРѕ РµСЃР»Рё СЃРµРіРѕРґРЅСЏ РµС‰С‘ РЅРµ СЂРѕСЃР»Р° Р РІ СЂРµР·РµСЂРІРµ С…РІР°С‚Р°РµС‚ СЃСЂРµРґСЃС‚РІ
+            // 2) СЂРµР·РµСЂРІ СЃРїРёСЃС‹РІР°РµС‚СЃСЏ С‚РѕР»СЊРєРѕ РµСЃР»Рё РєРѕРјРїР°РЅРёСЏ СЂРµР°Р»СЊРЅРѕ Р±С‹Р»Р° РїСЂРѕРєСЂРµРґРёС‚РѕРІР°РЅР° (РјР°СЂРєРµСЂ last_growth_day = todayStr)
             const writeResults = await db.batch(
               [
                 {
@@ -4215,10 +4215,10 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
                   args: [grant, guildId, grant, it.id, todayStr],
                 },
                 {
-                  // История NAV (reason='growth') — в том же батче, что и рост.
-                  // Guard: last_growth_day = todayStr, т.е. грант реально начислен.
-                  // treasury/circulating/mood читаются SELECT-ом ПОСЛЕ первого statement,
-                  // поэтому снимок отражает состояние уже с учётом гранта.
+                  // РСЃС‚РѕСЂРёСЏ NAV (reason='growth') вЂ” РІ С‚РѕРј Р¶Рµ Р±Р°С‚С‡Рµ, С‡С‚Рѕ Рё СЂРѕСЃС‚.
+                  // Guard: last_growth_day = todayStr, С‚.Рµ. РіСЂР°РЅС‚ СЂРµР°Р»СЊРЅРѕ РЅР°С‡РёСЃР»РµРЅ.
+                  // treasury/circulating/mood С‡РёС‚Р°СЋС‚СЃСЏ SELECT-РѕРј РџРћРЎР›Р• РїРµСЂРІРѕРіРѕ statement,
+                  // РїРѕСЌС‚РѕРјСѓ СЃРЅРёРјРѕРє РѕС‚СЂР°Р¶Р°РµС‚ СЃРѕСЃС‚РѕСЏРЅРёРµ СѓР¶Рµ СЃ СѓС‡С‘С‚РѕРј РіСЂР°РЅС‚Р°.
                   sql: `INSERT INTO company_nav_history (guild_id, company_id, ts, treasury, circulating, mood_bps, reason)
                         SELECT ?, ?, ?,
                                (SELECT treasury FROM companies WHERE id = ?),
@@ -4234,10 +4234,10 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
             if ((writeResults[0].rowsAffected as number) === 1 && (writeResults[1].rowsAffected as number) === 1) {
               console.log(`[Growth] Company ${it.id} in guild ${guildId}: treasury +${grant}`);
             }
-            // Иначе — гонка/недостаток средств: ничего не изменилось,
-            // идемпотентно повторится на следующем тике
+            // РРЅР°С‡Рµ вЂ” РіРѕРЅРєР°/РЅРµРґРѕСЃС‚Р°С‚РѕРє СЃСЂРµРґСЃС‚РІ: РЅРёС‡РµРіРѕ РЅРµ РёР·РјРµРЅРёР»РѕСЃСЊ,
+            // РёРґРµРјРїРѕС‚РµРЅС‚РЅРѕ РїРѕРІС‚РѕСЂРёС‚СЃСЏ РЅР° СЃР»РµРґСѓСЋС‰РµРј С‚РёРєРµ
           } else {
-            // Резерв пуст или рост 0 — идемпотентно фиксируем дату
+            // Р РµР·РµСЂРІ РїСѓСЃС‚ РёР»Рё СЂРѕСЃС‚ 0 вЂ” РёРґРµРјРїРѕС‚РµРЅС‚РЅРѕ С„РёРєСЃРёСЂСѓРµРј РґР°С‚Сѓ
             await db.execute({
               sql: 'UPDATE companies SET last_growth_day = ? WHERE id = ? AND (last_growth_day IS NULL OR last_growth_day < ?)',
               args: [todayStr, it.id, todayStr],
@@ -4254,32 +4254,32 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
 }
 
 // ============================================
-// Сезонная ликвидация компаний (Биржа)
+// РЎРµР·РѕРЅРЅР°СЏ Р»РёРєРІРёРґР°С†РёСЏ РєРѕРјРїР°РЅРёР№ (Р‘РёСЂР¶Р°)
 // ============================================
 
 /**
- * Пропорциональная ликвидация компаний при смене сезона (раз в 3 месяца).
+ * РџСЂРѕРїРѕСЂС†РёРѕРЅР°Р»СЊРЅР°СЏ Р»РёРєРІРёРґР°С†РёСЏ РєРѕРјРїР°РЅРёР№ РїСЂРё СЃРјРµРЅРµ СЃРµР·РѕРЅР° (СЂР°Р· РІ 3 РјРµСЃСЏС†Р°).
  *
- * Маркер сезона last_season_reset хранится ПО ГИЛЬДИЯМ — в служебной записи
- * users (user_id = guild_id), как last_week_reset и next_boss_spawn_at.
+ * РњР°СЂРєРµСЂ СЃРµР·РѕРЅР° last_season_reset С…СЂР°РЅРёС‚СЃСЏ РџРћ Р“РР›Р¬Р”РРЇРњ вЂ” РІ СЃР»СѓР¶РµР±РЅРѕР№ Р·Р°РїРёСЃРё
+ * users (user_id = guild_id), РєР°Рє last_week_reset Рё next_boss_spawn_at.
  *
- * Гарантии:
- * 1. Ликвидация выполняется в отдельной транзакции на гильдию; ошибка в одной
- *    гильдии только логируется и не прерывает обработку остальных.
- * 2. Отметка о завершении сезона ставится СТРОГО после успешного tx.commit():
- *    при сбое транзакция откатывается целиком, маркер остаётся старым, и
- *    ликвидация будет повторена на следующем тике — компании не останутся
- *    брошенными без выплат.
- * 3. Первый запуск (маркер NULL) только инициализирует маркер текущим сезоном
- *    БЕЗ ликвидации, чтобы деплой в середине сезона не уничтожал компании
- *    вне границы сезона.
+ * Р“Р°СЂР°РЅС‚РёРё:
+ * 1. Р›РёРєРІРёРґР°С†РёСЏ РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ РІ РѕС‚РґРµР»СЊРЅРѕР№ С‚СЂР°РЅР·Р°РєС†РёРё РЅР° РіРёР»СЊРґРёСЋ; РѕС€РёР±РєР° РІ РѕРґРЅРѕР№
+ *    РіРёР»СЊРґРёРё С‚РѕР»СЊРєРѕ Р»РѕРіРёСЂСѓРµС‚СЃСЏ Рё РЅРµ РїСЂРµСЂС‹РІР°РµС‚ РѕР±СЂР°Р±РѕС‚РєСѓ РѕСЃС‚Р°Р»СЊРЅС‹С….
+ * 2. РћС‚РјРµС‚РєР° Рѕ Р·Р°РІРµСЂС€РµРЅРёРё СЃРµР·РѕРЅР° СЃС‚Р°РІРёС‚СЃСЏ РЎРўР РћР“Рћ РїРѕСЃР»Рµ СѓСЃРїРµС€РЅРѕРіРѕ tx.commit():
+ *    РїСЂРё СЃР±РѕРµ С‚СЂР°РЅР·Р°РєС†РёСЏ РѕС‚РєР°С‚С‹РІР°РµС‚СЃСЏ С†РµР»РёРєРѕРј, РјР°СЂРєРµСЂ РѕСЃС‚Р°С‘С‚СЃСЏ СЃС‚Р°СЂС‹Рј, Рё
+ *    Р»РёРєРІРёРґР°С†РёСЏ Р±СѓРґРµС‚ РїРѕРІС‚РѕСЂРµРЅР° РЅР° СЃР»РµРґСѓСЋС‰РµРј С‚РёРєРµ вЂ” РєРѕРјРїР°РЅРёРё РЅРµ РѕСЃС‚Р°РЅСѓС‚СЃСЏ
+ *    Р±СЂРѕС€РµРЅРЅС‹РјРё Р±РµР· РІС‹РїР»Р°С‚.
+ * 3. РџРµСЂРІС‹Р№ Р·Р°РїСѓСЃРє (РјР°СЂРєРµСЂ NULL) С‚РѕР»СЊРєРѕ РёРЅРёС†РёР°Р»РёР·РёСЂСѓРµС‚ РјР°СЂРєРµСЂ С‚РµРєСѓС‰РёРј СЃРµР·РѕРЅРѕРј
+ *    Р‘Р•Р— Р»РёРєРІРёРґР°С†РёРё, С‡С‚РѕР±С‹ РґРµРїР»РѕР№ РІ СЃРµСЂРµРґРёРЅРµ СЃРµР·РѕРЅР° РЅРµ СѓРЅРёС‡С‚РѕР¶Р°Р» РєРѕРјРїР°РЅРёРё
+ *    РІРЅРµ РіСЂР°РЅРёС†С‹ СЃРµР·РѕРЅР°.
  */
 async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
   const currentSeasonId = getSeasonId();
 
   try {
-    // Все гильдии (как в checkWeeklyReset): маркер ставится и гильдиям без компаний,
-    // чтобы их будущие компании корректно ликвидировались на следующей границе сезона
+    // Р’СЃРµ РіРёР»СЊРґРёРё (РєР°Рє РІ checkWeeklyReset): РјР°СЂРєРµСЂ СЃС‚Р°РІРёС‚СЃСЏ Рё РіРёР»СЊРґРёСЏРј Р±РµР· РєРѕРјРїР°РЅРёР№,
+    // С‡С‚РѕР±С‹ РёС… Р±СѓРґСѓС‰РёРµ РєРѕРјРїР°РЅРёРё РєРѕСЂСЂРµРєС‚РЅРѕ Р»РёРєРІРёРґРёСЂРѕРІР°Р»РёСЃСЊ РЅР° СЃР»РµРґСѓСЋС‰РµР№ РіСЂР°РЅРёС†Рµ СЃРµР·РѕРЅР°
     const guildsResult = await db.execute({
       sql: 'SELECT DISTINCT guild_id FROM users',
       args: [],
@@ -4288,7 +4288,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 
     for (const guildId of guildIds) {
       try {
-        // Маркер сезона читается заново для КАЖДОЙ гильдии
+        // РњР°СЂРєРµСЂ СЃРµР·РѕРЅР° С‡РёС‚Р°РµС‚СЃСЏ Р·Р°РЅРѕРІРѕ РґР»СЏ РљРђР–Р”РћР™ РіРёР»СЊРґРёРё
         const markerResult = await db.execute({
           sql: 'SELECT last_season_reset FROM users WHERE user_id = ? AND guild_id = ?',
           args: [guildId, guildId],
@@ -4296,11 +4296,11 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
         const lastSeasonId = (markerResult.rows[0]?.last_season_reset as string | null) || null;
 
         if (lastSeasonId === currentSeasonId) {
-          continue; // Сезон не менялся — ликвидация не требуется
+          continue; // РЎРµР·РѕРЅ РЅРµ РјРµРЅСЏР»СЃСЏ вЂ” Р»РёРєРІРёРґР°С†РёСЏ РЅРµ С‚СЂРµР±СѓРµС‚СЃСЏ
         }
 
         if (lastSeasonId === null) {
-          // Первая инициализация маркера: фиксируем текущий сезон БЕЗ ликвидации
+          // РџРµСЂРІР°СЏ РёРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РјР°СЂРєРµСЂР°: С„РёРєСЃРёСЂСѓРµРј С‚РµРєСѓС‰РёР№ СЃРµР·РѕРЅ Р‘Р•Р— Р»РёРєРІРёРґР°С†РёРё
           const initResult = await db.execute({
             sql: 'UPDATE users SET last_season_reset = ? WHERE user_id = ? AND guild_id = ?',
             args: [currentSeasonId, guildId, guildId],
@@ -4320,10 +4320,10 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 
         let committed = false;
         try {
-          // C2: интерактивные транзакции недоступны в @libsql/client/web —
-          // предрасчитываем все выплаты и выполняем их одним атомарным db.batch
-          // (ошибка любой записи откатывает batch целиком)
-          // Компании гильдии
+          // C2: РёРЅС‚РµСЂР°РєС‚РёРІРЅС‹Рµ С‚СЂР°РЅР·Р°РєС†РёРё РЅРµРґРѕСЃС‚СѓРїРЅС‹ РІ @libsql/client/web вЂ”
+          // РїСЂРµРґСЂР°СЃС‡РёС‚С‹РІР°РµРј РІСЃРµ РІС‹РїР»Р°С‚С‹ Рё РІС‹РїРѕР»РЅСЏРµРј РёС… РѕРґРЅРёРј Р°С‚РѕРјР°СЂРЅС‹Рј db.batch
+          // (РѕС€РёР±РєР° Р»СЋР±РѕР№ Р·Р°РїРёСЃРё РѕС‚РєР°С‚С‹РІР°РµС‚ batch С†РµР»РёРєРѕРј)
+          // РљРѕРјРїР°РЅРёРё РіРёР»СЊРґРёРё
           const companiesResult = await db.execute({
             sql: 'SELECT * FROM companies WHERE guild_id = ?',
             args: [guildId],
@@ -4333,10 +4333,10 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
           const batchStmts: { sql: string; args: any[] }[] = [];
 
           // ============================================
-          // Шаг 8: агрегаты сделок закрывающегося сезона.
-          // ВАЖНО: сделки писались под season_id = lastSeasonId (сезон, который
-          // ликвидируется); под currentSeasonId сделок ещё нет, поэтому итоги
-          // считаем и сохраняем по lastSeasonId.
+          // РЁР°Рі 8: Р°РіСЂРµРіР°С‚С‹ СЃРґРµР»РѕРє Р·Р°РєСЂС‹РІР°СЋС‰РµРіРѕСЃСЏ СЃРµР·РѕРЅР°.
+          // Р’РђР–РќРћ: СЃРґРµР»РєРё РїРёСЃР°Р»РёСЃСЊ РїРѕРґ season_id = lastSeasonId (СЃРµР·РѕРЅ, РєРѕС‚РѕСЂС‹Р№
+          // Р»РёРєРІРёРґРёСЂСѓРµС‚СЃСЏ); РїРѕРґ currentSeasonId СЃРґРµР»РѕРє РµС‰С‘ РЅРµС‚, РїРѕСЌС‚РѕРјСѓ РёС‚РѕРіРё
+          // СЃС‡РёС‚Р°РµРј Рё СЃРѕС…СЂР°РЅСЏРµРј РїРѕ lastSeasonId.
           // ============================================
           const seasonTradesResult = await db.execute({
             sql: `SELECT user_id, company_id, side, coins
@@ -4347,7 +4347,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 
           const investorStats = new Map<string, { invested: number; returned: number }>();
           const companyStats = new Map<number, { invested: number; returned: number }>();
-          // Выплаты ликвидации добавляются к returned инвестора
+          // Р’С‹РїР»Р°С‚С‹ Р»РёРєРІРёРґР°С†РёРё РґРѕР±Р°РІР»СЏСЋС‚СЃСЏ Рє returned РёРЅРІРµСЃС‚РѕСЂР°
           const liquidationPayouts = new Map<string, number>();
 
           for (const tr of seasonTradesResult.rows || []) {
@@ -4371,7 +4371,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
             let distributed = 0;
 
             if (circulating > 0 && treasury > 0) {
-              // Держатели акций компании
+              // Р”РµСЂР¶Р°С‚РµР»Рё Р°РєС†РёР№ РєРѕРјРїР°РЅРёРё
               const holdersResult = await db.execute({
                 sql: 'SELECT user_id, shares_count FROM company_shares WHERE company_id = ?',
                 args: [comp.id],
@@ -4390,7 +4390,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
               }
             }
 
-            // Остаток от floor-округления и невыплаченные суммы — в резерв сервера
+            // РћСЃС‚Р°С‚РѕРє РѕС‚ floor-РѕРєСЂСѓРіР»РµРЅРёСЏ Рё РЅРµРІС‹РїР»Р°С‡РµРЅРЅС‹Рµ СЃСѓРјРјС‹ вЂ” РІ СЂРµР·РµСЂРІ СЃРµСЂРІРµСЂР°
             const remainder = treasury - distributed;
             if (remainder > 0) {
               batchStmts.push({
@@ -4401,9 +4401,9 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
           }
 
           // ============================================
-          // Шаг 8: топ-3 инвестора по ROI (вложения от 500 🪙) и топ-3 компании
-          // по казне перед ликвидацией. Записи season_results и событие ленты
-          // ставятся в тот же batch, что и ликвидация: либо всё, либо ничего.
+          // РЁР°Рі 8: С‚РѕРї-3 РёРЅРІРµСЃС‚РѕСЂР° РїРѕ ROI (РІР»РѕР¶РµРЅРёСЏ РѕС‚ 500 рџЄ™) Рё С‚РѕРї-3 РєРѕРјРїР°РЅРёРё
+          // РїРѕ РєР°Р·РЅРµ РїРµСЂРµРґ Р»РёРєРІРёРґР°С†РёРµР№. Р—Р°РїРёСЃРё season_results Рё СЃРѕР±С‹С‚РёРµ Р»РµРЅС‚С‹
+          // СЃС‚Р°РІСЏС‚СЃСЏ РІ С‚РѕС‚ Р¶Рµ batch, С‡С‚Рѕ Рё Р»РёРєРІРёРґР°С†РёСЏ: Р»РёР±Рѕ РІСЃС‘, Р»РёР±Рѕ РЅРёС‡РµРіРѕ.
           // ============================================
           const resultsNowSec = Math.floor(Date.now() / 1000);
 
@@ -4459,20 +4459,20 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
           }
 
           if (topInvestors.length > 0 || topCompanies.length > 0) {
-            const feedLines: string[] = [`Подведены итоги сезона \`${lastSeasonId}\` по доходности:`];
+            const feedLines: string[] = [`РџРѕРґРІРµРґРµРЅС‹ РёС‚РѕРіРё СЃРµР·РѕРЅР° \`${lastSeasonId}\` РїРѕ РґРѕС…РѕРґРЅРѕСЃС‚Рё:`];
             if (topInvestors.length > 0) {
               feedLines.push('');
-              feedLines.push('**📈 Топ инвесторов (ROI):**');
+              feedLines.push('**рџ“€ РўРѕРї РёРЅРІРµСЃС‚РѕСЂРѕРІ (ROI):**');
               topInvestors.forEach((inv, i) => {
                 const roiPct = inv.roiBps / 100;
-                feedLines.push(`${i + 1}. ${inv.label} — ${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(1)}% (${inv.invested.toLocaleString('ru-RU')} → ${inv.returned.toLocaleString('ru-RU')} 🪙)`);
+                feedLines.push(`${i + 1}. ${inv.label} вЂ” ${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(1)}% (${inv.invested.toLocaleString('ru-RU')} в†’ ${inv.returned.toLocaleString('ru-RU')} рџЄ™)`);
               });
             }
             if (topCompanies.length > 0) {
               feedLines.push('');
-              feedLines.push('**🏢 Топ компаний (казна):**');
+              feedLines.push('**рџЏў РўРѕРї РєРѕРјРїР°РЅРёР№ (РєР°Р·РЅР°):**');
               topCompanies.forEach((c, i) => {
-                feedLines.push(`${i + 1}. ${c.label} — ${c.returned.toLocaleString('ru-RU')} 🪙`);
+                feedLines.push(`${i + 1}. ${c.label} вЂ” ${c.returned.toLocaleString('ru-RU')} рџЄ™`);
               });
             }
 
@@ -4487,8 +4487,8 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
             });
           }
 
-          // Очистка таблиц компаний гильдии.
-          // server_reserve НЕ обнуляем — баланс резерва переходит в новый сезон.
+          // РћС‡РёСЃС‚РєР° С‚Р°Р±Р»РёС† РєРѕРјРїР°РЅРёР№ РіРёР»СЊРґРёРё.
+          // server_reserve РќР• РѕР±РЅСѓР»СЏРµРј вЂ” Р±Р°Р»Р°РЅСЃ СЂРµР·РµСЂРІР° РїРµСЂРµС…РѕРґРёС‚ РІ РЅРѕРІС‹Р№ СЃРµР·РѕРЅ.
           batchStmts.push({ sql: 'DELETE FROM company_crises WHERE guild_id = ?', args: [guildId] });
           batchStmts.push({ sql: 'DELETE FROM company_shares WHERE guild_id = ?', args: [guildId] });
           batchStmts.push({ sql: 'DELETE FROM companies WHERE guild_id = ?', args: [guildId] });
@@ -4498,17 +4498,17 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
           console.log(`[Liquidation] Guild ${guildId}: companies liquidated, batch committed`);
         } catch (e) {
           console.error('[Liquidation] Error in guild', guildId, e);
-          // Маркер НЕ обновляем — ликвидация будет повторена на следующем тике
+          // РњР°СЂРєРµСЂ РќР• РѕР±РЅРѕРІР»СЏРµРј вЂ” Р»РёРєРІРёРґР°С†РёСЏ Р±СѓРґРµС‚ РїРѕРІС‚РѕСЂРµРЅР° РЅР° СЃР»РµРґСѓСЋС‰РµРј С‚РёРєРµ
         }
 
-        // Отметка о завершении сезона — СТРОГО после успешного tx.commit()
+        // РћС‚РјРµС‚РєР° Рѕ Р·Р°РІРµСЂС€РµРЅРёРё СЃРµР·РѕРЅР° вЂ” РЎРўР РћР“Рћ РїРѕСЃР»Рµ СѓСЃРїРµС€РЅРѕРіРѕ tx.commit()
         if (committed) {
           const markerUpdate = await db.execute({
             sql: 'UPDATE users SET last_season_reset = ? WHERE user_id = ? AND guild_id = ?',
             args: [currentSeasonId, guildId, guildId],
           });
           if (!markerUpdate.rowsAffected || markerUpdate.rowsAffected === 0) {
-            // Служебной записи ещё нет — создаём её (как в checkWeeklyReset)
+            // РЎР»СѓР¶РµР±РЅРѕР№ Р·Р°РїРёСЃРё РµС‰С‘ РЅРµС‚ вЂ” СЃРѕР·РґР°С‘Рј РµС‘ (РєР°Рє РІ checkWeeklyReset)
             await db.execute({
               sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at, last_season_reset)
                     VALUES (?, ?, 0, 0, 0, 0, ?, ?)`,
@@ -4517,7 +4517,7 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
           }
         }
       } catch (guildErr) {
-        // Ошибка в одной гильдии не прерывает обработку остальных гильдий
+        // РћС€РёР±РєР° РІ РѕРґРЅРѕР№ РіРёР»СЊРґРёРё РЅРµ РїСЂРµСЂС‹РІР°РµС‚ РѕР±СЂР°Р±РѕС‚РєСѓ РѕСЃС‚Р°Р»СЊРЅС‹С… РіРёР»СЊРґРёР№
         console.error('[Liquidation] Error processing guild', guildId, guildErr);
       }
     }
@@ -4527,21 +4527,21 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
 }
 
 // ============================================
-// Чистка истории биржи (Биржа)
+// Р§РёСЃС‚РєР° РёСЃС‚РѕСЂРёРё Р±РёСЂР¶Рё (Р‘РёСЂР¶Р°)
 // ============================================
 
 /**
- * Раз в час чистит историю биржи:
- * - market_events: только ОТПРАВЛЕННЫЕ (sent_at IS NOT NULL) записи старше 14 дней.
- *   Неотправленные остаются в очереди, чтобы события не терялись при сбоях Discord;
- * - company_nav_history: записи старше 60 дней (живут дольше ленты, т.к.
- *   нужны для сезонного рейтинга).
- * company_trades не чистим — понадобится для рейтинга ROI сезона.
+ * Р Р°Р· РІ С‡Р°СЃ С‡РёСЃС‚РёС‚ РёСЃС‚РѕСЂРёСЋ Р±РёСЂР¶Рё:
+ * - market_events: С‚РѕР»СЊРєРѕ РћРўРџР РђР’Р›Р•РќРќР«Р• (sent_at IS NOT NULL) Р·Р°РїРёСЃРё СЃС‚Р°СЂС€Рµ 14 РґРЅРµР№.
+ *   РќРµРѕС‚РїСЂР°РІР»РµРЅРЅС‹Рµ РѕСЃС‚Р°СЋС‚СЃСЏ РІ РѕС‡РµСЂРµРґРё, С‡С‚РѕР±С‹ СЃРѕР±С‹С‚РёСЏ РЅРµ С‚РµСЂСЏР»РёСЃСЊ РїСЂРё СЃР±РѕСЏС… Discord;
+ * - company_nav_history: Р·Р°РїРёСЃРё СЃС‚Р°СЂС€Рµ 60 РґРЅРµР№ (Р¶РёРІСѓС‚ РґРѕР»СЊС€Рµ Р»РµРЅС‚С‹, С‚.Рє.
+ *   РЅСѓР¶РЅС‹ РґР»СЏ СЃРµР·РѕРЅРЅРѕРіРѕ СЂРµР№С‚РёРЅРіР°).
+ * company_trades РЅРµ С‡РёСЃС‚РёРј вЂ” РїРѕРЅР°РґРѕР±РёС‚СЃСЏ РґР»СЏ СЂРµР№С‚РёРЅРіР° ROI СЃРµР·РѕРЅР°.
  */
 async function cleanupExchangeHistory(db: any): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
-  const marketCutoff = nowSec - 14 * 24 * 60 * 60; // 14 дней назад
-  const navCutoff = nowSec - 60 * 24 * 60 * 60; // 60 дней назад
+  const marketCutoff = nowSec - 14 * 24 * 60 * 60; // 14 РґРЅРµР№ РЅР°Р·Р°Рґ
+  const navCutoff = nowSec - 60 * 24 * 60 * 60; // 60 РґРЅРµР№ РЅР°Р·Р°Рґ
 
   try {
     await db.execute({
@@ -4558,21 +4558,21 @@ async function cleanupExchangeHistory(db: any): Promise<void> {
 }
 
 // ============================================
-// Лента биржи (Этап 4.2): хелперы
-// (дублировано из worker/exchange/* для collector, избегаем tsconfig issues)
+// Р›РµРЅС‚Р° Р±РёСЂР¶Рё (Р­С‚Р°Рї 4.2): С…РµР»РїРµСЂС‹
+// (РґСѓР±Р»РёСЂРѕРІР°РЅРѕ РёР· worker/exchange/* РґР»СЏ collector, РёР·Р±РµРіР°РµРј tsconfig issues)
 // ============================================
 
-// Символы спарклайна от минимума к максимуму
-const SPARK_CHARS = '▁▂▃▄▅▆▇█';
+// РЎРёРјРІРѕР»С‹ СЃРїР°СЂРєР»Р°Р№РЅР° РѕС‚ РјРёРЅРёРјСѓРјР° Рє РјР°РєСЃРёРјСѓРјСѓ
+const SPARK_CHARS = 'в–Ѓв–‚в–ѓв–„в–…в–†в–‡в–€';
 
 /**
- * Рисует спарклайн по значениям ряда.
+ * Р РёСЃСѓРµС‚ СЃРїР°СЂРєР»Р°Р№РЅ РїРѕ Р·РЅР°С‡РµРЅРёСЏРј СЂСЏРґР°.
  */
 function sparkline(values: number[]): string {
   if (values.length === 0) return "";
   const min = Math.min(...values);
   const max = Math.max(...values);
-  if (min === max) return "▄".repeat(values.length);
+  if (min === max) return "в–„".repeat(values.length);
 
   const range = max - min;
   const lastIdx = SPARK_CHARS.length - 1;
@@ -4585,8 +4585,8 @@ function sparkline(values: number[]): string {
 }
 
 /**
- * NAV одной акции: казна с поправкой на настроение рынка (mood_bps),
- * делённая на акции в обращении.
+ * NAV РѕРґРЅРѕР№ Р°РєС†РёРё: РєР°Р·РЅР° СЃ РїРѕРїСЂР°РІРєРѕР№ РЅР° РЅР°СЃС‚СЂРѕРµРЅРёРµ СЂС‹РЅРєР° (mood_bps),
+ * РґРµР»С‘РЅРЅР°СЏ РЅР° Р°РєС†РёРё РІ РѕР±СЂР°С‰РµРЅРёРё.
  */
 function computeNav(treasury: number, circulating: number, moodBps: number): number {
   if (circulating <= 0) return 0;
@@ -4594,9 +4594,9 @@ function computeNav(treasury: number, circulating: number, moodBps: number): num
 }
 
 /**
- * Строит почасовой ряд NAV (по умолчанию 24 точки): для каждого часового бакета
- * берётся последняя запись истории на момент конца бакета; если истории ещё нет —
- * первая известная запись.
+ * РЎС‚СЂРѕРёС‚ РїРѕС‡Р°СЃРѕРІРѕР№ СЂСЏРґ NAV (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ 24 С‚РѕС‡РєРё): РґР»СЏ РєР°Р¶РґРѕРіРѕ С‡Р°СЃРѕРІРѕРіРѕ Р±Р°РєРµС‚Р°
+ * Р±РµСЂС‘С‚СЃСЏ РїРѕСЃР»РµРґРЅСЏСЏ Р·Р°РїРёСЃСЊ РёСЃС‚РѕСЂРёРё РЅР° РјРѕРјРµРЅС‚ РєРѕРЅС†Р° Р±Р°РєРµС‚Р°; РµСЃР»Рё РёСЃС‚РѕСЂРёРё РµС‰С‘ РЅРµС‚ вЂ”
+ * РїРµСЂРІР°СЏ РёР·РІРµСЃС‚РЅР°СЏ Р·Р°РїРёСЃСЊ.
  */
 function buildHourlyNavSeries(
   records: { ts: number; nav: number }[],
@@ -4626,8 +4626,8 @@ function buildHourlyNavSeries(
 }
 
 /**
- * Ставит событие биржи в очередь outbox (market_events).
- * Доставку в Discord выполняет фоновый processMarketEventsOutbox.
+ * РЎС‚Р°РІРёС‚ СЃРѕР±С‹С‚РёРµ Р±РёСЂР¶Рё РІ РѕС‡РµСЂРµРґСЊ outbox (market_events).
+ * Р”РѕСЃС‚Р°РІРєСѓ РІ Discord РІС‹РїРѕР»РЅСЏРµС‚ С„РѕРЅРѕРІС‹Р№ processMarketEventsOutbox.
  */
 async function enqueueMarketEvent(db: any, guildId: string, kind: string, payload: Record<string, any>): Promise<void> {
   try {
@@ -4641,9 +4641,9 @@ async function enqueueMarketEvent(db: any, guildId: string, kind: string, payloa
 }
 
 /**
- * Формирует Embed для события ленты по его типу. payload_json пишется и worker'ом,
- * и collector'ом, поэтому рендер терпим к отсутствию полей: если в payload есть
- * готовый text — используем его.
+ * Р¤РѕСЂРјРёСЂСѓРµС‚ Embed РґР»СЏ СЃРѕР±С‹С‚РёСЏ Р»РµРЅС‚С‹ РїРѕ РµРіРѕ С‚РёРїСѓ. payload_json РїРёС€РµС‚СЃСЏ Рё worker'РѕРј,
+ * Рё collector'РѕРј, РїРѕСЌС‚РѕРјСѓ СЂРµРЅРґРµСЂ С‚РµСЂРїРёРј Рє РѕС‚СЃСѓС‚СЃС‚РІРёСЋ РїРѕР»РµР№: РµСЃР»Рё РІ payload РµСЃС‚СЊ
+ * РіРѕС‚РѕРІС‹Р№ text вЂ” РёСЃРїРѕР»СЊР·СѓРµРј РµРіРѕ.
  */
 function renderMarketEventEmbed(kind: string, payload: any): any {
   const blue = 0x5865F2;
@@ -4655,10 +4655,10 @@ function renderMarketEventEmbed(kind: string, payload: any): any {
     case 'whale_trade':
       return {
         embeds: [{
-          title: '🐋 Крупная сделка на бирже',
+          title: 'рџђ‹ РљСЂСѓРїРЅР°СЏ СЃРґРµР»РєР° РЅР° Р±РёСЂР¶Рµ',
           description: text ||
-            `**${payload.companyName || 'Компания'}** (\`${payload.ticker || '???'}\`): ` +
-            `${payload.side === 'sell' ? '📉 продажа' : '📈 покупка'} **${payload.shares ?? '—'}** акц. на **${payload.coins ?? '—'} 🪙**`,
+            `**${payload.companyName || 'РљРѕРјРїР°РЅРёСЏ'}** (\`${payload.ticker || '???'}\`): ` +
+            `${payload.side === 'sell' ? 'рџ“‰ РїСЂРѕРґР°Р¶Р°' : 'рџ“€ РїРѕРєСѓРїРєР°'} **${payload.shares ?? 'вЂ”'}** Р°РєС†. РЅР° **${payload.coins ?? 'вЂ”'} рџЄ™**`,
           color: blue,
         }],
       };
@@ -4666,10 +4666,10 @@ function renderMarketEventEmbed(kind: string, payload: any): any {
       const changePct = Number(payload.changePct) || 0;
       return {
         embeds: [{
-          title: changePct >= 0 ? '📈 Резкий рост котировок' : '📉 Резкое падение котировок',
+          title: changePct >= 0 ? 'рџ“€ Р РµР·РєРёР№ СЂРѕСЃС‚ РєРѕС‚РёСЂРѕРІРѕРє' : 'рџ“‰ Р РµР·РєРѕРµ РїР°РґРµРЅРёРµ РєРѕС‚РёСЂРѕРІРѕРє',
           description: text ||
-            `**${payload.companyName || 'Компания'}** (\`${payload.ticker || '???'}\`): ` +
-            `**${changePct >= 0 ? '+' : ''}${changePct}%** NAV за 24ч` +
+            `**${payload.companyName || 'РљРѕРјРїР°РЅРёСЏ'}** (\`${payload.ticker || '???'}\`): ` +
+            `**${changePct >= 0 ? '+' : ''}${changePct}%** NAV Р·Р° 24С‡` +
             (payload.sparkline ? `\n\`${payload.sparkline}\`` : ''),
           color: changePct >= 0 ? green : red,
         }],
@@ -4678,23 +4678,23 @@ function renderMarketEventEmbed(kind: string, payload: any): any {
     case 'crisis_spawn':
       return {
         embeds: [{
-          title: '🚨 Кризис компании',
-          description: text || 'Компания попала в кризисную ситуацию!',
+          title: 'рџљЁ РљСЂРёР·РёСЃ РєРѕРјРїР°РЅРёРё',
+          description: text || 'РљРѕРјРїР°РЅРёСЏ РїРѕРїР°Р»Р° РІ РєСЂРёР·РёСЃРЅСѓСЋ СЃРёС‚СѓР°С†РёСЋ!',
           color: red,
         }],
       };
     case 'crisis_resolved':
       return {
         embeds: [{
-          title: '✅ Кризис разрешён',
-          description: text || 'Кризисная ситуация успешно разрешена.',
+          title: 'вњ… РљСЂРёР·РёСЃ СЂР°Р·СЂРµС€С‘РЅ',
+          description: text || 'РљСЂРёР·РёСЃРЅР°СЏ СЃРёС‚СѓР°С†РёСЏ СѓСЃРїРµС€РЅРѕ СЂР°Р·СЂРµС€РµРЅР°.',
           color: green,
         }],
       };
     case 'daily_digest':
       return {
         embeds: [{
-          title: '📊 Дайджест биржи за сутки',
+          title: 'рџ“Љ Р”Р°Р№РґР¶РµСЃС‚ Р±РёСЂР¶Рё Р·Р° СЃСѓС‚РєРё',
           description: text || '',
           color: blue,
         }],
@@ -4702,15 +4702,15 @@ function renderMarketEventEmbed(kind: string, payload: any): any {
     case 'season_results':
       return {
         embeds: [{
-          title: `🏆 Итоги сезона${payload?.seasonId ? ` ${payload.seasonId}` : ''} — рейтинг ROI`,
-          description: text || 'Итоги сезона зафиксированы.',
+          title: `рџЏ† РС‚РѕРіРё СЃРµР·РѕРЅР°${payload?.seasonId ? ` ${payload.seasonId}` : ''} вЂ” СЂРµР№С‚РёРЅРі ROI`,
+          description: text || 'РС‚РѕРіРё СЃРµР·РѕРЅР° Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅС‹.',
           color: 0xF1C40F,
         }],
       };
     default:
       return {
         embeds: [{
-          title: '📈 Событие биржи',
+          title: 'рџ“€ РЎРѕР±С‹С‚РёРµ Р±РёСЂР¶Рё',
           description: text || `\`${kind}\``,
           color: blue,
         }],
@@ -4719,15 +4719,15 @@ function renderMarketEventEmbed(kind: string, payload: any): any {
 }
 
 // ============================================
-// Фоновые процессы ленты биржи (Этап 4.2)
+// Р¤РѕРЅРѕРІС‹Рµ РїСЂРѕС†РµСЃСЃС‹ Р»РµРЅС‚С‹ Р±РёСЂР¶Рё (Р­С‚Р°Рї 4.2)
 // ============================================
 
 /**
- * Доставляет события из outbox (market_events) в канал ленты биржи.
- * Канал: exchange_guild_state.market_channel_id, fallback — process.env.MARKET_CHANNEL_ID.
- * Успешная отправка помечается sent_at; при отсутствии канала событие помечается
- * sent_at с last_error='no_channel', чтобы не блокировать очередь. Пауза 250 мс
- * между отправками — защита от rate limit Discord.
+ * Р”РѕСЃС‚Р°РІР»СЏРµС‚ СЃРѕР±С‹С‚РёСЏ РёР· outbox (market_events) РІ РєР°РЅР°Р» Р»РµРЅС‚С‹ Р±РёСЂР¶Рё.
+ * РљР°РЅР°Р»: exchange_guild_state.market_channel_id, fallback вЂ” process.env.MARKET_CHANNEL_ID.
+ * РЈСЃРїРµС€РЅР°СЏ РѕС‚РїСЂР°РІРєР° РїРѕРјРµС‡Р°РµС‚СЃСЏ sent_at; РїСЂРё РѕС‚СЃСѓС‚СЃС‚РІРёРё РєР°РЅР°Р»Р° СЃРѕР±С‹С‚РёРµ РїРѕРјРµС‡Р°РµС‚СЃСЏ
+ * sent_at СЃ last_error='no_channel', С‡С‚РѕР±С‹ РЅРµ Р±Р»РѕРєРёСЂРѕРІР°С‚СЊ РѕС‡РµСЂРµРґСЊ. РџР°СѓР·Р° 250 РјСЃ
+ * РјРµР¶РґСѓ РѕС‚РїСЂР°РІРєР°РјРё вЂ” Р·Р°С‰РёС‚Р° РѕС‚ rate limit Discord.
  */
 async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
   try {
@@ -4748,7 +4748,7 @@ async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
       const guildId = ev.guild_id as string;
       const kind = ev.kind as string;
 
-      // Канал ленты: настройка гильдии, затем переменная окружения
+      // РљР°РЅР°Р» Р»РµРЅС‚С‹: РЅР°СЃС‚СЂРѕР№РєР° РіРёР»СЊРґРёРё, Р·Р°С‚РµРј РїРµСЂРµРјРµРЅРЅР°СЏ РѕРєСЂСѓР¶РµРЅРёСЏ
       let channelId: string | null = null;
       try {
         const stateResult = await db.execute({
@@ -4763,7 +4763,7 @@ async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
         channelId = process.env.MARKET_CHANNEL_ID || null;
       }
 
-      // Канал должен существовать и быть доступен для отправки
+      // РљР°РЅР°Р» РґРѕР»Р¶РµРЅ СЃСѓС‰РµСЃС‚РІРѕРІР°С‚СЊ Рё Р±С‹С‚СЊ РґРѕСЃС‚СѓРїРµРЅ РґР»СЏ РѕС‚РїСЂР°РІРєРё
       let channel: any = null;
       const guild = bot.guilds.cache.get(guildId);
       if (guild && channelId) {
@@ -4774,7 +4774,7 @@ async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
       }
 
       if (!channel) {
-        // Канала нет — помечаем событие доставленным с ошибкой, чтобы не блокировать очередь
+        // РљР°РЅР°Р»Р° РЅРµС‚ вЂ” РїРѕРјРµС‡Р°РµРј СЃРѕР±С‹С‚РёРµ РґРѕСЃС‚Р°РІР»РµРЅРЅС‹Рј СЃ РѕС€РёР±РєРѕР№, С‡С‚РѕР±С‹ РЅРµ Р±Р»РѕРєРёСЂРѕРІР°С‚СЊ РѕС‡РµСЂРµРґСЊ
         await db.execute({
           sql: "UPDATE market_events SET sent_at = ?, attempts = attempts + 1, last_error = 'no_channel' WHERE id = ?",
           args: [Math.floor(Date.now() / 1000), eventId],
@@ -4791,11 +4791,11 @@ async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
 
       try {
         if (kind === 'crisis_spawn') {
-          // Кризис публикуется с кнопками вариантов; message_id пишется обратно
-          // в company_crises после успешной отправки
+          // РљСЂРёР·РёСЃ РїСѓР±Р»РёРєСѓРµС‚СЃСЏ СЃ РєРЅРѕРїРєР°РјРё РІР°СЂРёР°РЅС‚РѕРІ; message_id РїРёС€РµС‚СЃСЏ РѕР±СЂР°С‚РЅРѕ
+          // РІ company_crises РїРѕСЃР»Рµ СѓСЃРїРµС€РЅРѕР№ РѕС‚РїСЂР°РІРєРё
           const delivered = await sendCrisisSpawnEvent(db, channel, payload);
           if (!delivered) {
-            // Кризис уже удалён (например, сезонной ликвидацией) — не блокируем очередь
+            // РљСЂРёР·РёСЃ СѓР¶Рµ СѓРґР°Р»С‘РЅ (РЅР°РїСЂРёРјРµСЂ, СЃРµР·РѕРЅРЅРѕР№ Р»РёРєРІРёРґР°С†РёРµР№) вЂ” РЅРµ Р±Р»РѕРєРёСЂСѓРµРј РѕС‡РµСЂРµРґСЊ
             await db.execute({
               sql: "UPDATE market_events SET sent_at = ?, attempts = attempts + 1, last_error = 'crisis_gone' WHERE id = ?",
               args: [Math.floor(Date.now() / 1000), eventId],
@@ -4818,7 +4818,7 @@ async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
         console.error(`[ExchangeFeed] Failed to deliver event #${eventId}:`, sendErr);
       }
 
-      // Пауза 250 мс между отправками (rate limit Discord)
+      // РџР°СѓР·Р° 250 РјСЃ РјРµР¶РґСѓ РѕС‚РїСЂР°РІРєР°РјРё (rate limit Discord)
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   } catch (err) {
@@ -4827,8 +4827,8 @@ async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
 }
 
 /**
- * Ищет резкие движения NAV (>= 10% за 24ч) и ставит события nav_move в очередь.
- * Антидубль: одна компания не чаще раза в 6 часов (по свежим nav_move в outbox).
+ * РС‰РµС‚ СЂРµР·РєРёРµ РґРІРёР¶РµРЅРёСЏ NAV (>= 10% Р·Р° 24С‡) Рё СЃС‚Р°РІРёС‚ СЃРѕР±С‹С‚РёСЏ nav_move РІ РѕС‡РµСЂРµРґСЊ.
+ * РђРЅС‚РёРґСѓР±Р»СЊ: РѕРґРЅР° РєРѕРјРїР°РЅРёСЏ РЅРµ С‡Р°С‰Рµ СЂР°Р·Р° РІ 6 С‡Р°СЃРѕРІ (РїРѕ СЃРІРµР¶РёРј nav_move РІ outbox).
  */
 async function checkSharpNavMoves(db: any): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -4843,7 +4843,7 @@ async function checkSharpNavMoves(db: any): Promise<void> {
     const companies = companiesResult.rows || [];
     if (companies.length === 0) return;
 
-    // Свежие nav_move за окно антидубля: читаем один раз, ключи собираем в памяти
+    // РЎРІРµР¶РёРµ nav_move Р·Р° РѕРєРЅРѕ Р°РЅС‚РёРґСѓР±Р»СЏ: С‡РёС‚Р°РµРј РѕРґРёРЅ СЂР°Р·, РєР»СЋС‡Рё СЃРѕР±РёСЂР°РµРј РІ РїР°РјСЏС‚Рё
     const recentResult = await db.execute({
       sql: `SELECT guild_id, payload_json, created_at
             FROM market_events
@@ -4862,7 +4862,7 @@ async function checkSharpNavMoves(db: any): Promise<void> {
           lastNavMoveAt.set(key, Number(row.created_at) || 0);
         }
       } catch {
-        // Битый payload — пропускаем
+        // Р‘РёС‚С‹Р№ payload вЂ” РїСЂРѕРїСѓСЃРєР°РµРј
       }
     }
 
@@ -4871,7 +4871,7 @@ async function checkSharpNavMoves(db: any): Promise<void> {
         const companyIdNum = Number(comp.id);
         const guildId = comp.guild_id as string;
 
-        // История NAV за последние 24 часа
+        // РСЃС‚РѕСЂРёСЏ NAV Р·Р° РїРѕСЃР»РµРґРЅРёРµ 24 С‡Р°СЃР°
         const historyResult = await db.execute({
           sql: `SELECT ts, treasury, circulating, mood_bps
                 FROM company_nav_history
@@ -4884,7 +4884,7 @@ async function checkSharpNavMoves(db: any): Promise<void> {
           nav: computeNav(Number(r.treasury), Number(r.circulating), Number(r.mood_bps)),
         }));
 
-        // Нужно минимум две точки: начало и конец окна
+        // РќСѓР¶РЅРѕ РјРёРЅРёРјСѓРј РґРІРµ С‚РѕС‡РєРё: РЅР°С‡Р°Р»Рѕ Рё РєРѕРЅРµС† РѕРєРЅР°
         if (records.length < 2) continue;
 
         const series = buildHourlyNavSeries(records, nowSec, 24);
@@ -4895,7 +4895,7 @@ async function checkSharpNavMoves(db: any): Promise<void> {
         const changePct = ((lastNav - firstNav) / firstNav) * 100;
         if (Math.abs(changePct) < 10) continue;
 
-        // Антидубль: не спамим одну компанию чаще раза в 6 часов
+        // РђРЅС‚РёРґСѓР±Р»СЊ: РЅРµ СЃРїР°РјРёРј РѕРґРЅСѓ РєРѕРјРїР°РЅРёСЋ С‡Р°С‰Рµ СЂР°Р·Р° РІ 6 С‡Р°СЃРѕРІ
         const dupKey = `${guildId}:${companyIdNum}`;
         const lastAt = lastNavMoveAt.get(dupKey) || 0;
         if (nowSec - lastAt < antiDupWindowSec) continue;
@@ -4919,8 +4919,8 @@ async function checkSharpNavMoves(db: any): Promise<void> {
 }
 
 /**
- * Собирает текст суточного дайджеста: топ-5 роста и топ-5 падения NAV за 24ч.
- * Возвращает null, если данных за сутки нет.
+ * РЎРѕР±РёСЂР°РµС‚ С‚РµРєСЃС‚ СЃСѓС‚РѕС‡РЅРѕРіРѕ РґР°Р№РґР¶РµСЃС‚Р°: С‚РѕРї-5 СЂРѕСЃС‚Р° Рё С‚РѕРї-5 РїР°РґРµРЅРёСЏ NAV Р·Р° 24С‡.
+ * Р’РѕР·РІСЂР°С‰Р°РµС‚ null, РµСЃР»Рё РґР°РЅРЅС‹С… Р·Р° СЃСѓС‚РєРё РЅРµС‚.
  */
 async function buildDailyDigestText(db: any, guildId: string): Promise<string | null> {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -4953,7 +4953,7 @@ async function buildDailyDigestText(db: any, guildId: string): Promise<string | 
     if (!firstNav || firstNav <= 0) continue;
 
     movers.push({
-      name: String(comp.name || 'Компания'),
+      name: String(comp.name || 'РљРѕРјРїР°РЅРёСЏ'),
       ticker: String(comp.ticker || '???'),
       changePct: Math.round(((lastNav - firstNav) / firstNav) * 1000) / 10,
       spark: sparkline(series),
@@ -4973,30 +4973,30 @@ async function buildDailyDigestText(db: any, guildId: string): Promise<string | 
 
   const lines: string[] = [];
   if (gainers.length > 0) {
-    lines.push('**🚀 Лидеры роста за 24ч:**');
+    lines.push('**рџљЂ Р›РёРґРµСЂС‹ СЂРѕСЃС‚Р° Р·Р° 24С‡:**');
     for (const m of gainers) {
-      lines.push(`• **${m.name}** (\`${m.ticker}\`): +${m.changePct}% ${m.spark}`);
+      lines.push(`вЂў **${m.name}** (\`${m.ticker}\`): +${m.changePct}% ${m.spark}`);
     }
   }
   if (losers.length > 0) {
     if (lines.length > 0) lines.push('');
-    lines.push('**📉 Лидеры падения за 24ч:**');
+    lines.push('**рџ“‰ Р›РёРґРµСЂС‹ РїР°РґРµРЅРёСЏ Р·Р° 24С‡:**');
     for (const m of losers) {
-      lines.push(`• **${m.name}** (\`${m.ticker}\`): ${m.changePct}% ${m.spark}`);
+      lines.push(`вЂў **${m.name}** (\`${m.ticker}\`): ${m.changePct}% ${m.spark}`);
     }
   }
   if (lines.length === 0) {
-    lines.push('За сутки рынок без заметных движений — полный штиль. 🌊');
+    lines.push('Р—Р° СЃСѓС‚РєРё СЂС‹РЅРѕРє Р±РµР· Р·Р°РјРµС‚РЅС‹С… РґРІРёР¶РµРЅРёР№ вЂ” РїРѕР»РЅС‹Р№ С€С‚РёР»СЊ. рџЊЉ');
   }
 
   return lines.join('\n');
 }
 
 /**
- * Раз в сутки формирует сводку биржи (топ-5 роста и топ-5 падения NAV за 24ч)
- * и ставит событие daily_digest в очередь. Захват дня идемпотентен через
- * last_digest_day в exchange_guild_state: день помечается до постановки в
- * очередь, поэтому повторные тики в тот же день не дублируют выпуск.
+ * Р Р°Р· РІ СЃСѓС‚РєРё С„РѕСЂРјРёСЂСѓРµС‚ СЃРІРѕРґРєСѓ Р±РёСЂР¶Рё (С‚РѕРї-5 СЂРѕСЃС‚Р° Рё С‚РѕРї-5 РїР°РґРµРЅРёСЏ NAV Р·Р° 24С‡)
+ * Рё СЃС‚Р°РІРёС‚ СЃРѕР±С‹С‚РёРµ daily_digest РІ РѕС‡РµСЂРµРґСЊ. Р—Р°С…РІР°С‚ РґРЅСЏ РёРґРµРјРїРѕС‚РµРЅС‚РµРЅ С‡РµСЂРµР·
+ * last_digest_day РІ exchange_guild_state: РґРµРЅСЊ РїРѕРјРµС‡Р°РµС‚СЃСЏ РґРѕ РїРѕСЃС‚Р°РЅРѕРІРєРё РІ
+ * РѕС‡РµСЂРµРґСЊ, РїРѕСЌС‚РѕРјСѓ РїРѕРІС‚РѕСЂРЅС‹Рµ С‚РёРєРё РІ С‚РѕС‚ Р¶Рµ РґРµРЅСЊ РЅРµ РґСѓР±Р»РёСЂСѓСЋС‚ РІС‹РїСѓСЃРє.
  */
 async function processDailyDigest(db: any, bot: Client): Promise<void> {
   const todayStr = getVladivostokDate();
@@ -5010,7 +5010,7 @@ async function processDailyDigest(db: any, bot: Client): Promise<void> {
 
     for (const guildId of guildIds) {
       try {
-        // Захват дня: пропускаем гильдии, у которых дайджест сегодня уже выпускался
+        // Р—Р°С…РІР°С‚ РґРЅСЏ: РїСЂРѕРїСѓСЃРєР°РµРј РіРёР»СЊРґРёРё, Сѓ РєРѕС‚РѕСЂС‹С… РґР°Р№РґР¶РµСЃС‚ СЃРµРіРѕРґРЅСЏ СѓР¶Рµ РІС‹РїСѓСЃРєР°Р»СЃСЏ
         const stateResult = await db.execute({
           sql: 'SELECT last_digest_day FROM exchange_guild_state WHERE guild_id = ?',
           args: [guildId],
@@ -5019,9 +5019,9 @@ async function processDailyDigest(db: any, bot: Client): Promise<void> {
         if (lastDigestDay === todayStr) continue;
 
         const digestText = await buildDailyDigestText(db, guildId);
-        if (!digestText) continue; // Нет данных за 24ч — день не помечаем
+        if (!digestText) continue; // РќРµС‚ РґР°РЅРЅС‹С… Р·Р° 24С‡ вЂ” РґРµРЅСЊ РЅРµ РїРѕРјРµС‡Р°РµРј
 
-        // Помечаем день ДО постановки в очередь (идемпотентность захвата дня)
+        // РџРѕРјРµС‡Р°РµРј РґРµРЅСЊ Р”Рћ РїРѕСЃС‚Р°РЅРѕРІРєРё РІ РѕС‡РµСЂРµРґСЊ (РёРґРµРјРїРѕС‚РµРЅС‚РЅРѕСЃС‚СЊ Р·Р°С…РІР°С‚Р° РґРЅСЏ)
         await db.execute({
           sql: `INSERT INTO exchange_guild_state (guild_id, last_digest_day)
                 VALUES (?, ?)
@@ -5044,20 +5044,20 @@ client.on('ready', async () => {
   console.log(`[Collector] Starting migration...`);
   await migrateSchema();
 
-  // Инициализация пула квестов
+  // РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РїСѓР»Р° РєРІРµСЃС‚РѕРІ
   await ensureQuestsPool(db);
 
-  // Инициализация городских участков (12 на гильдию, идемпотентно)
+  // РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РіРѕСЂРѕРґСЃРєРёС… СѓС‡Р°СЃС‚РєРѕРІ (12 РЅР° РіРёР»СЊРґРёСЋ, РёРґРµРјРїРѕС‚РµРЅС‚РЅРѕ)
   await ensureCityPlots(db, client);
 
   // ============================================
-  // Автоматическая регистрация слэш-команд: газета + биржа
-  // (guild.commands.create — мгновенная гильдейская регистрация,
-  // появляется в Discord СРАЗУ, без ожидания глобальной синхронизации)
+  // РђРІС‚РѕРјР°С‚РёС‡РµСЃРєР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ СЃР»СЌС€-РєРѕРјР°РЅРґ: РіР°Р·РµС‚Р° + Р±РёСЂР¶Р°
+  // (guild.commands.create вЂ” РјРіРЅРѕРІРµРЅРЅР°СЏ РіРёР»СЊРґРµР№СЃРєР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ,
+  // РїРѕСЏРІР»СЏРµС‚СЃСЏ РІ Discord РЎР РђР—РЈ, Р±РµР· РѕР¶РёРґР°РЅРёСЏ РіР»РѕР±Р°Р»СЊРЅРѕР№ СЃРёРЅС…СЂРѕРЅРёР·Р°С†РёРё)
   // ============================================
   try {
     for (const [, guild] of client.guilds.cache) {
-      // Обновляем кэш команд гильдии, чтобы проверка на дубликаты была валидной
+      // РћР±РЅРѕРІР»СЏРµРј РєСЌС€ РєРѕРјР°РЅРґ РіРёР»СЊРґРёРё, С‡С‚РѕР±С‹ РїСЂРѕРІРµСЂРєР° РЅР° РґСѓР±Р»РёРєР°С‚С‹ Р±С‹Р»Р° РІР°Р»РёРґРЅРѕР№
       try {
         await guild.commands.fetch();
       } catch (fetchErr) {
@@ -5068,55 +5068,55 @@ client.on('ready', async () => {
       if (!existing) {
         await guild.commands.create({
           name: 'test-gazeta',
-          description: 'Сгенерировать и выпустить AI-газету за неделю (только для администрации)',
+          description: 'РЎРіРµРЅРµСЂРёСЂРѕРІР°С‚СЊ Рё РІС‹РїСѓСЃС‚РёС‚СЊ AI-РіР°Р·РµС‚Сѓ Р·Р° РЅРµРґРµР»СЋ (С‚РѕР»СЊРєРѕ РґР»СЏ Р°РґРјРёРЅРёСЃС‚СЂР°С†РёРё)',
         });
         console.log(`[Gazeta] Slash command test-gazeta registered in guild ${guild.id}`);
       }
 
       // ============================================
-      // Слэш-команды биржи (мгновенная гильдейская регистрация)
+      // РЎР»СЌС€-РєРѕРјР°РЅРґС‹ Р±РёСЂР¶Рё (РјРіРЅРѕРІРµРЅРЅР°СЏ РіРёР»СЊРґРµР№СЃРєР°СЏ СЂРµРіРёСЃС‚СЂР°С†РёСЏ)
       // type 3 = STRING, type 4 = INTEGER, type 7 = CHANNEL
       // ============================================
       const exchangeCommands: any[] = [
-        { name: 'stocks', description: 'Котировки акций компаний сервера' },
-        { name: 'portfolio', description: 'Ваш инвестиционный портфель акций' },
+        { name: 'stocks', description: 'РљРѕС‚РёСЂРѕРІРєРё Р°РєС†РёР№ РєРѕРјРїР°РЅРёР№ СЃРµСЂРІРµСЂР°' },
+        { name: 'portfolio', description: 'Р’Р°С€ РёРЅРІРµСЃС‚РёС†РёРѕРЅРЅС‹Р№ РїРѕСЂС‚С„РµР»СЊ Р°РєС†РёР№' },
         {
           name: 'company-create',
-          description: 'Создать компанию на бирже',
+          description: 'РЎРѕР·РґР°С‚СЊ РєРѕРјРїР°РЅРёСЋ РЅР° Р±РёСЂР¶Рµ',
           options: [
-            { name: 'name', description: 'Название компании', type: 3, required: true },
-            { name: 'ticker', description: 'Тикер акций (2-5 латинских букв, опционально)', type: 3, required: false },
-            { name: 'description', description: 'Описание компании', type: 3, required: true },
+            { name: 'name', description: 'РќР°Р·РІР°РЅРёРµ РєРѕРјРїР°РЅРёРё', type: 3, required: true },
+            { name: 'ticker', description: 'РўРёРєРµСЂ Р°РєС†РёР№ (2-5 Р»Р°С‚РёРЅСЃРєРёС… Р±СѓРєРІ, РѕРїС†РёРѕРЅР°Р»СЊРЅРѕ)', type: 3, required: false },
+            { name: 'description', description: 'РћРїРёСЃР°РЅРёРµ РєРѕРјРїР°РЅРёРё', type: 3, required: true },
           ],
         },
         {
           name: 'invest',
-          description: 'Купить акции компании',
+          description: 'РљСѓРїРёС‚СЊ Р°РєС†РёРё РєРѕРјРїР°РЅРёРё',
           options: [
-            { name: 'company', description: 'Тикер или название компании', type: 3, required: true },
-            { name: 'amount', description: 'Количество акций', type: 4, required: true },
+            { name: 'company', description: 'РўРёРєРµСЂ РёР»Рё РЅР°Р·РІР°РЅРёРµ РєРѕРјРїР°РЅРёРё', type: 3, required: true },
+            { name: 'amount', description: 'РљРѕР»РёС‡РµСЃС‚РІРѕ Р°РєС†РёР№', type: 4, required: true },
           ],
         },
         {
           name: 'divest',
-          description: 'Продать акции компании',
+          description: 'РџСЂРѕРґР°С‚СЊ Р°РєС†РёРё РєРѕРјРїР°РЅРёРё',
           options: [
-            { name: 'company', description: 'Тикер или название компании', type: 3, required: true },
-            { name: 'amount', description: 'Количество акций', type: 4, required: true },
+            { name: 'company', description: 'РўРёРєРµСЂ РёР»Рё РЅР°Р·РІР°РЅРёРµ РєРѕРјРїР°РЅРёРё', type: 3, required: true },
+            { name: 'amount', description: 'РљРѕР»РёС‡РµСЃС‚РІРѕ Р°РєС†РёР№', type: 4, required: true },
           ],
         },
         {
           name: 'exchange-setup',
-          description: 'Настроить канал для публичной ленты биржи (только Manage Server)',
+          description: 'РќР°СЃС‚СЂРѕРёС‚СЊ РєР°РЅР°Р» РґР»СЏ РїСѓР±Р»РёС‡РЅРѕР№ Р»РµРЅС‚С‹ Р±РёСЂР¶Рё (С‚РѕР»СЊРєРѕ Manage Server)',
           options: [
-            { name: 'channel', description: 'Текстовый канал для событий биржи', type: 7, required: true },
+            { name: 'channel', description: 'РўРµРєСЃС‚РѕРІС‹Р№ РєР°РЅР°Р» РґР»СЏ СЃРѕР±С‹С‚РёР№ Р±РёСЂР¶Рё', type: 7, required: true },
           ],
         },
         {
           name: 'exchange-top',
-          description: 'Рейтинг инвесторов и компаний сезона по доходности (ROI)',
+          description: 'Р РµР№С‚РёРЅРі РёРЅРІРµСЃС‚РѕСЂРѕРІ Рё РєРѕРјРїР°РЅРёР№ СЃРµР·РѕРЅР° РїРѕ РґРѕС…РѕРґРЅРѕСЃС‚Рё (ROI)',
           options: [
-            { name: 'season', description: 'ID сезона (по умолчанию текущий)', type: 3, required: false },
+            { name: 'season', description: 'ID СЃРµР·РѕРЅР° (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ С‚РµРєСѓС‰РёР№)', type: 3, required: false },
           ],
         },
       ];
@@ -5134,37 +5134,37 @@ client.on('ready', async () => {
       }
 
       // ============================================
-      // Слэш-команда /plot (Город — Шаг 2: info, buy, sell)
+      // РЎР»СЌС€-РєРѕРјР°РЅРґР° /plot (Р“РѕСЂРѕРґ вЂ” РЁР°Рі 2: info, buy, sell)
       // type 1 = SUB_COMMAND, type 3 = STRING, type 4 = INTEGER
       // ============================================
       const plotCommand: any = {
         name: 'plot',
-        description: 'Город: участки недвижимости',
+        description: 'Р“РѕСЂРѕРґ: СѓС‡Р°СЃС‚РєРё РЅРµРґРІРёР¶РёРјРѕСЃС‚Рё',
         options: [
           {
             name: 'info',
-            description: 'Информация об участке',
+            description: 'РРЅС„РѕСЂРјР°С†РёСЏ РѕР± СѓС‡Р°СЃС‚РєРµ',
             type: 1,
             options: [
-              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+              { name: 'plot_id', description: 'ID СѓС‡Р°СЃС‚РєР° (1-12)', type: 4, required: true },
             ],
           },
           {
             name: 'buy',
-            description: 'Купить участок (себе или компании)',
+            description: 'РљСѓРїРёС‚СЊ СѓС‡Р°СЃС‚РѕРє (СЃРµР±Рµ РёР»Рё РєРѕРјРїР°РЅРёРё)',
             type: 1,
             options: [
-              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
-              { name: 'company', description: 'Тикер компании-покупателя (опционально)', type: 3, required: false },
+              { name: 'plot_id', description: 'ID СѓС‡Р°СЃС‚РєР° (1-12)', type: 4, required: true },
+              { name: 'company', description: 'РўРёРєРµСЂ РєРѕРјРїР°РЅРёРё-РїРѕРєСѓРїР°С‚РµР»СЏ (РѕРїС†РёРѕРЅР°Р»СЊРЅРѕ)', type: 3, required: false },
             ],
           },
           {
             name: 'sell',
-            description: 'Выставить участок на продажу (price=0 — снять с продажи)',
+            description: 'Р’С‹СЃС‚Р°РІРёС‚СЊ СѓС‡Р°СЃС‚РѕРє РЅР° РїСЂРѕРґР°Р¶Сѓ (price=0 вЂ” СЃРЅСЏС‚СЊ СЃ РїСЂРѕРґР°Р¶Рё)',
             type: 1,
             options: [
-              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
-              { name: 'price', description: 'Цена в 🪙 (0 — снять с продажи)', type: 4, required: true },
+              { name: 'plot_id', description: 'ID СѓС‡Р°СЃС‚РєР° (1-12)', type: 4, required: true },
+              { name: 'price', description: 'Р¦РµРЅР° РІ рџЄ™ (0 вЂ” СЃРЅСЏС‚СЊ СЃ РїСЂРѕРґР°Р¶Рё)', type: 4, required: true },
             ],
           },
         ],
@@ -5181,25 +5181,25 @@ client.on('ready', async () => {
       }
 
       // ============================================
-      // Слэш-команды /build и /upgrade (Город — Шаг 3)
+      // РЎР»СЌС€-РєРѕРјР°РЅРґС‹ /build Рё /upgrade (Р“РѕСЂРѕРґ вЂ” РЁР°Рі 3)
       // type 3 = STRING, type 4 = INTEGER
       // ============================================
       const buildCommand: any = {
         name: 'build',
-        description: 'Город: построить здание на участке',
+        description: 'Р“РѕСЂРѕРґ: РїРѕСЃС‚СЂРѕРёС‚СЊ Р·РґР°РЅРёРµ РЅР° СѓС‡Р°СЃС‚РєРµ',
         options: [
-          { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
+          { name: 'plot_id', description: 'ID СѓС‡Р°СЃС‚РєР° (1-12)', type: 4, required: true },
           {
-            name: 'type', description: 'Тип бизнеса', type: 3, required: true,
+            name: 'type', description: 'РўРёРї Р±РёР·РЅРµСЃР°', type: 3, required: true,
             choices: [
-              { name: '⛏️ Шахта', value: 'mine' },
-              { name: '🌾 Ферма', value: 'farm' },
-              { name: '⛽ АЗС', value: 'gas_station' },
-              { name: '🛒 Супермаркет', value: 'shop' },
-              { name: '🍽️ Ресторан', value: 'restaurant' },
-              { name: '🎰 Казино', value: 'casino' },
-              { name: '🏛️ Банк', value: 'bank' },
-              { name: '⚓ Морской порт', value: 'port' }
+              { name: 'в›ЏпёЏ РЁР°С…С‚Р°', value: 'mine' },
+              { name: 'рџЊѕ Р¤РµСЂРјР°', value: 'farm' },
+              { name: 'в›Ѕ РђР—РЎ', value: 'gas_station' },
+              { name: 'рџ›’ РЎСѓРїРµСЂРјР°СЂРєРµС‚', value: 'shop' },
+              { name: 'рџЌЅпёЏ Р РµСЃС‚РѕСЂР°РЅ', value: 'restaurant' },
+              { name: 'рџЋ° РљР°Р·РёРЅРѕ', value: 'casino' },
+              { name: 'рџЏ›пёЏ Р‘Р°РЅРє', value: 'bank' },
+              { name: 'вљ“ РњРѕСЂСЃРєРѕР№ РїРѕСЂС‚', value: 'port' }
             ]
           }
         ],
@@ -5217,9 +5217,9 @@ client.on('ready', async () => {
 
       const upgradeCommand: any = {
         name: 'upgrade',
-        description: 'Город: улучшить здание на участке (до уровня 3)',
+        description: 'Р“РѕСЂРѕРґ: СѓР»СѓС‡С€РёС‚СЊ Р·РґР°РЅРёРµ РЅР° СѓС‡Р°СЃС‚РєРµ (РґРѕ СѓСЂРѕРІРЅСЏ 3)',
         options: [
-          { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true }
+          { name: 'plot_id', description: 'ID СѓС‡Р°СЃС‚РєР° (1-12)', type: 4, required: true }
         ],
       };
 
@@ -5234,25 +5234,25 @@ client.on('ready', async () => {
       }
 
       // ============================================
-      // Слэш-команда /auction (Город — Шаг 4: аукционы участков)
+      // РЎР»СЌС€-РєРѕРјР°РЅРґР° /auction (Р“РѕСЂРѕРґ вЂ” РЁР°Рі 4: Р°СѓРєС†РёРѕРЅС‹ СѓС‡Р°СЃС‚РєРѕРІ)
       // type 1 = SUB_COMMAND, type 4 = INTEGER
       // ============================================
       const auctionCommand: any = {
         name: 'auction',
-        description: 'Город: аукционы участков',
+        description: 'Р“РѕСЂРѕРґ: Р°СѓРєС†РёРѕРЅС‹ СѓС‡Р°СЃС‚РєРѕРІ',
         options: [
           {
             name: 'list',
-            description: 'Список активных аукционов',
+            description: 'РЎРїРёСЃРѕРє Р°РєС‚РёРІРЅС‹С… Р°СѓРєС†РёРѕРЅРѕРІ',
             type: 1,
           },
           {
             name: 'bid',
-            description: 'Сделать ставку на аукционе',
+            description: 'РЎРґРµР»Р°С‚СЊ СЃС‚Р°РІРєСѓ РЅР° Р°СѓРєС†РёРѕРЅРµ',
             type: 1,
             options: [
-              { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
-              { name: 'amount', description: 'Размер ставки в 🪙', type: 4, required: true },
+              { name: 'plot_id', description: 'ID СѓС‡Р°СЃС‚РєР° (1-12)', type: 4, required: true },
+              { name: 'amount', description: 'Р Р°Р·РјРµСЂ СЃС‚Р°РІРєРё РІ рџЄ™', type: 4, required: true },
             ],
           },
         ],
@@ -5269,11 +5269,11 @@ client.on('ready', async () => {
       }
 
       // ============================================
-      // Слэш-команда /map (Город — Шаг 5: интерактивная карта)
+      // РЎР»СЌС€-РєРѕРјР°РЅРґР° /map (Р“РѕСЂРѕРґ вЂ” РЁР°Рі 5: РёРЅС‚РµСЂР°РєС‚РёРІРЅР°СЏ РєР°СЂС‚Р°)
       // ============================================
       const mapCommand: any = {
         name: 'map',
-        description: 'Город: интерактивная карта участков и недвижимости',
+        description: 'Р“РѕСЂРѕРґ: РёРЅС‚РµСЂР°РєС‚РёРІРЅР°СЏ РєР°СЂС‚Р° СѓС‡Р°СЃС‚РєРѕРІ Рё РЅРµРґРІРёР¶РёРјРѕСЃС‚Рё',
       };
 
       try {
@@ -5295,74 +5295,74 @@ client.on('ready', async () => {
   console.log(`[Memory] RSS: ${memUsage}MB`);
 
   // ============================================
-  // Запуск фоновых таймеров для Этапа 4-7
+  // Р—Р°РїСѓСЃРє С„РѕРЅРѕРІС‹С… С‚Р°Р№РјРµСЂРѕРІ РґР»СЏ Р­С‚Р°РїР° 4-7
   // ============================================
 
-  // Еженедельный сброс и награждение (раз в час)
+  // Р•Р¶РµРЅРµРґРµР»СЊРЅС‹Р№ СЃР±СЂРѕСЃ Рё РЅР°РіСЂР°Р¶РґРµРЅРёРµ (СЂР°Р· РІ С‡Р°СЃ)
   console.log('[WeeklyReset] Starting weekly reset checker...');
   try {
-    await checkWeeklyReset(db, client); // Проверка сразу при старте
+    await checkWeeklyReset(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (err) {
-    console.error('[WeeklyReset] Startup check failed, collector продолжает работу:', err);
+    console.error('[WeeklyReset] Startup check failed, collector РїСЂРѕРґРѕР»Р¶Р°РµС‚ СЂР°Р±РѕС‚Сѓ:', err);
   }
   setInterval(async () => {
     try {
       console.log('[WeeklyReset] Checking for weekly reset...');
       await checkWeeklyReset(db, client);
     } catch (err) {
-      console.error('[WeeklyReset] Interval check failed, collector продолжает работу:', err);
+      console.error('[WeeklyReset] Interval check failed, collector РїСЂРѕРґРѕР»Р¶Р°РµС‚ СЂР°Р±РѕС‚Сѓ:', err);
     }
-  }, 60 * 60 * 1000); // Каждый час
+  }, 60 * 60 * 1000); // РљР°Р¶РґС‹Р№ С‡Р°СЃ
 
-  // Таймер проверки и запуска Happy Hours (раз в час)
+  // РўР°Р№РјРµСЂ РїСЂРѕРІРµСЂРєРё Рё Р·Р°РїСѓСЃРєР° Happy Hours (СЂР°Р· РІ С‡Р°СЃ)
   setInterval(async () => {
     console.log('[HappyHour] Checking for happy hours...');
     await checkAndStartHappyHours(db, client);
-  }, 60 * 60 * 1000); // Каждый час
+  }, 60 * 60 * 1000); // РљР°Р¶РґС‹Р№ С‡Р°СЃ
 
-  // Таймер проверки и спавна Войс-дропов (раз в 7 минут)
+  // РўР°Р№РјРµСЂ РїСЂРѕРІРµСЂРєРё Рё СЃРїР°РІРЅР° Р’РѕР№СЃ-РґСЂРѕРїРѕРІ (СЂР°Р· РІ 7 РјРёРЅСѓС‚)
   setInterval(async () => {
     console.log('[AirDrop] Checking for air drops...');
     await checkAndSpawnAirDrops(db, client);
-  }, 7 * 60 * 1000); // Каждые 7 минут (сразу запуск)
+  }, 7 * 60 * 1000); // РљР°Р¶РґС‹Рµ 7 РјРёРЅСѓС‚ (СЃСЂР°Р·Сѓ Р·Р°РїСѓСЃРє)
 
-  // Таймер начисления онлайн-секунд (раз в 5 минут для Этапа 8)
+  // РўР°Р№РјРµСЂ РЅР°С‡РёСЃР»РµРЅРёСЏ РѕРЅР»Р°Р№РЅ-СЃРµРєСѓРЅРґ (СЂР°Р· РІ 5 РјРёРЅСѓС‚ РґР»СЏ Р­С‚Р°РїР° 8)
   console.log('[OnlineSeconds] Starting online seconds ticker...');
-  await awardOnlineSeconds(db, client); // Проверка сразу при старте
+  await awardOnlineSeconds(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   setInterval(async () => {
     await awardOnlineSeconds(db, client);
-  }, 5 * 60 * 1000); // Каждые 5 минут (300 секунд)
+  }, 5 * 60 * 1000); // РљР°Р¶РґС‹Рµ 5 РјРёРЅСѓС‚ (300 СЃРµРєСѓРЅРґ)
 
-  // Таймер проверки дезертов (каждые 6 часов)
+  // РўР°Р№РјРµСЂ РїСЂРѕРІРµСЂРєРё РґРµР·РµСЂС‚РѕРІ (РєР°Р¶РґС‹Рµ 6 С‡Р°СЃРѕРІ)
   console.log('[DeserterCheck] Starting deseter checker...');
-  await checkDeserters(db, client); // Проверка сразу при старте
+  await checkDeserters(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   setInterval(async () => {
     console.log('[DeserterCheck] Checking for deserters...');
     await checkDeserters(db, client);
-  }, 6 * 60 * 60 * 1000); // Каждые 6 часов
+  }, 6 * 60 * 60 * 1000); // РљР°Р¶РґС‹Рµ 6 С‡Р°СЃРѕРІ
 
-  // Таймер проверки и спавна Мирового Босса (каждые 10 минут)
+  // РўР°Р№РјРµСЂ РїСЂРѕРІРµСЂРєРё Рё СЃРїР°РІРЅР° РњРёСЂРѕРІРѕРіРѕ Р‘РѕСЃСЃР° (РєР°Р¶РґС‹Рµ 10 РјРёРЅСѓС‚)
   console.log('[WorldBoss] Starting world boss checker...');
   try {
-    await checkAndSpawnWorldBoss(db, client); // Проверка сразу при старте
+    await checkAndSpawnWorldBoss(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (err) {
-    console.error('[WorldBoss] Startup check failed, collector продолжает работу:', err);
+    console.error('[WorldBoss] Startup check failed, collector РїСЂРѕРґРѕР»Р¶Р°РµС‚ СЂР°Р±РѕС‚Сѓ:', err);
   }
   setInterval(async () => {
     try {
       console.log('[WorldBoss] Checking for world boss...');
       await checkAndSpawnWorldBoss(db, client);
     } catch (err) {
-      console.error('[WorldBoss] Interval check failed, collector продолжает работу:', err);
+      console.error('[WorldBoss] Interval check failed, collector РїСЂРѕРґРѕР»Р¶Р°РµС‚ СЂР°Р±РѕС‚Сѓ:', err);
     }
-  }, 10 * 60 * 1000); // Каждые 10 минут
+  }, 10 * 60 * 1000); // РљР°Р¶РґС‹Рµ 10 РјРёРЅСѓС‚
 
   // ============================================
-  // Суточный рост казны компаний (идемпотентно, проверка каждые 10 минут)
+  // РЎСѓС‚РѕС‡РЅС‹Р№ СЂРѕСЃС‚ РєР°Р·РЅС‹ РєРѕРјРїР°РЅРёР№ (РёРґРµРјРїРѕС‚РµРЅС‚РЅРѕ, РїСЂРѕРІРµСЂРєР° РєР°Р¶РґС‹Рµ 10 РјРёРЅСѓС‚)
   // ============================================
   console.log('[Growth] Starting company treasury growth ticker...');
   try {
-    await processDailyCompanyGrowth(db, client); // Проверка сразу при старте
+    await processDailyCompanyGrowth(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[Growth] Startup error:', e);
   }
@@ -5372,16 +5372,16 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[Growth] Interval error:', e);
     }
-  }, 10 * 60 * 1000); // Каждые 10 минут
+  }, 10 * 60 * 1000); // РљР°Р¶РґС‹Рµ 10 РјРёРЅСѓС‚
 
   // ============================================
-  // Сезонная ликвидация компаний (проверка смены сезона раз в час).
-  // Отдельный таймер — НЕ часть еженедельного сброса Чемпиона Недели:
-  // срабатывание строго при смене сезона (раз в 3 месяца).
+  // РЎРµР·РѕРЅРЅР°СЏ Р»РёРєРІРёРґР°С†РёСЏ РєРѕРјРїР°РЅРёР№ (РїСЂРѕРІРµСЂРєР° СЃРјРµРЅС‹ СЃРµР·РѕРЅР° СЂР°Р· РІ С‡Р°СЃ).
+  // РћС‚РґРµР»СЊРЅС‹Р№ С‚Р°Р№РјРµСЂ вЂ” РќР• С‡Р°СЃС‚СЊ РµР¶РµРЅРµРґРµР»СЊРЅРѕРіРѕ СЃР±СЂРѕСЃР° Р§РµРјРїРёРѕРЅР° РќРµРґРµР»Рё:
+  // СЃСЂР°Р±Р°С‚С‹РІР°РЅРёРµ СЃС‚СЂРѕРіРѕ РїСЂРё СЃРјРµРЅРµ СЃРµР·РѕРЅР° (СЂР°Р· РІ 3 РјРµСЃСЏС†Р°).
   // ============================================
   console.log('[Liquidation] Starting season change checker...');
   try {
-    await liquidateCompaniesOnSeasonChange(db); // Проверка сразу при старте
+    await liquidateCompaniesOnSeasonChange(db); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[Liquidation] Startup error:', e);
   }
@@ -5391,15 +5391,15 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[Liquidation] Interval error:', e);
     }
-  }, 60 * 60 * 1000); // Каждый час
+  }, 60 * 60 * 1000); // РљР°Р¶РґС‹Р№ С‡Р°СЃ
 
   // ============================================
-  // Чистка истории биржи (каждый час): отправленные market_events старше 14 дней,
-  // company_nav_history старше 60 дней.
+  // Р§РёСЃС‚РєР° РёСЃС‚РѕСЂРёРё Р±РёСЂР¶Рё (РєР°Р¶РґС‹Р№ С‡Р°СЃ): РѕС‚РїСЂР°РІР»РµРЅРЅС‹Рµ market_events СЃС‚Р°СЂС€Рµ 14 РґРЅРµР№,
+  // company_nav_history СЃС‚Р°СЂС€Рµ 60 РґРЅРµР№.
   // ============================================
   console.log('[ExchangeCleanup] Starting exchange history cleanup ticker...');
   try {
-    await cleanupExchangeHistory(db); // Чистка сразу при старте
+    await cleanupExchangeHistory(db); // Р§РёСЃС‚РєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[ExchangeCleanup] Startup error:', e);
   }
@@ -5409,16 +5409,16 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[ExchangeCleanup] Interval error:', e);
     }
-  }, 60 * 60 * 1000); // Каждый час
+  }, 60 * 60 * 1000); // РљР°Р¶РґС‹Р№ С‡Р°СЃ
 
   // ============================================
-  // Лента биржи (Этап 4.2): фоновые процессы
+  // Р›РµРЅС‚Р° Р±РёСЂР¶Рё (Р­С‚Р°Рї 4.2): С„РѕРЅРѕРІС‹Рµ РїСЂРѕС†РµСЃСЃС‹
   // ============================================
 
-  // Outbox-доставка событий ленты (каждые 20 секунд)
+  // Outbox-РґРѕСЃС‚Р°РІРєР° СЃРѕР±С‹С‚РёР№ Р»РµРЅС‚С‹ (РєР°Р¶РґС‹Рµ 20 СЃРµРєСѓРЅРґ)
   console.log('[ExchangeFeed] Starting market events outbox ticker...');
   try {
-    await processMarketEventsOutbox(db, client); // Доставка сразу при старте
+    await processMarketEventsOutbox(db, client); // Р”РѕСЃС‚Р°РІРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[ExchangeFeed] Outbox startup error:', e);
   }
@@ -5428,12 +5428,12 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[ExchangeFeed] Outbox interval error:', e);
     }
-  }, 20 * 1000); // Каждые 20 секунд
+  }, 20 * 1000); // РљР°Р¶РґС‹Рµ 20 СЃРµРєСѓРЅРґ
 
-  // Резкие движения NAV (каждые 5 минут)
+  // Р РµР·РєРёРµ РґРІРёР¶РµРЅРёСЏ NAV (РєР°Р¶РґС‹Рµ 5 РјРёРЅСѓС‚)
   console.log('[ExchangeFeed] Starting sharp NAV moves ticker...');
   try {
-    await checkSharpNavMoves(db); // Проверка сразу при старте
+    await checkSharpNavMoves(db); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[ExchangeFeed] NAV moves startup error:', e);
   }
@@ -5443,12 +5443,12 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[ExchangeFeed] NAV moves interval error:', e);
     }
-  }, 5 * 60 * 1000); // Каждые 5 минут
+  }, 5 * 60 * 1000); // РљР°Р¶РґС‹Рµ 5 РјРёРЅСѓС‚
 
-  // Суточный дайджест биржи (каждые 15 минут, захват дня через last_digest_day)
+  // РЎСѓС‚РѕС‡РЅС‹Р№ РґР°Р№РґР¶РµСЃС‚ Р±РёСЂР¶Рё (РєР°Р¶РґС‹Рµ 15 РјРёРЅСѓС‚, Р·Р°С…РІР°С‚ РґРЅСЏ С‡РµСЂРµР· last_digest_day)
   console.log('[ExchangeFeed] Starting daily digest ticker...');
   try {
-    await processDailyDigest(db, client); // Проверка сразу при старте
+    await processDailyDigest(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[ExchangeFeed] Digest startup error:', e);
   }
@@ -5458,15 +5458,15 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[ExchangeFeed] Digest interval error:', e);
     }
-  }, 15 * 60 * 1000); // Каждые 15 минут
+  }, 15 * 60 * 1000); // РљР°Р¶РґС‹Рµ 15 РјРёРЅСѓС‚
 
   // ============================================
-  // Кризисы компаний: спавн (каждые 30 минут) и таймауты (каждую минуту).
-  // Интервалы спавна/TTL настраиваются env-переменными для тестовой гильдии.
+  // РљСЂРёР·РёСЃС‹ РєРѕРјРїР°РЅРёР№: СЃРїР°РІРЅ (РєР°Р¶РґС‹Рµ 30 РјРёРЅСѓС‚) Рё С‚Р°Р№РјР°СѓС‚С‹ (РєР°Р¶РґСѓСЋ РјРёРЅСѓС‚Сѓ).
+  // РРЅС‚РµСЂРІР°Р»С‹ СЃРїР°РІРЅР°/TTL РЅР°СЃС‚СЂР°РёРІР°СЋС‚СЃСЏ env-РїРµСЂРµРјРµРЅРЅС‹РјРё РґР»СЏ С‚РµСЃС‚РѕРІРѕР№ РіРёР»СЊРґРёРё.
   // ============================================
   console.log('[Crises] Starting crisis tickers...');
   try {
-    await processCompanyCrises(db, client); // Проверка сразу при старте
+    await processCompanyCrises(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[Crises] Spawn startup error:', e);
   }
@@ -5476,10 +5476,10 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[Crises] Spawn interval error:', e);
     }
-  }, 30 * 60 * 1000); // Каждые 30 минут
+  }, 30 * 60 * 1000); // РљР°Р¶РґС‹Рµ 30 РјРёРЅСѓС‚
 
   try {
-    await processCrisisTimeouts(db, client); // Проверка сразу при старте
+    await processCrisisTimeouts(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[Crises] Timeout startup error:', e);
   }
@@ -5489,15 +5489,15 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[Crises] Timeout interval error:', e);
     }
-  }, 60 * 1000); // Каждую минуту
+  }, 60 * 1000); // РљР°Р¶РґСѓСЋ РјРёРЅСѓС‚Сѓ
 
   // ============================================
-  // M11: таймер проверки зависших дуэлей (каждые 30 секунд).
-  // Pending-дуэли старше 5 минут истекают, сообщение редактируется.
+  // M11: С‚Р°Р№РјРµСЂ РїСЂРѕРІРµСЂРєРё Р·Р°РІРёСЃС€РёС… РґСѓСЌР»РµР№ (РєР°Р¶РґС‹Рµ 30 СЃРµРєСѓРЅРґ).
+  // Pending-РґСѓСЌР»Рё СЃС‚Р°СЂС€Рµ 5 РјРёРЅСѓС‚ РёСЃС‚РµРєР°СЋС‚, СЃРѕРѕР±С‰РµРЅРёРµ СЂРµРґР°РєС‚РёСЂСѓРµС‚СЃСЏ.
   // ============================================
   console.log('[Duel] Starting expired duels ticker...');
   try {
-    await checkExpiredDuels(db, client); // Проверка сразу при старте
+    await checkExpiredDuels(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[Duel] Startup error:', e);
   }
@@ -5510,11 +5510,11 @@ client.on('ready', async () => {
   }, 30 * 1000);
 
   // ============================================
-  // Экономика города (Шаг 4): суточный доход, недельный налог, аукционы
+  // Р­РєРѕРЅРѕРјРёРєР° РіРѕСЂРѕРґР° (РЁР°Рі 4): СЃСѓС‚РѕС‡РЅС‹Р№ РґРѕС…РѕРґ, РЅРµРґРµР»СЊРЅС‹Р№ РЅР°Р»РѕРі, Р°СѓРєС†РёРѕРЅС‹
   // ============================================
   console.log('[CityEconomy] Starting city economy tickers...');
   try {
-    await processDailyPlotRevenue(db, client); // Проверка сразу при старте
+    await processDailyPlotRevenue(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[CityEconomy] Revenue startup error:', e);
   }
@@ -5524,10 +5524,10 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[CityEconomy] Revenue interval error:', e);
     }
-  }, 60 * 60 * 1000); // Каждый час
+  }, 60 * 60 * 1000); // РљР°Р¶РґС‹Р№ С‡Р°СЃ
 
   try {
-    await processWeeklyPlotTaxes(db, client); // Проверка сразу при старте
+    await processWeeklyPlotTaxes(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[CityEconomy] Tax startup error:', e);
   }
@@ -5537,10 +5537,10 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[CityEconomy] Tax interval error:', e);
     }
-  }, 60 * 60 * 1000); // Каждый час
+  }, 60 * 60 * 1000); // РљР°Р¶РґС‹Р№ С‡Р°СЃ
 
   try {
-    await processExpiredAuctions(db, client); // Проверка сразу при старте
+    await processExpiredAuctions(db, client); // РџСЂРѕРІРµСЂРєР° СЃСЂР°Р·Сѓ РїСЂРё СЃС‚Р°СЂС‚Рµ
   } catch (e) {
     console.error('[CityEconomy] Auction startup error:', e);
   }
@@ -5550,9 +5550,9 @@ client.on('ready', async () => {
     } catch (e) {
       console.error('[CityEconomy] Auction interval error:', e);
     }
-  }, 5 * 60 * 1000); // Каждые 5 минут
+  }, 5 * 60 * 1000); // РљР°Р¶РґС‹Рµ 5 РјРёРЅСѓС‚
 
-  // Еженедельная AI-газета (каждое воскресенье в 20:00 по Владивостоку)
+  // Р•Р¶РµРЅРµРґРµР»СЊРЅР°СЏ AI-РіР°Р·РµС‚Р° (РєР°Р¶РґРѕРµ РІРѕСЃРєСЂРµСЃРµРЅСЊРµ РІ 20:00 РїРѕ Р’Р»Р°РґРёРІРѕСЃС‚РѕРєСѓ)
   console.log('[Gazeta] Starting weekly digest scheduler...');
   scheduleWeeklyDigest(client);
 });
@@ -5561,8 +5561,8 @@ client.on('messageCreate', async (message: Message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
-  // Пропускаем системные сообщения и вызовы слэш-команд,
-  // чтобы вызовы команд не накручивали счётчик сообщений за день
+  // РџСЂРѕРїСѓСЃРєР°РµРј СЃРёСЃС‚РµРјРЅС‹Рµ СЃРѕРѕР±С‰РµРЅРёСЏ Рё РІС‹Р·РѕРІС‹ СЃР»СЌС€-РєРѕРјР°РЅРґ,
+  // С‡С‚РѕР±С‹ РІС‹Р·РѕРІС‹ РєРѕРјР°РЅРґ РЅРµ РЅР°РєСЂСѓС‡РёРІР°Р»Рё СЃС‡С‘С‚С‡РёРє СЃРѕРѕР±С‰РµРЅРёР№ Р·Р° РґРµРЅСЊ
   if (message.interaction || message.type !== 0) return;
 
   const { author, guild } = message;
@@ -5574,8 +5574,8 @@ client.on('messageCreate', async (message: Message) => {
     const now = Date.now();
 
     // ============================================
-    // 0. Автосоздание пользователя (upsert), чтобы последующие
-    //    операции (XP, стрики, квесты) не падали с "user not found in DB"
+    // 0. РђРІС‚РѕСЃРѕР·РґР°РЅРёРµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ (upsert), С‡С‚РѕР±С‹ РїРѕСЃР»РµРґСѓСЋС‰РёРµ
+    //    РѕРїРµСЂР°С†РёРё (XP, СЃС‚СЂРёРєРё, РєРІРµСЃС‚С‹) РЅРµ РїР°РґР°Р»Рё СЃ "user not found in DB"
     // ============================================
     await db.execute({
       sql: `INSERT OR IGNORE INTO users (user_id, guild_id, xp, level, messages_count, last_message_at, last_activity_at)
@@ -5598,7 +5598,7 @@ client.on('messageCreate', async (message: Message) => {
     const cooldown = (settingsResult.rows[0]?.message_cooldown_seconds as number) || 45;
 
     if (userResult.rows.length === 0) {
-      // First message from this user - INSERT с last_activity_at
+      // First message from this user - INSERT СЃ last_activity_at
       const newXp = xpPerMessage;
       const newLevel = calculateLevel(newXp);
 
@@ -5609,7 +5609,7 @@ client.on('messageCreate', async (message: Message) => {
       });
       console.log(`[Message] New user: ${author.username} (${userId}) in ${guild.name} - XP: ${newXp}, Level: ${newLevel}`);
 
-      // Инициализация ежедневной активности для нового пользователя
+      // РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё РґР»СЏ РЅРѕРІРѕРіРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
       await db.execute({
         sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count)
               VALUES (?, ?, ?, 1)`,
@@ -5617,7 +5617,7 @@ client.on('messageCreate', async (message: Message) => {
       });
     } else {
       // ============================================
-      // 1. Расчёт кулдауна и опыта
+      // 1. Р Р°СЃС‡С‘С‚ РєСѓР»РґР°СѓРЅР° Рё РѕРїС‹С‚Р°
       // ============================================
       const row = userResult.rows[0];
       let lastMessageAt = Number(row.last_message_at || 0);
@@ -5629,16 +5629,16 @@ client.on('messageCreate', async (message: Message) => {
       const COOLDOWN_MS = cooldown * 1000;
       const canEarnXp = lastMessageAt === 0 || elapsedMs >= COOLDOWN_MS || elapsedMs < 0;
 
-      // Если кулдаун прошёл — начисляем базовый XP, иначе 0 XP
+      // Р•СЃР»Рё РєСѓР»РґР°СѓРЅ РїСЂРѕС€С‘Р» вЂ” РЅР°С‡РёСЃР»СЏРµРј Р±Р°Р·РѕРІС‹Р№ XP, РёРЅР°С‡Рµ 0 XP
       const xpToAdd = canEarnXp ? xpPerMessage : 0;
       const lastMsgToSave = canEarnXp ? now : lastMessageAt;
 
       // ============================================
-      // 2. Запрос в БД - счётчик сообщений и таймстемпы
-      // C9: базовый XP здесь больше НЕ пишется абсолютным значением (xp = ?),
-      // из-за чего при параллельных сообщениях терялись апдейты. Единственная
-      // точка начисления — awardXpWithAllMultipliers ниже (там xp = xp + ?),
-      // иначе base XP начислялся дважды за одно сообщение.
+      // 2. Р—Р°РїСЂРѕСЃ РІ Р‘Р” - СЃС‡С‘С‚С‡РёРє СЃРѕРѕР±С‰РµРЅРёР№ Рё С‚Р°Р№РјСЃС‚РµРјРїС‹
+      // C9: Р±Р°Р·РѕРІС‹Р№ XP Р·РґРµСЃСЊ Р±РѕР»СЊС€Рµ РќР• РїРёС€РµС‚СЃСЏ Р°Р±СЃРѕР»СЋС‚РЅС‹Рј Р·РЅР°С‡РµРЅРёРµРј (xp = ?),
+      // РёР·-Р·Р° С‡РµРіРѕ РїСЂРё РїР°СЂР°Р»Р»РµР»СЊРЅС‹С… СЃРѕРѕР±С‰РµРЅРёСЏС… С‚РµСЂСЏР»РёСЃСЊ Р°РїРґРµР№С‚С‹. Р•РґРёРЅСЃС‚РІРµРЅРЅР°СЏ
+      // С‚РѕС‡РєР° РЅР°С‡РёСЃР»РµРЅРёСЏ вЂ” awardXpWithAllMultipliers РЅРёР¶Рµ (С‚Р°Рј xp = xp + ?),
+      // РёРЅР°С‡Рµ base XP РЅР°С‡РёСЃР»СЏР»СЃСЏ РґРІР°Р¶РґС‹ Р·Р° РѕРґРЅРѕ СЃРѕРѕР±С‰РµРЅРёРµ.
       // ============================================
       await db.execute({
         sql: `UPDATE users
@@ -5649,7 +5649,7 @@ client.on('messageCreate', async (message: Message) => {
       });
 
       // ============================================
-      // 3. Начисляем XP с множителями (Season + Week + HH)
+      // 3. РќР°С‡РёСЃР»СЏРµРј XP СЃ РјРЅРѕР¶РёС‚РµР»СЏРјРё (Season + Week + HH)
       // ============================================
       let xpToAddFinal = 0;
       let finalLevel = Number(row.level || 0);
@@ -5657,11 +5657,11 @@ client.on('messageCreate', async (message: Message) => {
         const happyHourMultiplier = await isHappyHourActive(db, guildId);
         const xpWithHH = xpToAdd * happyHourMultiplier;
 
-        // Начисляет xp атомарно (UPDATE users SET xp = xp + ?) с учётом стрика/сезона/недели
+        // РќР°С‡РёСЃР»СЏРµС‚ xp Р°С‚РѕРјР°СЂРЅРѕ (UPDATE users SET xp = xp + ?) СЃ СѓС‡С‘С‚РѕРј СЃС‚СЂРёРєР°/СЃРµР·РѕРЅР°/РЅРµРґРµР»Рё
         const { finalXp: finalXpWithMultipliers } = await awardXpWithAllMultipliers(db, userId, guildId, xpWithHH);
         xpToAddFinal = finalXpWithMultipliers;
 
-        // Уровень считается по ФАКТИЧЕСКОМУ xp из БД и обязательно сохраняется
+        // РЈСЂРѕРІРµРЅСЊ СЃС‡РёС‚Р°РµС‚СЃСЏ РїРѕ Р¤РђРљРўРР§Р•РЎРљРћРњРЈ xp РёР· Р‘Р” Рё РѕР±СЏР·Р°С‚РµР»СЊРЅРѕ СЃРѕС…СЂР°РЅСЏРµС‚СЃСЏ
         const updatedUserResult = await db.execute({
           sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
           args: [userId, guildId],
@@ -5680,48 +5680,48 @@ client.on('messageCreate', async (message: Message) => {
       }
 
       // ============================================
-      // 4. Проверка достижений (Этап 6)
+      // 4. РџСЂРѕРІРµСЂРєР° РґРѕСЃС‚РёР¶РµРЅРёР№ (Р­С‚Р°Рї 6)
       // ============================================
       const vladivostokDate = new Date(new Date().getTime() + 10 * 60 * 60 * 1000);
       const vh = vladivostokDate.getUTCHours();
       const vm = vladivostokDate.getUTCMinutes();
       const vs = vladivostokDate.getUTCSeconds();
 
-      // witcher_plod: 30-35 сек с прошлого сообщения
+      // witcher_plod: 30-35 СЃРµРє СЃ РїСЂРѕС€Р»РѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ
       const elapsedSeconds = elapsedMs / 1000;
       if (elapsedSeconds >= 30 && elapsedSeconds <= 35) {
         await unlockAchievement(db, userId, guildId, 'witcher_plod', client, message.channel);
       }
 
-      // fbk_hello: 3+ дня с прошлого сообщения
+      // fbk_hello: 3+ РґРЅСЏ СЃ РїСЂРѕС€Р»РѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ
       const daysOffline = elapsedMs / (1000 * 60 * 60 * 24);
       if (daysOffline >= 3 && daysOffline < 4) {
         await unlockAchievement(db, userId, guildId, 'fbk_hello', client, message.channel);
       }
 
-      // vlad_midnight: 00:00 (Владивосток)
+      // vlad_midnight: 00:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)
       if (vh === 0 && vm === 0 && vs < 10) {
         await unlockAchievement(db, userId, guildId, 'vlad_midnight', client, message.channel);
       }
 
-      // vlad_pyanse: 12:00-13:00 (Владивосток)
+      // vlad_pyanse: 12:00-13:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)
       if (vh >= 12 && vh < 13) {
         await unlockAchievement(db, userId, guildId, 'vlad_pyanse', client, message.channel);
       }
 
-      // hl_wakeup: 06:00-07:00 (Владивосток)
+      // hl_wakeup: 06:00-07:00 (Р’Р»Р°РґРёРІРѕСЃС‚РѕРє)
       if (vh >= 6 && vh < 7) {
         await unlockAchievement(db, userId, guildId, 'hl_wakeup', client, message.channel);
       }
 
-      // rdr_lenny: капс >= 10 букв, время с 02:00 до 05:00
+      // rdr_lenny: РєР°РїСЃ >= 10 Р±СѓРєРІ, РІСЂРµРјСЏ СЃ 02:00 РґРѕ 05:00
       if (message.content && message.content.length >= 10 && message.content === message.content.toUpperCase()) {
         if (vh >= 2 && vh < 5) {
           await unlockAchievement(db, userId, guildId, 'rdr_lenny', client, message.channel);
         }
       }
 
-      // lucky_777, vlad_2000, witcher_coin: определённые суммы XP (проверяем ТЕКУЩИЙ XP из БД)
+      // lucky_777, vlad_2000, witcher_coin: РѕРїСЂРµРґРµР»С‘РЅРЅС‹Рµ СЃСѓРјРјС‹ XP (РїСЂРѕРІРµСЂСЏРµРј РўР•РљРЈР©РР™ XP РёР· Р‘Р”)
       const checkUserResult = await db.execute({
         sql: 'SELECT xp FROM users WHERE user_id = ? AND guild_id = ?',
         args: [userId, guildId],
@@ -5739,7 +5739,7 @@ client.on('messageCreate', async (message: Message) => {
       }
 
       // ============================================
-      // 5. Обновление ежедневной активности - ВСЕГДА
+      // 5. РћР±РЅРѕРІР»РµРЅРёРµ РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё - Р’РЎР•Р“Р”Рђ
       // ============================================
       await db.execute({
         sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, messages_count)
@@ -5756,12 +5756,12 @@ client.on('messageCreate', async (message: Message) => {
       }
 
       // ============================================
-      // 6. Проверка квестов типа messages - ВСЕГДА
+      // 6. РџСЂРѕРІРµСЂРєР° РєРІРµСЃС‚РѕРІ С‚РёРїР° messages - Р’РЎР•Р“Р”Рђ
       // ============================================
       await checkQuestsForMessage(db, userId, guildId, message);
     }
 
-    // Обновление квестов (проверка ежедневных квестов каждые 10 сообщений для оптимизации)
+    // РћР±РЅРѕРІР»РµРЅРёРµ РєРІРµСЃС‚РѕРІ (РїСЂРѕРІРµСЂРєР° РµР¶РµРґРЅРµРІРЅС‹С… РєРІРµСЃС‚РѕРІ РєР°Р¶РґС‹Рµ 10 СЃРѕРѕР±С‰РµРЅРёР№ РґР»СЏ РѕРїС‚РёРјРёР·Р°С†РёРё)
     if (Math.random() < 0.1) {
       await ensureDailyQuests(db, guildId);
     }
@@ -5790,7 +5790,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
         sql: `INSERT INTO users (user_id, guild_id) VALUES (?, ?)`,
         args: [userId, guild.id],
       });
-      // Инициализация ежедневной активности для нового пользователя
+      // РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё РґР»СЏ РЅРѕРІРѕРіРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
       await db.execute({
         sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, voice_seconds)
               VALUES (?, ?, ?, 0)`,
@@ -5803,7 +5803,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
       args: [userId, guild.id],
     });
 
-    // VOICE JOIN (вход в голосовой канал)
+    // VOICE JOIN (РІС…РѕРґ РІ РіРѕР»РѕСЃРѕРІРѕР№ РєР°РЅР°Р»)
     if (!oldState.channelId && newState.channelId) {
       const isMuted = newState.selfDeaf && newState.selfMute;
       await db.execute({
@@ -5817,7 +5817,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
     }
 
     // VOICE EXIT or MUTE/DEAF CHANGE
-    // Проверяем: выход из канала ИЛИ смена mute/deaf статуса
+    // РџСЂРѕРІРµСЂСЏРµРј: РІС‹С…РѕРґ РёР· РєР°РЅР°Р»Р° РР›Р СЃРјРµРЅР° mute/deaf СЃС‚Р°С‚СѓСЃР°
     const oldChannelId = oldState.channelId;
     const newChannelId = newState.channelId;
     const muteChanged = oldState.selfDeaf !== newState.selfDeaf || oldState.selfMute !== newState.selfMute;
@@ -5826,13 +5826,13 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
       if (joinedAtRow.rows[0]?.voice_joined_at) {
         let joinedAt = joinedAtRow.rows[0].voice_joined_at as number;
 
-        // Защита от старых записей в секундах: если число 10-значное (< 100 млрд), переводим в миллисекунды
+        // Р—Р°С‰РёС‚Р° РѕС‚ СЃС‚Р°СЂС‹С… Р·Р°РїРёСЃРµР№ РІ СЃРµРєСѓРЅРґР°С…: РµСЃР»Рё С‡РёСЃР»Рѕ 10-Р·РЅР°С‡РЅРѕРµ (< 100 РјР»СЂРґ), РїРµСЂРµРІРѕРґРёРј РІ РјРёР»Р»РёСЃРµРєСѓРЅРґС‹
         if (joinedAt > 0 && joinedAt < 100000000000) {
           joinedAt = joinedAt * 1000;
         }
 
-        // C4: ограничиваем начисление за одну сессию 4 часами
-        // (защита от зависшего voice_joined_at, если событие выхода потерялось)
+        // C4: РѕРіСЂР°РЅРёС‡РёРІР°РµРј РЅР°С‡РёСЃР»РµРЅРёРµ Р·Р° РѕРґРЅСѓ СЃРµСЃСЃРёСЋ 4 С‡Р°СЃР°РјРё
+        // (Р·Р°С‰РёС‚Р° РѕС‚ Р·Р°РІРёСЃС€РµРіРѕ voice_joined_at, РµСЃР»Рё СЃРѕР±С‹С‚РёРµ РІС‹С…РѕРґР° РїРѕС‚РµСЂСЏР»РѕСЃСЊ)
         const MAX_SESSION_MS = 4 * 60 * 60 * 1000;
         const elapsedMs = Math.max(0, Math.min(now - joinedAt, MAX_SESSION_MS));
         const elapsedSeconds = Math.floor(elapsedMs / 1000);
@@ -5843,7 +5843,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
           voiceSecondsToAdd = elapsedSeconds;
         }
 
-        // Обновление ежедневной активности
+        // РћР±РЅРѕРІР»РµРЅРёРµ РµР¶РµРґРЅРµРІРЅРѕР№ Р°РєС‚РёРІРЅРѕСЃС‚Рё
         if (voiceSecondsToAdd > 0) {
           await db.execute({
             sql: `INSERT INTO user_daily_activity (user_id, guild_id, activity_date, voice_seconds)
@@ -5863,18 +5863,18 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
             args: [voiceSecondsToAdd, now, userId, guild.id],
           });
 
-          // Начисление XP за войс через awardXpWithAllMultipliers (Season + Week учёт)
+          // РќР°С‡РёСЃР»РµРЅРёРµ XP Р·Р° РІРѕР№СЃ С‡РµСЂРµР· awardXpWithAllMultipliers (Season + Week СѓС‡С‘С‚)
           if (voiceSecondsToAdd > 0) {
-            const xpPerMinute = 5; // Базовый XP за минуту в войсе
+            const xpPerMinute = 5; // Р‘Р°Р·РѕРІС‹Р№ XP Р·Р° РјРёРЅСѓС‚Сѓ РІ РІРѕР№СЃРµ
             const xpToAdd = Math.floor(voiceSecondsToAdd / 60) * xpPerMinute;
 
             if (xpToAdd > 0) {
-              // Получаем множитель Happy Hours
+              // РџРѕР»СѓС‡Р°РµРј РјРЅРѕР¶РёС‚РµР»СЊ Happy Hours
               const happyHourMultiplier = await isHappyHourActive(db, guild.id);
-              // Применяем множитель Happy Hours к базовому XP
+              // РџСЂРёРјРµРЅСЏРµРј РјРЅРѕР¶РёС‚РµР»СЊ Happy Hours Рє Р±Р°Р·РѕРІРѕРјСѓ XP
               const xpWithHH = xpToAdd * happyHourMultiplier;
 
-              // Используем awardXpWithAllMultipliers для сезонного/недельного учёта
+              // РСЃРїРѕР»СЊР·СѓРµРј awardXpWithAllMultipliers РґР»СЏ СЃРµР·РѕРЅРЅРѕРіРѕ/РЅРµРґРµР»СЊРЅРѕРіРѕ СѓС‡С‘С‚Р°
               const { finalXp } = await awardXpWithAllMultipliers(db, userId, guild.id, xpWithHH);
 
               console.log(`[Voice XP] ${newState.member?.displayName}: base=${xpToAdd} (${xpWithHH} with HH), season/week recorded, total +${finalXp} XP`);
@@ -5883,7 +5883,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
 
           console.log(`[Voice] ${newState.member?.displayName} exited voice - added ${voiceSecondsToAdd}s (was muted: ${!!wasMuted})`);
 
-          // Проверка квестов типа voice
+          // РџСЂРѕРІРµСЂРєР° РєРІРµСЃС‚РѕРІ С‚РёРїР° voice
           if (voiceSecondsToAdd > 0) {
             await checkQuestsForVoice(db, userId, guild.id, voiceSecondsToAdd, new Date(now));
           }
@@ -5898,7 +5898,7 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
           });
           console.log(`[Voice] ${newState.member?.displayName} mute changed - added ${voiceSecondsToAdd}s, new state: ${newMuteState}`);
 
-          // Проверка квестов типа voice
+          // РџСЂРѕРІРµСЂРєР° РєРІРµСЃС‚РѕРІ С‚РёРїР° voice
           if (voiceSecondsToAdd > 0) {
             await checkQuestsForVoice(db, userId, guild.id, voiceSecondsToAdd, new Date(now));
           }
@@ -5911,16 +5911,16 @@ client.on('voiceStateUpdate', async (oldState: VoiceState, newState: VoiceState)
 });
 
 // ============================================
-// Слэш-команда /test-gazeta (только для администрации)
+// РЎР»СЌС€-РєРѕРјР°РЅРґР° /test-gazeta (С‚РѕР»СЊРєРѕ РґР»СЏ Р°РґРјРёРЅРёСЃС‚СЂР°С†РёРё)
 // ============================================
 client.on('interactionCreate', async (interaction: any) => {
   if (!interaction.isChatInputCommand?.()) return;
   if (interaction.commandName !== 'test-gazeta') return;
 
-  // Проверка прав: Administrator или ManageGuild
+  // РџСЂРѕРІРµСЂРєР° РїСЂР°РІ: Administrator РёР»Рё ManageGuild
   const perms = interaction.memberPermissions;
   if (!perms || (!perms.has('Administrator') && !perms.has('ManageGuild'))) {
-    await interaction.reply({ content: '⛔ Эта команда доступна только администрации', ephemeral: true });
+    await interaction.reply({ content: 'в›” Р­С‚Р° РєРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ Р°РґРјРёРЅРёСЃС‚СЂР°С†РёРё', ephemeral: true });
     return;
   }
 
@@ -5928,18 +5928,19 @@ client.on('interactionCreate', async (interaction: any) => {
 
   try {
     if (!interaction.guild) {
-      await interaction.editReply('❌ Команда доступна только на сервере.');
+      await interaction.editReply('вќЊ РљРѕРјР°РЅРґР° РґРѕСЃС‚СѓРїРЅР° С‚РѕР»СЊРєРѕ РЅР° СЃРµСЂРІРµСЂРµ.');
       return;
     }
 
     await runWeeklyDigest(interaction.guild);
-    await interaction.editReply('✅ Выпуск газеты за неделю успешно опубликован в канале!');
+    await interaction.editReply('вњ… Р’С‹РїСѓСЃРє РіР°Р·РµС‚С‹ Р·Р° РЅРµРґРµР»СЋ СѓСЃРїРµС€РЅРѕ РѕРїСѓР±Р»РёРєРѕРІР°РЅ РІ РєР°РЅР°Р»Рµ!');
   } catch (err: any) {
-    const errText = String(err?.message || err || 'Неизвестная ошибка');
+    const errText = String(err?.message || err || 'РќРµРёР·РІРµСЃС‚РЅР°СЏ РѕС€РёР±РєР°');
     console.error('[Gazeta] Error in /test-gazeta:', err);
-    await interaction.editReply(`❌ Ошибка генерации газеты: ${errText.slice(0, 1500)}`);
+    await interaction.editReply(`вќЊ РћС€РёР±РєР° РіРµРЅРµСЂР°С†РёРё РіР°Р·РµС‚С‹: ${errText.slice(0, 1500)}`);
   }
 });
 
 const token = process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN;
 client.login(token);
+

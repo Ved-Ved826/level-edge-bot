@@ -1,0 +1,14 @@
+﻿В файле worker/src/commands/invest.ts исправь две ошибки:
+
+1. Несовпадение имени опции тикера в командах /invest и /divest:
+   - В функциях handleInvest и handleDivest опция тикера сейчас ищется только по имени "ticker".
+   - Сделай поиск универсальным, проверяя оба варианта ("ticker" и "company"):
+     const tickerOption = inter.data?.options?.find((o: any) => o.name === 'ticker' || o.name === 'company')?.value as string | undefined;
+
+2. Инверсия условия 51 акции в handleDivest:
+   - В запросе UPDATE company_shares сейчас передаётся:
+     args: [amount, sellerId, companyId, amount, amount, isOwner ? 0 : 1]
+   - Из-за этого владелец обходит проверку, а обычный игрок блокируется.
+   - Замени аргумент на правильный:
+     args: [amount, sellerId, companyId, amount, amount, isOwner ? 1 : 0]
+   - Теперь для владельца (isOwner === true) передаётся 1, условие 1 = 0 ложно, и база требует (shares_count - amount >= 51). Для остальных передаётся 0, условие 0 = 0 истинно, и они могут продавать любые акции.

@@ -1,0 +1,73 @@
+﻿Реализуй Шаг 1 системы Недвижимости и Города (City & Real Estate):
+
+1. Создай worker/src/city/types.ts:
+   export type BuildingType = 'mine' | 'farm' | 'gas_station' | 'shop' | 'restaurant' | 'casino' | 'bank' | 'port';
+   export type ZoneType = 'mountain' | 'suburb' | 'highway' | 'center' | 'coast';
+   export type OwnerType = 'user' | 'company';
+
+   export interface PlotData {
+     id: number;
+     zone: ZoneType;
+     title: string;
+     base_price: number;
+     allowed_buildings: BuildingType[];
+   }
+
+   export interface BuildingConfig {
+     type: BuildingType;
+     name: string;
+     emoji: string;
+     base_cost: number;
+     upgrade_multiplier: number;
+     daily_revenue: number[]; // [lvl1, lvl2, lvl3] в монетах
+     weekly_tax: number[];    // [lvl1, lvl2, lvl3] в монетах
+   }
+
+2. Создай worker/src/city/catalog.ts:
+   - Опиши 12 фиксированных участков карты (PLOTS_CATALOG: PlotData[]):
+     * #1, #2: zone 'mountain', title 'Горный склон', base_price: 3000, allowed: ['mine']
+     * #3, #4: zone 'suburb', title 'Пригородная долина', base_price: 2500, allowed: ['farm']
+     * #5, #6: zone 'highway', title 'Шоссе и трасса', base_price: 3500, allowed: ['gas_station', 'shop']
+     * #7, #8: zone 'center', title 'Деловой центр (Золотая земля)', base_price: 7000, allowed: ['casino', 'bank', 'restaurant']
+     * #9, #10: zone 'highway', title 'Торговый проспект', base_price: 4000, allowed: ['shop', 'restaurant']
+     * #11, #12: zone 'coast', title 'Морская гавань', base_price: 5000, allowed: ['port', 'restaurant']
+
+   - Опиши параметры BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig>:
+     * mine: 'Шахта', ⛏️, cost: 4000, revenue: [300, 750, 1600], tax: [60, 150, 320]
+     * farm: 'Ферма', 🌾, cost: 3000, revenue: [220, 550, 1200], tax: [45, 110, 240]
+     * gas_station: 'АЗС', ⛽, cost: 4500, revenue: [350, 850, 1800], tax: [70, 170, 360]
+     * shop: 'Супермаркет', 🛒, cost: 3800, revenue: [280, 700, 1500], tax: [55, 140, 300]
+     * restaurant: 'Ресторан', 🍽️, cost: 4200, revenue: [320, 800, 1700], tax: [65, 160, 340]
+     * casino: 'Казино', 🎰, cost: 9000, revenue: [800, 2000, 4500], tax: [180, 450, 1000]
+     * bank: 'Банк', 🏛️, cost: 12000, revenue: [1000, 2500, 5500], tax: [220, 550, 1200]
+     * port: 'Морской порт', ⚓, cost: 6500, revenue: [500, 1250, 2700], tax: [100, 250, 540]
+
+3. В collector/src/collector.ts:
+   - В migrateSchema добавь миграцию 028:
+     Таблица city_plots:
+       id INTEGER NOT NULL,
+       guild_id TEXT NOT NULL,
+       owner_type TEXT DEFAULT NULL CHECK(owner_type IN ('user', 'company')),
+       owner_id TEXT DEFAULT NULL,
+       building_type TEXT DEFAULT NULL,
+       building_level INTEGER NOT NULL DEFAULT 0,
+       price INTEGER NOT NULL DEFAULT 0,
+       for_sale_price INTEGER DEFAULT NULL,
+       unpaid_taxes_count INTEGER NOT NULL DEFAULT 0,
+       last_tax_at INTEGER DEFAULT NULL,
+       last_revenue_at INTEGER DEFAULT NULL,
+       created_at INTEGER NOT NULL,
+       PRIMARY KEY(guild_id, id)
+
+     Таблица plot_auctions:
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       guild_id TEXT NOT NULL,
+       plot_id INTEGER NOT NULL,
+       highest_bidder_type TEXT DEFAULT NULL,
+       highest_bidder_id TEXT DEFAULT NULL,
+       highest_bid INTEGER NOT NULL DEFAULT 0,
+       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'cancelled')),
+       expires_at INTEGER NOT NULL,
+       created_at INTEGER NOT NULL
+
+   - При создании гильдии/миграции обеспечь автоматическую вставку 12 участков (id от 1 до 12) для каждой гильдии из PLOTS_CATALOG через INSERT OR IGNORE.

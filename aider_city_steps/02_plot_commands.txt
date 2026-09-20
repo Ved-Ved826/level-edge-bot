@@ -1,0 +1,31 @@
+﻿Реализуй Шаг 2 системы Города (Команды /plot: info, buy, sell):
+
+1. Создай worker/src/commands/plot.ts:
+   - Импортируй PLOTS_CATALOG и BUILDINGS_CONFIG из ../city/catalog.
+   - Обработка подкоманд /plot (info, buy, sell):
+     * info:
+       Выводит Embed: Участок #{id} — {title} ({zone}), Владелец (свободен / <@user> / 🏢 Компания TICKER),
+       Постройка (если есть: эмодзи, название, уровень 1-3, суточный доход, недельный налог),
+       Статус продажи (если for_sale_price > 0: "Выставлен на продажу за X 🪙"),
+       Допустимые постройки для этой зоны.
+     * buy:
+       Параметры: plot_id (1-12), опционально company (тикер).
+       - Если company указан: покупатель — корпорация. Проверяй, что вызвавший — создатель компании (owner_id). Списывай монеты из companies.treasury >= price.
+       - Если company не указан: покупатель — игрок. Списывай coins из users >= price.
+       - Если участок свободен (owner_id IS NULL): цена = plot.price.
+       - Если участок уже чей-то: проверяй for_sale_price IS NOT NULL. Цена = for_sale_price. При успешной покупке начисляй монеты старому владельцу (игроку в users.coins или компании в companies.treasury).
+       - Атомарно обновляй city_plots: owner_type, owner_id, for_sale_price = NULL.
+     * sell:
+       Параметры: plot_id (1-12), price (целое >= 0).
+       - Проверяй, что вызвавший — реальный владелец (или создатель компании-владельца).
+       - Если price > 0: устанавливай for_sale_price = price.
+       - Если price === 0: снимай с продажи (for_sale_price = NULL).
+
+2. В worker/src/worker.ts:
+   - Добавь импорт handlePlotCommand и маршрут для inter.data?.name === "plot".
+
+3. В collector/src/collector.ts:
+   - В регистрацию слэш-команд добавь /plot с подкомандами:
+     * info: plot_id (type 4, integer, required: true)
+     * buy: plot_id (type 4, integer, required: true), company (type 3, string, required: false)
+     * sell: plot_id (type 4, integer, required: true), price (type 4, integer, required: true)

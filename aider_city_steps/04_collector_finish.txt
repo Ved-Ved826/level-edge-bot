@@ -1,0 +1,21 @@
+﻿Заверши Шаг 4:
+
+1. В worker/src/worker.ts:
+   - Добавь импорт: import { handleAuctionCommand } from "./commands/auction";
+   - Добавь маршрут для /auction:
+     if (inter.type === 2 && inter.data?.name === "auction") { return handleAuctionCommand(inter as CommandInteraction, env, ctx); }
+
+2. В collector/src/collector.ts:
+   - Добавь BUILDINGS_CONFIG:
+     const BUILDINGS_CONFIG: Record<string, { daily_revenue: number[]; weekly_tax: number[] }> = {
+       mine: { daily_revenue: [300, 750, 1600], weekly_tax: [60, 150, 320] },
+       farm: { daily_revenue: [220, 550, 1200], weekly_tax: [45, 110, 240] },
+       gas_station: { daily_revenue: [350, 850, 1800], weekly_tax: [70, 170, 360] },
+       shop: { daily_revenue: [280, 700, 1500], weekly_tax: [55, 140, 300] },
+       restaurant: { daily_revenue: [320, 800, 1700], weekly_tax: [65, 160, 340] },
+       casino: { daily_revenue: [800, 2000, 4500], weekly_tax: [180, 450, 1000] },
+       bank: { daily_revenue: [1000, 2500, 5500], weekly_tax: [220, 550, 1200] },
+       port: { daily_revenue: [500, 1250, 2700], weekly_tax: [100, 250, 540] },
+     };
+   - Реализуй processDailyPlotRevenue, processWeeklyPlotTaxes, processExpiredAuctions и запусти их таймеры в ready.
+   - Зарегистрируй команду /auction (list, bid plot_id amount).

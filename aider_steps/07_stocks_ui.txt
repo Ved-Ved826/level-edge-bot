@@ -1,0 +1,21 @@
+﻿В файле worker/src/commands/stocks.ts обнови функции handleStocks и handlePortfolio:
+
+1. В handleStocks:
+   - Импортируй computeEffectiveMood, quoteBuy, quoteSell из ../exchange/math.
+   - Для каждой компании вычисляй эффективное настроение через computeEffectiveMood(r.mood_bps, r.mood_updated_at, nowSec).
+   - Формируй метку настроения:
+     * moodBps >= 500: `🔥 Ажиотаж +${(moodBps/100).toFixed(1)}%`
+     * moodBps <= -500: `🧊 Паника ${(moodBps/100).toFixed(1)}%`
+     * иначе: `😐 Спокойно ${(moodBps/100).toFixed(1)}%`
+   - Считай цену покупки и продажи на 1 акцию через quoteBuy(treasury, circulating, 1, moodBps) и quoteSell(treasury, circulating, 1, moodBps).
+   - Делай запрос активных кризисов из company_crises (WHERE status = 'pending') и если у компании есть кризис, добавляй строку: `⚠️ Кризис: осталось <t:${expires_at}:R>`.
+   - В поле компании выводи:
+     `NAV: ${navDisplay} 🪙 • Казна: ${treasury.toLocaleString()} 🪙 • Свободно: ${available} • В обращении: ${circulating}/100`
+     `Покупка: ${buyPrice} 🪙 • Продажа: ${sellPrice} 🪙`
+     `${moodLabel} • 24ч: ${changeStr} ${spark}`
+     (и строку кризиса, если есть).
+
+2. В handlePortfolio:
+   - Для владельца компании (owner_id === userId) реальная продаваемая часть равна Math.max(0, shares - 51) из-за контрольного пакета 51 акции.
+   - Считай сумму «Выход сейчас» через quoteSell(treasury, circulating, sellableShares, moodBps).
+   - В футере выводи суммарную оценку по NAV и реальную сумму выхода.
