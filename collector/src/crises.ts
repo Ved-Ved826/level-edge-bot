@@ -171,7 +171,7 @@ export async function processCompanyCrises(db: any, bot: Client): Promise<void> 
           owner_id: String(chosen.owner_id || ''),
           kind: scenario.kind,
           scenario_text: scenario.scenario_text,
-          options: scenario.options.map((o) => ({ id: o.id, label: o.label, emoji: o.emoji })),
+          options: scenario.options.map((o: any) => ({ id: o.id, label: o.label, emoji: o.emoji })),
           expires_at: expiresAt,
         };
 

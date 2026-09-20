@@ -26,6 +26,13 @@ export interface CrisisOption {
   outcomes: CrisisOutcome[];
 }
 
+export interface CrisisScenario {
+  kind: CrisisKind;
+  scenario_text: string;
+  options: CrisisOption[];
+  timeout: CrisisOutcome;
+}
+
 export type CrisisKind =
   | 'tax_audit'
   | 'competitors'
@@ -43,12 +50,7 @@ export const CRISIS_KIND_TITLES: Record<CrisisKind, string> = {
   opportunity: '🍀 Удачная возможность',
 };
 
-export const CRISIS_CATALOG: {
-  kind: CrisisKind;
-  scenario_text: string;
-  options: CrisisOption[];
-  timeout: CrisisOutcome;
-}[] = [
+export const CRISIS_CATALOG: CrisisScenario[] = [
   // --- Налоговая проверка ---
   {
     kind: 'tax_audit',
