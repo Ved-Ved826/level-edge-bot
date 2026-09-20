@@ -15,8 +15,8 @@ export async function verifyDiscordSignature(sig: string, ts: string, body: stri
     msgData.set(bData, tsData.length);
     const pkBytes = hexToBytes(pk);
     const sigBytes = hexToBytes(sig);
-    const key = await crypto.subtle.importKey("raw", pkBytes, { name: "Ed25519" } as any, false, ["verify"]);
-    return await crypto.subtle.verify("Ed25519", key, sigBytes, msgData);
+    const key = await crypto.subtle.importKey("raw", pkBytes as any, { name: "Ed25519" } as any, false, ["verify"]);
+    return await crypto.subtle.verify("Ed25519", key, sigBytes as any, msgData as any);
   } catch (err) {
     console.error("[Error] Sig verify failed:", err);
     return false;
@@ -30,7 +30,7 @@ export async function sendFollowUp(token: string, appId: string, result: { png: 
     fd.append("payload_json", JSON.stringify({ content: result.error }));
   } else {
     fd.append("payload_json", JSON.stringify({ attachments: [{ id: 0, filename: "rank-" + result.username + ".png" }] }));
-    fd.append("files[0]", new Blob([result.png], { type: "image/png" }), "rank-" + result.username + ".png");
+    fd.append("files[0]", new Blob([result.png as any], { type: "image/png" }), "rank-" + result.username + ".png");
   }
   return fetch(wurl, { method: "PATCH", body: fd });
 }
