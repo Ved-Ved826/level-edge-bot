@@ -21,7 +21,8 @@ function parseAmount(raw: string | number | undefined): number {
 
 /** Чтение опций ticker и amount из взаимодействия. */
 function readOptions(inter: CommandInteraction): { ticker: string; amount: number } {
-  const tickerRaw = (inter.data?.options?.find((o: any) => o.name === "ticker")?.value as string) || "";
+  const tickerOption = inter.data?.options?.find((o: any) => o.name === 'ticker' || o.name === 'company')?.value as string | undefined;
+  const tickerRaw = tickerOption || "";
   const amountRaw = inter.data?.options?.find((o: any) => o.name === "amount")?.value as string | number | undefined;
   return { ticker: tickerRaw.trim().toUpperCase(), amount: parseAmount(amountRaw) };
 }
@@ -201,7 +202,7 @@ export async function handleDivest(
                   SET shares_count = shares_count - ?
                   WHERE user_id = ? AND company_id = ? AND shares_count >= ?
                     AND (shares_count - ? >= 51 OR ? = 0)`,
-            args: [amount, sellerId, companyId, amount, amount, isOwner ? 0 : 1],
+            args: [amount, sellerId, companyId, amount, amount, isOwner ? 1 : 0],
           });
           if (!decRes.rowsAffected || decRes.rowsAffected === 0) {
             throw new Error(isOwner
