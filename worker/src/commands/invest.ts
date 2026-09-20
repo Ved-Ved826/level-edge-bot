@@ -3,6 +3,8 @@
 import { createClient } from "@libsql/client";
 import { CommandInteraction, Env, ExecutionContext } from "../types";
 import { getSeasonId } from "../exchange/season";
+import { WHALE_MIN_COINS, WHALE_MIN_SHARES } from "../exchange/constants";
+import { enqueueMarketEventStatement } from "../exchange/events";
 
 /** PATCH @original — обновление отложенного ephemeral-ответа. */
 async function patchOriginal(env: Env, token: string, content: string): Promise<Response> {
@@ -110,6 +112,19 @@ export async function handleInvest(
                   VALUES (?, ?, ?, ?, ?, ?, 'buy')`,
             args: [gid, companyId, nowSec, treasuryAfter, circulatingAfter, moodBpsAfter],
           });
+
+          // Кит-сделка: событие в очередь рынка атомарно со сделкой
+          if (amount >= WHALE_MIN_SHARES || totalCost >= WHALE_MIN_COINS) {
+            await tx.execute(enqueueMarketEventStatement(gid, "whale_trade", {
+              side: "buy",
+              ticker,
+              company_id: companyId,
+              company_name: companyName,
+              user_id: buyerId,
+              shares: amount,
+              coins: totalCost,
+            }));
+          }
 
           // Роялти основателю; если не начислилось — уходит в резерв
           const royaltyRes = await tx.execute({
@@ -267,6 +282,19 @@ export async function handleDivest(
                   VALUES (?, ?, ?, ?, ?, ?, 'sell')`,
             args: [gid, companyId, nowSec, treasuryAfter, circulatingAfter, moodBpsAfter],
           });
+
+          // Кит-сделка: событие в очередь рынка атомарно со сделкой
+          if (amount >= WHALE_MIN_SHARES || netPayout >= WHALE_MIN_COINS) {
+            await tx.execute(enqueueMarketEventStatement(gid, "whale_trade", {
+              side: "sell",
+              ticker,
+              company_id: companyId,
+              company_name: companyName,
+              user_id: sellerId,
+              shares: amount,
+              coins: netPayout,
+            }));
+          }
 
           // Начисление продавцу
           const payRes = await tx.execute({

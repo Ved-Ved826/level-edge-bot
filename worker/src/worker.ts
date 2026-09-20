@@ -44,6 +44,7 @@ import { handleCourt } from "./commands/court";
 import { handleCompanyCreate } from "./commands/company";
 import { handlePortfolio, handleStocks } from "./commands/stocks";
 import { handleInvest, handleDivest } from "./commands/invest";
+import { handleExchangeSetup } from "./commands/exchange-setup";
 
 
 
@@ -979,6 +980,9 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
       // 35. Слэш-команда /divest ticker amount (Биржа компаний — продажа акций)
       if (inter.type === 2 && inter.data?.name === "divest") { return handleDivest(inter as CommandInteraction, env, ctx); }
+
+      // 36. Слэш-команда /exchange-setup channel (Биржа — канал событий, только Manage Guild)
+      if (inter.type === 2 && inter.data?.name === "exchange-setup") { return handleExchangeSetup(inter as CommandInteraction, env, ctx); }
 
 
 

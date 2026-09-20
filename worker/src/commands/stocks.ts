@@ -2,6 +2,9 @@
 
 import { createClient } from "@libsql/client";
 import { CommandInteraction, Env, ExecutionContext } from "../types";
+import { SPARKLINE_POINTS } from "../exchange/constants";
+import { buildHourlyNavSeries, navChangePct } from "../exchange/nav";
+import { sparkline } from "../exchange/sparkline";
 
 /** PATCH @original — обновление отложенного ответа (флаги задаёт вызывающий). */
 async function patchOriginal(env: Env, token: string, body: Record<string, unknown>): Promise<Response> {
@@ -32,6 +35,25 @@ export async function handleStocks(
           args: [gid],
         });
 
+        // История NAV за 25 часов: 24 точки + запас на выравнивание по часам
+        const nowSec = Math.floor(Date.now() / 1000);
+        const navRes = await db.execute({
+          sql: "SELECT company_id, ts, treasury, circulating FROM company_nav_history WHERE guild_id = ? AND ts >= ? ORDER BY ts ASC",
+          args: [gid, nowSec - 25 * 3600],
+        });
+
+        // Группируем снимки по компаниям: nav = казна / обращение (монет на акцию)
+        const navByCompany = new Map<number, { ts: number; nav: number }[]>();
+        for (const row of navRes.rows) {
+          const companyId = Number(row.company_id);
+          const treasury = Number(row.treasury) || 0;
+          const circulating = Number(row.circulating) || 0;
+          const nav = circulating > 0 ? treasury / circulating : 0;
+          const list = navByCompany.get(companyId) ?? [];
+          list.push({ ts: Number(row.ts), nav });
+          navByCompany.set(companyId, list);
+        }
+
         if (res.rows.length === 0) {
           const resp = await patchOriginal(env, inter.token, {
             content: "📉 На бирже этого сервера ещё нет компаний. Основайте первую через /company-create!",
@@ -50,9 +72,19 @@ export async function handleStocks(
           if (Number(r.frozen) === 1) statusTag = " • ТОРГИ ПРИОСТАНОВЛЕНЫ";
           else if (Number(r.treasury) < 1 && nav < 0.01) statusTag = " • БАНКРОТ";
 
+          // 24ч дельта NAV и спарклайн из почасового ряда (fill-forward)
+          const history = navByCompany.get(Number(r.id)) ?? [];
+          let trendLine = "";
+          if (history.length > 0) {
+            const series = buildHourlyNavSeries(history, nowSec, SPARKLINE_POINTS);
+            const change = navChangePct(series[series.length - 1], series[0]);
+            const sign = change >= 0 ? "+" : "";
+            trendLine = `\n24ч: ${sign}${change.toFixed(1)}% ${sparkline(series)}`;
+          }
+
           return {
             name: `${r.name} (${r.ticker})${statusTag}`.slice(0, 256),
-            value: `NAV: ${navDisplay} 🪙 • Казна: ${Number(r.treasury).toLocaleString()} 🪙 • Доступно: ${r.available_shares}/49 акций`.slice(0, 1024),
+            value: `NAV: ${navDisplay} 🪙 • Казна: ${Number(r.treasury).toLocaleString()} 🪙 • Доступно: ${r.available_shares}/49 акций${trendLine}`.slice(0, 1024),
           };
         });
 
