@@ -127,6 +127,15 @@ export async function handleCompanyCreate(
             args: [ownerId, gid, companyId],
           });
 
+          // История NAV: стартовый снимок компании (reason='create') — в той же
+          // транзакции, что и создание. circulating = 100 - 49 = 51 (акции
+          // основателя уже в обращении), казна стартовая 500, настроение 0.
+          await tx.execute({
+            sql: `INSERT INTO company_nav_history (guild_id, company_id, ts, treasury, circulating, mood_bps, reason)
+                  VALUES (?, ?, ?, 500, 51, 0, 'create')`,
+            args: [gid, companyId, now],
+          });
+
           await tx.commit();
         } catch (err) {
           await tx.rollback().catch(() => {});

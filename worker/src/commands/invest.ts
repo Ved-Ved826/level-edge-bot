@@ -2,6 +2,7 @@
 // Строгая целочисленная математика: казна + роялти + резерв всегда сходятся без инфляции.
 import { createClient } from "@libsql/client";
 import { CommandInteraction, Env, ExecutionContext } from "../types";
+import { getSeasonId } from "../exchange/season";
 
 /** PATCH @original — обновление отложенного ephemeral-ответа. */
 async function patchOriginal(env: Env, token: string, content: string): Promise<Response> {
@@ -48,9 +49,9 @@ export async function handleInvest(
         let totalCost = 0;
         let companyName = "";
         try {
-          // Компания по guild_id и ticker
+          // Компания по guild_id и ticker (mood_bps — для снимка настроения в истории)
           const cRes = await tx.execute({
-            sql: "SELECT id, owner_id, name, treasury, available_shares, frozen FROM companies WHERE guild_id = ? AND ticker = ?",
+            sql: "SELECT id, owner_id, name, treasury, available_shares, frozen, mood_bps FROM companies WHERE guild_id = ? AND ticker = ?",
             args: [gid, ticker],
           });
           if (cRes.rows.length === 0) throw new Error("Компания с таким тикером не найдена");
@@ -87,6 +88,28 @@ export async function handleInvest(
             args: [baseCost, amount, companyId, amount],
           });
           if (!updRes.rowsAffected || updRes.rowsAffected === 0) throw new Error("Ошибка обновления акций компании");
+
+          // Состояние компании после сделки: казна выросла на baseCost,
+          // circulating вырос на amount (акции ушли из свободной продажи в обращение).
+          const treasuryAfter = treasury + baseCost;
+          const circulatingAfter = circulating + amount;
+          const moodBpsAfter = Number(c.mood_bps) || 0;
+          const nowSec = Math.floor(Date.now() / 1000);
+
+          // История сделки — в той же транзакции, что и операция; сюда попадаем
+          // только после успешного guard-UPDATE казны/акций выше.
+          await tx.execute({
+            sql: `INSERT INTO company_trades (guild_id, company_id, user_id, season_id, side, shares, base_amount, coins, treasury_after, circulating_after, mood_bps_after, created_at)
+                  VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)`,
+            args: [gid, companyId, buyerId, getSeasonId(), amount, baseCost, totalCost, treasuryAfter, circulatingAfter, moodBpsAfter, nowSec],
+          });
+
+          // История NAV: снимок казны/обращения/настроения после сделки
+          await tx.execute({
+            sql: `INSERT INTO company_nav_history (guild_id, company_id, ts, treasury, circulating, mood_bps, reason)
+                  VALUES (?, ?, ?, ?, ?, ?, 'buy')`,
+            args: [gid, companyId, nowSec, treasuryAfter, circulatingAfter, moodBpsAfter],
+          });
 
           // Роялти основателю; если не начислилось — уходит в резерв
           const royaltyRes = await tx.execute({
@@ -159,9 +182,9 @@ export async function handleDivest(
         let netPayout = 0;
         let companyName = "";
         try {
-          // Компания по guild_id и ticker
+          // Компания по guild_id и ticker (mood_bps — для снимка настроения в истории)
           const cRes = await tx.execute({
-            sql: "SELECT id, owner_id, name, treasury, available_shares, frozen FROM companies WHERE guild_id = ? AND ticker = ?",
+            sql: "SELECT id, owner_id, name, treasury, available_shares, frozen, mood_bps FROM companies WHERE guild_id = ? AND ticker = ?",
             args: [gid, ticker],
           });
           if (cRes.rows.length === 0) throw new Error("Компания с таким тикером не найдена");
@@ -222,6 +245,28 @@ export async function handleDivest(
             args: [basePayout, amount, companyId, basePayout],
           });
           if (!updRes.rowsAffected || updRes.rowsAffected === 0) throw new Error("Не удалось обновить казну");
+
+          // Состояние компании после сделки: казна уменьшилась на basePayout,
+          // circulating уменьшился на amount (акции вернулись в свободную продажу).
+          const treasuryAfter = treasury - basePayout;
+          const circulatingAfter = circulating - amount;
+          const moodBpsAfter = Number(c.mood_bps) || 0;
+          const nowSec = Math.floor(Date.now() / 1000);
+
+          // История сделки — в той же транзакции, что и операция; сюда попадаем
+          // только после успешного guard-UPDATE казны/акций выше.
+          await tx.execute({
+            sql: `INSERT INTO company_trades (guild_id, company_id, user_id, season_id, side, shares, base_amount, coins, treasury_after, circulating_after, mood_bps_after, created_at)
+                  VALUES (?, ?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)`,
+            args: [gid, companyId, sellerId, getSeasonId(), amount, basePayout, netPayout, treasuryAfter, circulatingAfter, moodBpsAfter, nowSec],
+          });
+
+          // История NAV: снимок казны/обращения/настроения после сделки
+          await tx.execute({
+            sql: `INSERT INTO company_nav_history (guild_id, company_id, ts, treasury, circulating, mood_bps, reason)
+                  VALUES (?, ?, ?, ?, ?, ?, 'sell')`,
+            args: [gid, companyId, nowSec, treasuryAfter, circulatingAfter, moodBpsAfter],
+          });
 
           // Начисление продавцу
           const payRes = await tx.execute({

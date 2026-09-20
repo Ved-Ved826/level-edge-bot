@@ -1775,6 +1775,120 @@ async function migrateSchema() {
       args: [],
     });
     console.log('[Migrate] Exchange tables ensured (server_reserve, companies, company_shares, company_crises)');
+
+    // ============================================
+    // Миграция 024: колонки настроения компаний (mood_bps, mood_updated_at).
+    // ALTER TABLE идемпотентен: сначала PRAGMA table_info(companies).
+    // Таблица companies гарантированно существует — создана выше (миграция 022).
+    // ============================================
+    const companiesColumnsCheck = await db.execute({
+      sql: "PRAGMA table_info(companies)",
+      args: [],
+    });
+    const companiesColumns = (companiesColumnsCheck.rows || []).map((row: any) => row.name as string);
+
+    if (!companiesColumns.includes('mood_bps')) {
+      await db.execute({
+        sql: 'ALTER TABLE companies ADD COLUMN mood_bps INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: mood_bps to companies');
+    }
+
+    if (!companiesColumns.includes('mood_updated_at')) {
+      await db.execute({
+        sql: 'ALTER TABLE companies ADD COLUMN mood_updated_at INTEGER NOT NULL DEFAULT 0',
+        args: [],
+      });
+      console.log('[Migrate] Added column: mood_updated_at to companies');
+    }
+
+    // ============================================
+    // Миграция 025: история биржи и outbox публичных событий
+    // (company_trades, company_nav_history, market_events, exchange_guild_state).
+    // company_trades и company_nav_history при сезонной ликвидации НЕ удаляются:
+    // нужны для рейтинга сезона; чистка — по возрасту, отдельной задачей.
+    // ============================================
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS company_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        company_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        season_id TEXT NOT NULL,
+        side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+        shares INTEGER NOT NULL,
+        base_amount INTEGER NOT NULL,
+        coins INTEGER NOT NULL,
+        treasury_after INTEGER NOT NULL,
+        circulating_after INTEGER NOT NULL,
+        mood_bps_after INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_trades_company_time ON company_trades(company_id, created_at)',
+      args: [],
+    });
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_trades_guild_season_user ON company_trades(guild_id, season_id, user_id)',
+      args: [],
+    });
+
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS company_nav_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        company_id INTEGER NOT NULL,
+        ts INTEGER NOT NULL,
+        treasury INTEGER NOT NULL,
+        circulating INTEGER NOT NULL,
+        mood_bps INTEGER NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL CHECK(reason IN ('create','buy','sell','growth','crisis'))
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_nav_history_company_time ON company_nav_history(company_id, ts)',
+      args: [],
+    });
+
+    // Outbox: события пишутся в той же транзакции, что и операция,
+    // доставляются в Discord после коммита, чистятся после отправки.
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS market_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        sent_at INTEGER DEFAULT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT DEFAULT NULL
+      )`,
+      args: [],
+    });
+
+    await db.execute({
+      sql: 'CREATE INDEX IF NOT EXISTS idx_market_events_outbox ON market_events(sent_at, id)',
+      args: [],
+    });
+
+    // Служебное состояние биржи по гильдии (канал ленты, дайджесты, расписание кризисов)
+    await db.execute({
+      sql: `CREATE TABLE IF NOT EXISTS exchange_guild_state (
+        guild_id TEXT PRIMARY KEY,
+        market_channel_id TEXT DEFAULT NULL,
+        last_digest_day TEXT DEFAULT NULL,
+        next_crisis_at INTEGER DEFAULT NULL
+      )`,
+      args: [],
+    });
+
+    console.log('[Migrate] Exchange history tables ensured (company_trades, company_nav_history, market_events, exchange_guild_state)');
   } catch (err) {
     console.error('[Migrate] Error during schema migration:', err);
   }
@@ -3566,6 +3680,8 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+  // Единый ts для строк истории NAV этого запуска (секунды, как в остальных таблицах биржи)
+  const nowSec = Math.floor(Date.now() / 1000);
 
   try {
     // Гильдии, в которых есть компании
@@ -3631,6 +3747,20 @@ async function processDailyCompanyGrowth(db: any, bot: Client): Promise<void> {
                           AND balance >= ?
                           AND (SELECT last_growth_day FROM companies WHERE id = ?) = ?`,
                   args: [grant, guildId, grant, it.id, todayStr],
+                },
+                {
+                  // История NAV (reason='growth') — в том же батче, что и рост.
+                  // Guard: last_growth_day = todayStr, т.е. грант реально начислен.
+                  // treasury/circulating/mood читаются SELECT-ом ПОСЛЕ первого statement,
+                  // поэтому снимок отражает состояние уже с учётом гранта.
+                  sql: `INSERT INTO company_nav_history (guild_id, company_id, ts, treasury, circulating, mood_bps, reason)
+                        SELECT ?, ?, ?,
+                               (SELECT treasury FROM companies WHERE id = ?),
+                               100 - (SELECT available_shares FROM companies WHERE id = ?),
+                               (SELECT mood_bps FROM companies WHERE id = ?),
+                               'growth'
+                        WHERE (SELECT last_growth_day FROM companies WHERE id = ?) = ?`,
+                  args: [guildId, it.id, nowSec, it.id, it.id, it.id, it.id, todayStr],
                 },
               ],
               'write'
@@ -3806,6 +3936,37 @@ async function liquidateCompaniesOnSeasonChange(db: any): Promise<void> {
     }
   } catch (err) {
     console.error('[Liquidation] Error in liquidateCompaniesOnSeasonChange:', err);
+  }
+}
+
+// ============================================
+// Чистка истории биржи (Биржа)
+// ============================================
+
+/**
+ * Раз в час чистит историю биржи:
+ * - market_events: только ОТПРАВЛЕННЫЕ (sent_at IS NOT NULL) записи старше 14 дней.
+ *   Неотправленные остаются в очереди, чтобы события не терялись при сбоях Discord;
+ * - company_nav_history: записи старше 60 дней (живут дольше ленты, т.к.
+ *   нужны для сезонного рейтинга).
+ * company_trades не чистим — понадобится для рейтинга ROI сезона.
+ */
+async function cleanupExchangeHistory(db: any): Promise<void> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const marketCutoff = nowSec - 14 * 24 * 60 * 60; // 14 дней назад
+  const navCutoff = nowSec - 60 * 24 * 60 * 60; // 60 дней назад
+
+  try {
+    await db.execute({
+      sql: 'DELETE FROM market_events WHERE sent_at IS NOT NULL AND sent_at < ?',
+      args: [marketCutoff],
+    });
+    await db.execute({
+      sql: 'DELETE FROM company_nav_history WHERE ts < ?',
+      args: [navCutoff],
+    });
+  } catch (err) {
+    console.error('[ExchangeCleanup] Error cleaning exchange history:', err);
   }
 }
 
@@ -3989,6 +4150,24 @@ client.on('ready', async () => {
       await liquidateCompaniesOnSeasonChange(db);
     } catch (e) {
       console.error('[Liquidation] Interval error:', e);
+    }
+  }, 60 * 60 * 1000); // Каждый час
+
+  // ============================================
+  // Чистка истории биржи (каждый час): отправленные market_events старше 14 дней,
+  // company_nav_history старше 60 дней.
+  // ============================================
+  console.log('[ExchangeCleanup] Starting exchange history cleanup ticker...');
+  try {
+    await cleanupExchangeHistory(db); // Чистка сразу при старте
+  } catch (e) {
+    console.error('[ExchangeCleanup] Startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await cleanupExchangeHistory(db);
+    } catch (e) {
+      console.error('[ExchangeCleanup] Interval error:', e);
     }
   }, 60 * 60 * 1000); // Каждый час
 
