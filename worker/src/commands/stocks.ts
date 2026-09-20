@@ -5,6 +5,7 @@ import { CommandInteraction, Env, ExecutionContext } from "../types";
 import { SPARKLINE_POINTS } from "../exchange/constants";
 import { buildHourlyNavSeries, navChangePct } from "../exchange/nav";
 import { sparkline } from "../exchange/sparkline";
+import { computeEffectiveMood, quoteBuy, quoteSell } from "../exchange/math";
 
 /** PATCH @original — обновление отложенного ответа (флаги задаёт вызывающий). */
 async function patchOriginal(env: Env, token: string, body: Record<string, unknown>): Promise<Response> {
@@ -62,29 +63,64 @@ export async function handleStocks(
           return;
         }
 
+        // Активные кризисы: company_id -> expires_at (для строки предупреждения)
+        const crisisRes = await db.execute({
+          sql: "SELECT company_id, expires_at FROM company_crises WHERE guild_id = ? AND status = 'pending'",
+          args: [gid],
+        });
+        const crisisByCompany = new Map<number, number>();
+        for (const row of crisisRes.rows) {
+          crisisByCompany.set(Number(row.company_id), Number(row.expires_at));
+        }
+
         // Защита от лимитов Embed: ровно 1 поле на компанию (максимум 15 полей при лимите 25)
         const fields = res.rows.map((r) => {
-          const circulating = 100 - Number(r.available_shares);
-          const nav = circulating > 0 ? Math.floor((Number(r.treasury) * 100) / circulating) / 100 : 0;
+          const treasury = Number(r.treasury) || 0;
+          const available = Number(r.available_shares) || 0;
+          const circulating = 100 - available;
+          const nav = circulating > 0 ? Math.floor((treasury * 100) / circulating) / 100 : 0;
           const navDisplay = nav.toFixed(2);
 
           let statusTag = "";
           if (Number(r.frozen) === 1) statusTag = " • ТОРГИ ПРИОСТАНОВЛЕНЫ";
-          else if (Number(r.treasury) < 1 && nav < 0.01) statusTag = " • БАНКРОТ";
+          else if (treasury < 1 && nav < 0.01) statusTag = " • БАНКРОТ";
+
+          // Эффективное настроение с ленивым затуханием и его метка
+          const moodBps = computeEffectiveMood(Number(r.mood_bps) || 0, Number(r.mood_updated_at) || 0, nowSec);
+          let moodLabel: string;
+          if (moodBps >= 500) moodLabel = `🔥 Ажиотаж +${(moodBps / 100).toFixed(1)}%`;
+          else if (moodBps <= -500) moodLabel = `🧊 Паника ${(moodBps / 100).toFixed(1)}%`;
+          else moodLabel = `😐 Спокойно ${(moodBps / 100).toFixed(1)}%`;
+
+          // Котировки на 1 акцию: покупка платит totalCost, продажа получает netPayout
+          const buyPrice = circulating > 0 ? quoteBuy(treasury, circulating, 1, moodBps).totalCost : 0;
+          const sellPrice = circulating > 0 ? quoteSell(treasury, circulating, 1, moodBps).netPayout : 0;
 
           // 24ч дельта NAV и спарклайн из почасового ряда (fill-forward)
           const history = navByCompany.get(Number(r.id)) ?? [];
-          let trendLine = "";
+          let changeStr = "н/д";
+          let spark = "";
           if (history.length > 0) {
             const series = buildHourlyNavSeries(history, nowSec, SPARKLINE_POINTS);
             const change = navChangePct(series[series.length - 1], series[0]);
             const sign = change >= 0 ? "+" : "";
-            trendLine = `\n24ч: ${sign}${change.toFixed(1)}% ${sparkline(series)}`;
+            changeStr = `${sign}${change.toFixed(1)}%`;
+            spark = sparkline(series);
           }
+
+          const expiresAt = crisisByCompany.get(Number(r.id));
+          const crisisLine = expiresAt !== undefined ? `\n⚠️ Кризис: осталось <t:${expiresAt}:R>` : "";
 
           return {
             name: `${r.name} (${r.ticker})${statusTag}`.slice(0, 256),
-            value: `NAV: ${navDisplay} 🪙 • Казна: ${Number(r.treasury).toLocaleString()} 🪙 • Доступно: ${r.available_shares}/49 акций${trendLine}`.slice(0, 1024),
+            value: [
+              `NAV: ${navDisplay} 🪙 • Казна: ${treasury.toLocaleString()} 🪙 • Свободно: ${available} • В обращении: ${circulating}/100`,
+              `Покупка: ${buyPrice} 🪙 • Продажа: ${sellPrice} 🪙`,
+              `${moodLabel} • 24ч: ${changeStr}${spark ? ` ${spark}` : ""}`,
+              crisisLine,
+            ]
+              .join("\n")
+              .slice(0, 1024),
           };
         });
 
@@ -130,7 +166,7 @@ export async function handlePortfolio(
         const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
 
         const res = await db.execute({
-          sql: `SELECT c.name, c.ticker, c.treasury, c.available_shares, s.shares_count
+          sql: `SELECT c.name, c.ticker, c.treasury, c.available_shares, c.owner_id, c.mood_bps, c.mood_updated_at, s.shares_count
                 FROM company_shares s
                 JOIN companies c ON c.id = s.company_id
                 WHERE s.guild_id = ? AND s.user_id = ? AND s.shares_count > 0
@@ -147,6 +183,7 @@ export async function handlePortfolio(
           return;
         }
 
+        const nowSec = Math.floor(Date.now() / 1000);
         // Оценка позиции строго целочисленно от казны (не через округлённый NAV!)
         const positions = res.rows.map((r) => {
           const circulating = 100 - Number(r.available_shares);
@@ -154,14 +191,23 @@ export async function handlePortfolio(
           const shares = Math.max(0, Number(r.shares_count) || 0);
           const positionValue = circulating > 0 ? Math.floor((shares * treasury) / circulating) : 0;
           const navDisplay = circulating > 0 ? (Math.floor((treasury * 100) / circulating) / 100).toFixed(2) : "0.00";
-          return { name: String(r.name || ""), ticker: String(r.ticker || ""), shares, navDisplay, positionValue };
+
+          // У основателя контрольный пакет 51 акция — продать можно только остаток
+          const sellableShares = String(r.owner_id) === userId ? Math.max(0, shares - 51) : shares;
+
+          // Реальный выход по котировке продажи (скидка паники + комиссия резерва)
+          const moodBps = computeEffectiveMood(Number(r.mood_bps) || 0, Number(r.mood_updated_at) || 0, nowSec);
+          const exitValue = circulating > 0 ? quoteSell(treasury, circulating, sellableShares, moodBps).netPayout : 0;
+
+          return { name: String(r.name || ""), ticker: String(r.ticker || ""), shares, sellableShares, navDisplay, positionValue, exitValue };
         });
 
         const totalValue = positions.reduce((sum, p) => sum + p.positionValue, 0);
+        const totalExit = positions.reduce((sum, p) => sum + p.exitValue, 0);
 
         const fields = positions.map((p) => ({
           name: `${p.name} (${p.ticker})`.slice(0, 256),
-          value: `Акций: **${p.shares}** • NAV: ${p.navDisplay} 🪙 *(справочно)* • Оценка доли: **${p.positionValue.toLocaleString()} 🪙**`.slice(0, 1024),
+          value: `Акций: **${p.shares}** • NAV: ${p.navDisplay} 🪙 *(справочно)* • Оценка доли: **${p.positionValue.toLocaleString()} 🪙** • Выход сейчас: **~${p.exitValue.toLocaleString()} 🪙**`.slice(0, 1024),
         }));
 
         const embed = {
@@ -169,7 +215,7 @@ export async function handlePortfolio(
           description: `Инвестор: <@${userId}>`,
           color: 0x57f287,
           fields,
-          footer: { text: `Суммарная оценка портфеля: ${totalValue.toLocaleString()} 🪙` },
+          footer: { text: `Оценка по NAV: ${totalValue.toLocaleString()} 🪙 • Выход сейчас: ~${totalExit.toLocaleString()} 🪙` },
         };
 
         const resp = await patchOriginal(env, inter.token, { embeds: [embed], flags: 64 });
