@@ -3970,6 +3970,467 @@ async function cleanupExchangeHistory(db: any): Promise<void> {
   }
 }
 
+// ============================================
+// Лента биржи (Этап 4.2): хелперы
+// (дублировано из worker/exchange/* для collector, избегаем tsconfig issues)
+// ============================================
+
+// Символы спарклайна от минимума к максимуму
+const SPARK_CHARS = '▁▂▃▄▅▆▇█';
+
+/**
+ * Рисует спарклайн по значениям ряда.
+ */
+function sparkline(values: number[]): string {
+  if (values.length === 0) return "";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) return "▄".repeat(values.length);
+
+  const range = max - min;
+  const lastIdx = SPARK_CHARS.length - 1;
+  return values
+    .map((v) => {
+      const idx = Math.max(0, Math.min(lastIdx, Math.round(((v - min) / range) * lastIdx)));
+      return SPARK_CHARS[idx];
+    })
+    .join('');
+}
+
+/**
+ * NAV одной акции: казна с поправкой на настроение рынка (mood_bps),
+ * делённая на акции в обращении.
+ */
+function computeNav(treasury: number, circulating: number, moodBps: number): number {
+  if (circulating <= 0) return 0;
+  return (treasury * (1 + moodBps / 10000)) / circulating;
+}
+
+/**
+ * Строит почасовой ряд NAV (по умолчанию 24 точки): для каждого часового бакета
+ * берётся последняя запись истории на момент конца бакета; если истории ещё нет —
+ * первая известная запись.
+ */
+function buildHourlyNavSeries(
+  records: { ts: number; nav: number }[],
+  nowSec: number,
+  points: number = 24
+): number[] {
+  const sorted = [...records].sort((a, b) => a.ts - b.ts);
+  const series: number[] = [];
+
+  for (let i = points - 1; i >= 0; i--) {
+    const bucketEnd = nowSec - i * 3600;
+    let value: number | null = null;
+    for (const r of sorted) {
+      if (r.ts <= bucketEnd) {
+        value = r.nav;
+      } else {
+        break;
+      }
+    }
+    if (value === null) {
+      value = sorted.length > 0 ? sorted[0].nav : 0;
+    }
+    series.push(value);
+  }
+
+  return series;
+}
+
+/**
+ * Ставит событие биржи в очередь outbox (market_events).
+ * Доставку в Discord выполняет фоновый processMarketEventsOutbox.
+ */
+async function enqueueMarketEvent(db: any, guildId: string, kind: string, payload: Record<string, any>): Promise<void> {
+  try {
+    await db.execute({
+      sql: 'INSERT INTO market_events (guild_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)',
+      args: [guildId, kind, JSON.stringify(payload), Math.floor(Date.now() / 1000)],
+    });
+  } catch (err) {
+    console.error(`[ExchangeFeed] Failed to enqueue event ${kind} for guild ${guildId}:`, err);
+  }
+}
+
+/**
+ * Формирует Embed для события ленты по его типу. payload_json пишется и worker'ом,
+ * и collector'ом, поэтому рендер терпим к отсутствию полей: если в payload есть
+ * готовый text — используем его.
+ */
+function renderMarketEventEmbed(kind: string, payload: any): any {
+  const blue = 0x5865F2;
+  const green = 0x2ECC71;
+  const red = 0xE74C3C;
+  const text = typeof payload?.text === 'string' && payload.text.length > 0 ? payload.text : null;
+
+  switch (kind) {
+    case 'whale_trade':
+      return {
+        embeds: [{
+          title: '🐋 Крупная сделка на бирже',
+          description: text ||
+            `**${payload.companyName || 'Компания'}** (\`${payload.ticker || '???'}\`): ` +
+            `${payload.side === 'sell' ? '📉 продажа' : '📈 покупка'} **${payload.shares ?? '—'}** акц. на **${payload.coins ?? '—'} 🪙**`,
+          color: blue,
+        }],
+      };
+    case 'nav_move': {
+      const changePct = Number(payload.changePct) || 0;
+      return {
+        embeds: [{
+          title: changePct >= 0 ? '📈 Резкий рост котировок' : '📉 Резкое падение котировок',
+          description: text ||
+            `**${payload.companyName || 'Компания'}** (\`${payload.ticker || '???'}\`): ` +
+            `**${changePct >= 0 ? '+' : ''}${changePct}%** NAV за 24ч` +
+            (payload.sparkline ? `\n\`${payload.sparkline}\`` : ''),
+          color: changePct >= 0 ? green : red,
+        }],
+      };
+    }
+    case 'crisis_spawn':
+      return {
+        embeds: [{
+          title: '🚨 Кризис компании',
+          description: text || 'Компания попала в кризисную ситуацию!',
+          color: red,
+        }],
+      };
+    case 'crisis_resolved':
+      return {
+        embeds: [{
+          title: '✅ Кризис разрешён',
+          description: text || 'Кризисная ситуация успешно разрешена.',
+          color: green,
+        }],
+      };
+    case 'daily_digest':
+      return {
+        embeds: [{
+          title: '📊 Дайджест биржи за сутки',
+          description: text || '',
+          color: blue,
+        }],
+      };
+    default:
+      return {
+        embeds: [{
+          title: '📈 Событие биржи',
+          description: text || `\`${kind}\``,
+          color: blue,
+        }],
+      };
+  }
+}
+
+// ============================================
+// Фоновые процессы ленты биржи (Этап 4.2)
+// ============================================
+
+/**
+ * Доставляет события из outbox (market_events) в канал ленты биржи.
+ * Канал: exchange_guild_state.market_channel_id, fallback — process.env.MARKET_CHANNEL_ID.
+ * Успешная отправка помечается sent_at; при отсутствии канала событие помечается
+ * sent_at с last_error='no_channel', чтобы не блокировать очередь. Пауза 250 мс
+ * между отправками — защита от rate limit Discord.
+ */
+async function processMarketEventsOutbox(db: any, bot: Client): Promise<void> {
+  try {
+    const pendingResult = await db.execute({
+      sql: `SELECT id, guild_id, kind, payload_json
+            FROM market_events
+            WHERE sent_at IS NULL AND attempts < 5
+            ORDER BY id
+            LIMIT 20`,
+      args: [],
+    });
+
+    const events = pendingResult.rows || [];
+    if (events.length === 0) return;
+
+    for (const ev of events) {
+      const eventId = ev.id as number;
+      const guildId = ev.guild_id as string;
+      const kind = ev.kind as string;
+
+      // Канал ленты: настройка гильдии, затем переменная окружения
+      let channelId: string | null = null;
+      try {
+        const stateResult = await db.execute({
+          sql: 'SELECT market_channel_id FROM exchange_guild_state WHERE guild_id = ?',
+          args: [guildId],
+        });
+        channelId = (stateResult.rows[0]?.market_channel_id as string | null) || null;
+      } catch (stateErr) {
+        console.error(`[ExchangeFeed] Failed to read exchange_guild_state for guild ${guildId}:`, stateErr);
+      }
+      if (!channelId) {
+        channelId = process.env.MARKET_CHANNEL_ID || null;
+      }
+
+      // Канал должен существовать и быть доступен для отправки
+      let channel: any = null;
+      const guild = bot.guilds.cache.get(guildId);
+      if (guild && channelId) {
+        const candidate = guild.channels.cache.get(channelId);
+        if (candidate && candidate.type === 0 && candidate.permissionsFor(guild.members.me!)?.has('SendMessages')) {
+          channel = candidate;
+        }
+      }
+
+      if (!channel) {
+        // Канала нет — помечаем событие доставленным с ошибкой, чтобы не блокировать очередь
+        await db.execute({
+          sql: "UPDATE market_events SET sent_at = ?, attempts = attempts + 1, last_error = 'no_channel' WHERE id = ?",
+          args: [Math.floor(Date.now() / 1000), eventId],
+        });
+        continue;
+      }
+
+      let payload: any = {};
+      try {
+        payload = JSON.parse(String(ev.payload_json || '{}'));
+      } catch {
+        payload = {};
+      }
+
+      try {
+        await channel.send(renderMarketEventEmbed(kind, payload));
+        await db.execute({
+          sql: 'UPDATE market_events SET sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE id = ?',
+          args: [Math.floor(Date.now() / 1000), eventId],
+        });
+        console.log(`[ExchangeFeed] Event ${kind} #${eventId} delivered to guild ${guildId} channel ${channelId}`);
+      } catch (sendErr) {
+        await db.execute({
+          sql: 'UPDATE market_events SET attempts = attempts + 1, last_error = ? WHERE id = ?',
+          args: [String((sendErr as any)?.message || sendErr).slice(0, 500), eventId],
+        });
+        console.error(`[ExchangeFeed] Failed to deliver event #${eventId}:`, sendErr);
+      }
+
+      // Пауза 250 мс между отправками (rate limit Discord)
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  } catch (err) {
+    console.error('[ExchangeFeed] Error in processMarketEventsOutbox:', err);
+  }
+}
+
+/**
+ * Ищет резкие движения NAV (>= 10% за 24ч) и ставит события nav_move в очередь.
+ * Антидубль: одна компания не чаще раза в 6 часов (по свежим nav_move в outbox).
+ */
+async function checkSharpNavMoves(db: any): Promise<void> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const dayAgoSec = nowSec - 24 * 3600;
+  const antiDupWindowSec = 6 * 3600;
+
+  try {
+    const companiesResult = await db.execute({
+      sql: 'SELECT id, guild_id, name, ticker FROM companies',
+      args: [],
+    });
+    const companies = companiesResult.rows || [];
+    if (companies.length === 0) return;
+
+    // Свежие nav_move за окно антидубля: читаем один раз, ключи собираем в памяти
+    const recentResult = await db.execute({
+      sql: `SELECT guild_id, payload_json, created_at
+            FROM market_events
+            WHERE kind = 'nav_move' AND created_at >= ?
+            ORDER BY id DESC`,
+      args: [nowSec - antiDupWindowSec],
+    });
+    const lastNavMoveAt = new Map<string, number>();
+    for (const row of recentResult.rows || []) {
+      try {
+        const payload = JSON.parse(String(row.payload_json || '{}'));
+        const moveCompanyId = payload.company_id ?? payload.companyId;
+        if (moveCompanyId === undefined || moveCompanyId === null) continue;
+        const key = `${row.guild_id}:${moveCompanyId}`;
+        if (!lastNavMoveAt.has(key)) {
+          lastNavMoveAt.set(key, Number(row.created_at) || 0);
+        }
+      } catch {
+        // Битый payload — пропускаем
+      }
+    }
+
+    for (const comp of companies) {
+      try {
+        const companyIdNum = Number(comp.id);
+        const guildId = comp.guild_id as string;
+
+        // История NAV за последние 24 часа
+        const historyResult = await db.execute({
+          sql: `SELECT ts, treasury, circulating, mood_bps
+                FROM company_nav_history
+                WHERE company_id = ? AND ts >= ?
+                ORDER BY ts ASC`,
+          args: [comp.id, dayAgoSec],
+        });
+        const records = (historyResult.rows || []).map((r: any) => ({
+          ts: Number(r.ts),
+          nav: computeNav(Number(r.treasury), Number(r.circulating), Number(r.mood_bps)),
+        }));
+
+        // Нужно минимум две точки: начало и конец окна
+        if (records.length < 2) continue;
+
+        const series = buildHourlyNavSeries(records, nowSec, 24);
+        const firstNav = series[0];
+        const lastNav = series[series.length - 1];
+        if (!firstNav || firstNav <= 0) continue;
+
+        const changePct = ((lastNav - firstNav) / firstNav) * 100;
+        if (Math.abs(changePct) < 10) continue;
+
+        // Антидубль: не спамим одну компанию чаще раза в 6 часов
+        const dupKey = `${guildId}:${companyIdNum}`;
+        const lastAt = lastNavMoveAt.get(dupKey) || 0;
+        if (nowSec - lastAt < antiDupWindowSec) continue;
+
+        await enqueueMarketEvent(db, guildId, 'nav_move', {
+          company_id: companyIdNum,
+          companyName: comp.name,
+          ticker: comp.ticker,
+          changePct: Math.round(changePct * 10) / 10,
+          sparkline: sparkline(series),
+        });
+        lastNavMoveAt.set(dupKey, nowSec);
+        console.log(`[ExchangeFeed] NAV move queued: company ${companyIdNum} (${comp.ticker}) ${changePct.toFixed(1)}% / 24h`);
+      } catch (e) {
+        console.error('[ExchangeFeed] Error checking NAV moves for company', comp.id, e);
+      }
+    }
+  } catch (err) {
+    console.error('[ExchangeFeed] Error in checkSharpNavMoves:', err);
+  }
+}
+
+/**
+ * Собирает текст суточного дайджеста: топ-5 роста и топ-5 падения NAV за 24ч.
+ * Возвращает null, если данных за сутки нет.
+ */
+async function buildDailyDigestText(db: any, guildId: string): Promise<string | null> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const dayAgoSec = nowSec - 24 * 3600;
+
+  const companiesResult = await db.execute({
+    sql: 'SELECT id, name, ticker FROM companies WHERE guild_id = ?',
+    args: [guildId],
+  });
+
+  const movers: { name: string; ticker: string; changePct: number; spark: string }[] = [];
+
+  for (const comp of companiesResult.rows || []) {
+    const historyResult = await db.execute({
+      sql: `SELECT ts, treasury, circulating, mood_bps
+            FROM company_nav_history
+            WHERE company_id = ? AND ts >= ?
+            ORDER BY ts ASC`,
+      args: [comp.id, dayAgoSec],
+    });
+    const records = (historyResult.rows || []).map((r: any) => ({
+      ts: Number(r.ts),
+      nav: computeNav(Number(r.treasury), Number(r.circulating), Number(r.mood_bps)),
+    }));
+    if (records.length < 2) continue;
+
+    const series = buildHourlyNavSeries(records, nowSec, 24);
+    const firstNav = series[0];
+    const lastNav = series[series.length - 1];
+    if (!firstNav || firstNav <= 0) continue;
+
+    movers.push({
+      name: String(comp.name || 'Компания'),
+      ticker: String(comp.ticker || '???'),
+      changePct: Math.round(((lastNav - firstNav) / firstNav) * 1000) / 10,
+      spark: sparkline(series),
+    });
+  }
+
+  if (movers.length === 0) return null;
+
+  const gainers = movers
+    .filter((m) => m.changePct > 0)
+    .sort((a, b) => b.changePct - a.changePct)
+    .slice(0, 5);
+  const losers = movers
+    .filter((m) => m.changePct < 0)
+    .sort((a, b) => a.changePct - b.changePct)
+    .slice(0, 5);
+
+  const lines: string[] = [];
+  if (gainers.length > 0) {
+    lines.push('**🚀 Лидеры роста за 24ч:**');
+    for (const m of gainers) {
+      lines.push(`• **${m.name}** (\`${m.ticker}\`): +${m.changePct}% ${m.spark}`);
+    }
+  }
+  if (losers.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push('**📉 Лидеры падения за 24ч:**');
+    for (const m of losers) {
+      lines.push(`• **${m.name}** (\`${m.ticker}\`): ${m.changePct}% ${m.spark}`);
+    }
+  }
+  if (lines.length === 0) {
+    lines.push('За сутки рынок без заметных движений — полный штиль. 🌊');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Раз в сутки формирует сводку биржи (топ-5 роста и топ-5 падения NAV за 24ч)
+ * и ставит событие daily_digest в очередь. Захват дня идемпотентен через
+ * last_digest_day в exchange_guild_state: день помечается до постановки в
+ * очередь, поэтому повторные тики в тот же день не дублируют выпуск.
+ */
+async function processDailyDigest(db: any, bot: Client): Promise<void> {
+  const todayStr = getVladivostokDate();
+
+  try {
+    const guildsResult = await db.execute({
+      sql: 'SELECT DISTINCT guild_id FROM companies',
+      args: [],
+    });
+    const guildIds = (guildsResult.rows || []).map((r: any) => r.guild_id as string);
+
+    for (const guildId of guildIds) {
+      try {
+        // Захват дня: пропускаем гильдии, у которых дайджест сегодня уже выпускался
+        const stateResult = await db.execute({
+          sql: 'SELECT last_digest_day FROM exchange_guild_state WHERE guild_id = ?',
+          args: [guildId],
+        });
+        const lastDigestDay = (stateResult.rows[0]?.last_digest_day as string | null) || null;
+        if (lastDigestDay === todayStr) continue;
+
+        const digestText = await buildDailyDigestText(db, guildId);
+        if (!digestText) continue; // Нет данных за 24ч — день не помечаем
+
+        // Помечаем день ДО постановки в очередь (идемпотентность захвата дня)
+        await db.execute({
+          sql: `INSERT INTO exchange_guild_state (guild_id, last_digest_day)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET last_digest_day = excluded.last_digest_day`,
+          args: [guildId, todayStr],
+        });
+
+        await enqueueMarketEvent(db, guildId, 'daily_digest', { text: digestText });
+        console.log(`[ExchangeFeed] Daily digest queued for guild ${guildId}`);
+      } catch (e) {
+        console.error('[ExchangeFeed] Error processing daily digest for guild', guildId, e);
+      }
+    }
+  } catch (err) {
+    console.error('[ExchangeFeed] Error in processDailyDigest:', err);
+  }
+}
+
 client.on('ready', async () => {
   console.log(`[Collector] Starting migration...`);
   await migrateSchema();
@@ -4002,7 +4463,7 @@ client.on('ready', async () => {
 
       // ============================================
       // Слэш-команды биржи (мгновенная гильдейская регистрация)
-      // type 3 = STRING, type 4 = INTEGER
+      // type 3 = STRING, type 4 = INTEGER, type 7 = CHANNEL
       // ============================================
       const exchangeCommands: any[] = [
         { name: 'stocks', description: 'Котировки акций компаний сервера' },
@@ -4030,6 +4491,13 @@ client.on('ready', async () => {
           options: [
             { name: 'company', description: 'Тикер или название компании', type: 3, required: true },
             { name: 'amount', description: 'Количество акций', type: 4, required: true },
+          ],
+        },
+        {
+          name: 'exchange-setup',
+          description: 'Настроить канал для публичной ленты биржи (только Manage Server)',
+          options: [
+            { name: 'channel', description: 'Текстовый канал для событий биржи', type: 7, required: true },
           ],
         },
       ];
@@ -4170,6 +4638,55 @@ client.on('ready', async () => {
       console.error('[ExchangeCleanup] Interval error:', e);
     }
   }, 60 * 60 * 1000); // Каждый час
+
+  // ============================================
+  // Лента биржи (Этап 4.2): фоновые процессы
+  // ============================================
+
+  // Outbox-доставка событий ленты (каждые 20 секунд)
+  console.log('[ExchangeFeed] Starting market events outbox ticker...');
+  try {
+    await processMarketEventsOutbox(db, client); // Доставка сразу при старте
+  } catch (e) {
+    console.error('[ExchangeFeed] Outbox startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processMarketEventsOutbox(db, client);
+    } catch (e) {
+      console.error('[ExchangeFeed] Outbox interval error:', e);
+    }
+  }, 20 * 1000); // Каждые 20 секунд
+
+  // Резкие движения NAV (каждые 5 минут)
+  console.log('[ExchangeFeed] Starting sharp NAV moves ticker...');
+  try {
+    await checkSharpNavMoves(db); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[ExchangeFeed] NAV moves startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await checkSharpNavMoves(db);
+    } catch (e) {
+      console.error('[ExchangeFeed] NAV moves interval error:', e);
+    }
+  }, 5 * 60 * 1000); // Каждые 5 минут
+
+  // Суточный дайджест биржи (каждые 15 минут, захват дня через last_digest_day)
+  console.log('[ExchangeFeed] Starting daily digest ticker...');
+  try {
+    await processDailyDigest(db, client); // Проверка сразу при старте
+  } catch (e) {
+    console.error('[ExchangeFeed] Digest startup error:', e);
+  }
+  setInterval(async () => {
+    try {
+      await processDailyDigest(db, client);
+    } catch (e) {
+      console.error('[ExchangeFeed] Digest interval error:', e);
+    }
+  }, 15 * 60 * 1000); // Каждые 15 минут
 
   // ============================================
   // M11: таймер проверки зависших дуэлей (каждые 30 секунд).
