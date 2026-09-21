@@ -63,16 +63,6 @@ export async function handleStocks(
           return;
         }
 
-        // Активные кризисы: company_id -> expires_at (для строки предупреждения)
-        const crisisRes = await db.execute({
-          sql: "SELECT company_id, expires_at FROM company_crises WHERE guild_id = ? AND status = 'pending'",
-          args: [gid],
-        });
-        const crisisByCompany = new Map<number, number>();
-        for (const row of crisisRes.rows) {
-          crisisByCompany.set(Number(row.company_id), Number(row.expires_at));
-        }
-
         // Защита от лимитов Embed: ровно 1 поле на компанию (максимум 15 полей при лимите 25)
         const fields = res.rows.map((r) => {
           const treasury = Number(r.treasury) || 0;
@@ -108,16 +98,12 @@ export async function handleStocks(
             spark = sparkline(series);
           }
 
-          const expiresAt = crisisByCompany.get(Number(r.id));
-          const crisisLine = expiresAt !== undefined ? `\n⚠️ Кризис: осталось <t:${expiresAt}:R>` : "";
-
           return {
             name: `${r.name} (${r.ticker})${statusTag}`.slice(0, 256),
             value: [
               `NAV: ${navDisplay} 🪙 • Казна: ${treasury.toLocaleString()} 🪙 • Свободно: ${available} • В обращении: ${circulating}/100`,
               `Покупка: ${buyPrice} 🪙 • Продажа: ${sellPrice} 🪙`,
               `${moodLabel} • 24ч: ${changeStr}${spark ? ` ${spark}` : ""}`,
-              crisisLine,
             ]
               .join("\n")
               .slice(0, 1024),
