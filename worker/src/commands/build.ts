@@ -206,7 +206,7 @@ async function plotBuild(
             AND building_type IS NULL
             AND ? <= COALESCE(
               (SELECT coins FROM users WHERE user_id = ? AND guild_id = ?), 0)`,
-    args: [cfg.type, nowSec, nowSec, 0, guildId, plotId, owner.ownerType, owner.ownerId, cost, userId, guildId],
+    args: [cfg.type, nowSec, nowSec, guildId, plotId, owner.ownerType, owner.ownerId, cost, userId, guildId],
   };
 
   const claimOkGuard = "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND building_type = ?)";

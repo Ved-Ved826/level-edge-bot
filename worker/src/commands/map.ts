@@ -136,7 +136,8 @@ export async function handleMapCommand(inter: CommandInteraction, env: Env, _ctx
 
     const companies = new Map<number, string>();
     for (const row of companiesRes.rows || []) {
-      companies.set(Number(row.id), `🏢 ${row.ticker || row.name}`);
+      // Без эмодзи: Inter не содержит глифов эмодзи — Satori рисует «тофу».
+      companies.set(Number(row.id), String(row.ticker || row.name));
     }
 
     let occupiedCount = 0;
@@ -150,9 +151,9 @@ export async function handleMapCommand(inter: CommandInteraction, env: Env, _ctx
 
       let ownerLabel = isFree ? "Город" : "Игрок";
       if (p?.owner_type === "company" && p?.owner_id) {
-        ownerLabel = companies.get(Number(p.owner_id)) || "🏢 Компания";
+        ownerLabel = companies.get(Number(p.owner_id)) || "Компания";
       } else if (p?.owner_type === "user" && p?.owner_id) {
-        ownerLabel = `👤 ID:${String(p.owner_id).slice(-4)}`;
+        ownerLabel = `ID:${String(p.owner_id).slice(-4)}`;
       }
 
       const bType = p?.building_type as keyof typeof BUILDINGS_CONFIG | undefined;
