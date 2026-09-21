@@ -146,27 +146,32 @@ export interface CrisisDelta {
 }
 
 /**
- * Упрощенный расчет изменения казны для событий
+ * Дельта казны кризиса: trunc(treasury * pct_bps / 10000).
+ * Потеря ограничена так, чтобы казна осталась >= 1 (инвариант treasury >= 1).
+ * Прибыль ограничена потолком в монетах и балансом резерва: деньги на прибыль
+ * берутся из server_reserve, поэтому больше резерва взять нельзя.
+ * Все итоговые суммы целочисленные — монеты не создаются и не исчезают.
  */
 export function computeCrisisDelta(
   treasury: number,
-  delta: number
-): { delta: number, newTreasury: number } {
-  // Для отрицательных дельт - не опускаем казну ниже минимума
-  if (delta < 0) {
-    const maxLoss = treasury - CRISIS_MIN_AFTER_LOSS;
-    const actualDelta = Math.max(delta, -maxLoss);
-    return {
-      delta: actualDelta,
-      newTreasury: treasury + actualDelta
-    };
+  pctBps: number,
+  reserveBalance: number,
+  maxGainCoins: number = CRISIS_MAX_GAIN_COINS
+): CrisisDelta {
+  const raw = Math.trunc((treasury * pctBps) / 10000);
+  if (raw < 0) {
+    // Потеря не должна опустошить казну: остаётся минимум 1 монета
+    const maxLoss = Math.max(0, treasury - 1);
+    const loss = Math.min(-raw, maxLoss);
+    return { delta: -loss, newTreasury: treasury - loss, reserveDelta: loss };
   }
-  
-  // Для положительных - просто применяем дельту
-  return {
-    delta,
-    newTreasury: treasury + delta
-  };
+  if (raw > 0) {
+    // Прибыль ограничена потолком в монетах и остатком резерва
+    const cap = Math.min(maxGainCoins, Math.max(0, Math.trunc(reserveBalance)));
+    const gain = Math.min(raw, cap);
+    return { delta: gain, newTreasury: treasury + gain, reserveDelta: -gain };
+  }
+  return { delta: 0, newTreasury: treasury, reserveDelta: 0 };
 }
 
 /**

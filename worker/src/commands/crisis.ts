@@ -175,5 +175,103 @@ async function applyCrisisOutcomeBatch(
 }
 
 export async function handleCrisisResolve(inter: ButtonInteraction, env: Env, _ctx: ExecutionContext): Promise<Response> {
-  return ephemeral("Система событий компаний теперь работает автоматически. Больше не нужно нажимать кнопки - изменения применяются мгновенно!");
+  const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+  // Разбор custom_id: crisis:<crisisId>:<optionId>
+  const parts = inter.data.custom_id.split(":");
+  if (parts.length !== 3 || parts[0] !== "crisis") {
+    return ephemeral("Неизвестная кнопка кризиса.");
+  }
+  const crisisId = Number(parts[1]);
+  const optionId = parts[2];
+  if (!Number.isInteger(crisisId) || crisisId <= 0 || !optionId) {
+    return ephemeral("Неизвестная кнопка кризиса.");
+  }
+
+  const raw: any = inter;
+  const userId: string = raw?.member?.user?.id || raw?.user?.id || "";
+
+  const crisisRes = await db.execute({
+    sql: `SELECT cc.id, cc.guild_id, cc.company_id, cc.status, cc.expires_at, cc.options_json,
+                 c.owner_id, c.name AS company_name, c.ticker
+          FROM company_crises cc
+          JOIN companies c ON c.id = cc.company_id
+          WHERE cc.id = ?`,
+    args: [crisisId],
+  });
+  if (crisisRes.rows.length === 0) {
+    // Кризис удалён (например, сезонной ликвидацией компаний)
+    return ephemeral("Кризис уже закрыт");
+  }
+  const crisis: any = crisisRes.rows[0];
+
+  // Решение принимает только владелец компании
+  if (!userId || userId !== String(crisis.owner_id)) {
+    return ephemeral("Решает только владелец компании");
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  // Уже не pending / истёк — исход применит таймаут-задача collector'а
+  if (String(crisis.status) !== "pending" || Number(crisis.expires_at) <= nowSec) {
+    return ephemeral("Кризис уже закрыт");
+  }
+
+  let options: CrisisOptionJson[] = [];
+  try {
+    options = JSON.parse(String(crisis.options_json || "[]"));
+  } catch {
+    options = [];
+  }
+  const option = options.find((o) => o && o.id === optionId);
+  if (!option || !Array.isArray(option.outcomes) || option.outcomes.length === 0) {
+    return ephemeral("Вариант не найден");
+  }
+
+  // Исход выбирается на сервере один раз; ретраи пересчитывают только дельту
+  const outcome = pickWeightedOutcome(option.outcomes);
+
+  const result = await applyCrisisOutcomeBatch(db, crisis, option.id, outcome);
+  if (result.applied) {
+    const sign = result.delta >= 0 ? "+" : "";
+    const navBefore = result.circulating > 0 ? result.prevTreasury / result.circulating : 0;
+    const navAfter = result.circulating > 0 ? result.newTreasury / result.circulating : 0;
+
+    // Ответ type 7 (UPDATE_MESSAGE): убираем кнопки и показываем исход
+    return Response.json({
+      type: 7,
+      data: {
+        embeds: [
+          {
+            title: `${option.emoji} Решение принято: ${option.label}`.slice(0, 256),
+            description: outcome.text,
+            color: result.delta >= 0 ? 0x2ECC71 : 0xE74C3C,
+            fields: [
+              {
+                name: "Казна",
+                value: `${result.prevTreasury.toLocaleString("ru-RU")} → **${result.newTreasury.toLocaleString("ru-RU")} 🪙** (${sign}${result.delta})`,
+                inline: true,
+              },
+              { name: "NAV", value: `${navBefore.toFixed(2)} → **${navAfter.toFixed(2)} 🪙**`, inline: true },
+            ],
+            footer: { text: `${crisis.company_name} (${crisis.ticker})` },
+          },
+        ],
+        components: [],
+        allowed_mentions: { parse: [] },
+      },
+    });
+  }
+  if (result.alreadyClosed) {
+    return ephemeral("Кризис уже закрыт");
+  }
+  // Три попытки не прошли из-за параллельных сделок или истёкшего дедлайна
+  const finalCheck = await db.execute({
+    sql: "SELECT status, expires_at FROM company_crises WHERE id = ?",
+    args: [crisisId],
+  });
+  const finalRow = finalCheck.rows[0];
+  if (!finalRow || String(finalRow.status) !== "pending" || Number(finalRow.expires_at) <= Math.floor(Date.now() / 1000)) {
+    return ephemeral("Кризис уже закрыт");
+  }
+  return ephemeral("Не удалось применить решение из-за активности на бирже — попробуйте ещё раз.");
 }

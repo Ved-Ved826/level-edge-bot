@@ -68,11 +68,29 @@ export const MOOD_IMPULSE_BPS = 1500;
  */
 export const MOOD_MAX_SHIFT_PER_TRADE_BPS = 1500;
 
-/** Минимум казны компании для событий. */
+/** Минимум казны компании для спавна кризиса. */
 export const CRISIS_MIN_TREASURY = 300;
 
-/** Минимальная казна после отрицательного события. */
-export const CRISIS_MIN_AFTER_LOSS = 50;
+/** Интервал спавна кризисов по гильдии: минимум, часов. */
+export const CRISIS_MIN_INTERVAL_HOURS = 6;
 
-/** Максимальная прибыль от положительного события (в монетах). */
-export const CRISIS_MAX_GAIN_COINS = 2500;
+/** Интервал спавна кризисов по гильдии: максимум, часов. */
+export const CRISIS_MAX_INTERVAL_HOURS = 8;
+
+/** Пауза между кризисами одной компании, часов. */
+export const CRISIS_COMPANY_COOLDOWN_HOURS = 48;
+
+/** Время на решение кризиса владельцем, часов. */
+export const CRISIS_TTL_HOURS = 24;
+
+/** Потолок потери казны за кризис, bps. */
+export const CRISIS_MAX_LOSS_BPS = 2500;
+
+/** Потолок прибыли казны за кризис, bps. */
+export const CRISIS_MAX_GAIN_BPS = 1500;
+
+/** Потолок прибыли за кризис в монетах (прибыль также ограничена резервом). */
+export const CRISIS_MAX_GAIN_COINS = 1500;
+
+/** Усиление паники при потере (множитель сдвига настроения). */
+export const CRISIS_LOSS_MOOD_FACTOR = 1.5;
