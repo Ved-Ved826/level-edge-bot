@@ -175,7 +175,7 @@ export async function handleMapCommand(inter: CommandInteraction, env: Env, _ctx
         buildingName: bCfg ? bCfg.name : null,
         buildingEmoji: bCfg ? bCfg.emoji : null,
         buildingLevel: bLevel,
-        dailyRevenue: bCfg ? bCfg.daily_revenue[lvlIdx] : 0,
+        hourlyRevenue: bCfg ? bCfg.hourly_revenue[lvlIdx] : 0,
         weeklyTax: bCfg ? bCfg.weekly_tax[lvlIdx] : 0,
         isAuction: Boolean(auction),
         auctionBid: Number(auction?.highest_bid) || 0,
@@ -302,7 +302,7 @@ export async function handleMapSelect(inter: ButtonInteraction, env: Env, _ctx: 
       });
       fields.push({
         name: "📈 Экономика",
-        value: `Доход: **${fmtCoins(bCfg.daily_revenue[lvlIdx])} 🪙/сут** • Налог: **${fmtCoins(bCfg.weekly_tax[lvlIdx])} 🪙/нед**`,
+        value: `Доход: **${fmtCoins(bCfg.hourly_revenue[lvlIdx])} 🪙/ч** • Налог: **${fmtCoins(bCfg.weekly_tax[lvlIdx])} 🪙/нед**`,
         inline: false,
       });
     } else {

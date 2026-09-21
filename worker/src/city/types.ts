@@ -22,6 +22,6 @@ export interface BuildingConfig {
   emoji: string;
   base_cost: number;
   upgrade_multiplier: number;
-  daily_revenue: number[]; // [lvl1, lvl2, lvl3] в монетах
-  weekly_tax: number[];    // [lvl1, lvl2, lvl3] в монетах
+  hourly_revenue: number[]; // [lvl1, lvl2, lvl3] монет в час
+  weekly_tax: number[];     // [lvl1, lvl2, lvl3] в монетах
 }

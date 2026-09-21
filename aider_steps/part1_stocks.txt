@@ -1,0 +1,6 @@
+﻿1. В worker/src/commands/stocks.ts:
+   - Убери запрос активных кризисов из company_crises (где status = "pending") и удали строку `\n⚠️ Кризис: осталось...`, чтобы в карточках /stocks больше не выводилось предупреждение о кризисе.
+
+2. В worker/src/worker.ts:
+   - В обработчике кнопок interaction.type === 3 найди ветку с custom_id?.startsWith("crisis:") и замени её ответ на:
+     return Response.json({ type: 4, data: { content: "События компаний теперь происходят автоматически!", flags: 64 } });

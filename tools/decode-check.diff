@@ -1,0 +1,20 @@
+1c1
+< import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
+---
+> ﻿import { Client, GatewayIntentBits, Message, VoiceState } from 'discord.js';
+9c9
+< import { processCompanyCrises, processCrisisTimeouts, sendCrisisSpawnEvent } from './crises';
+---
+> import { processCompanyCrises, processCrisisTimeouts, sendCrisisSpawnEvent } from './crises.js';
+3436c3436
+<     // Ищем закреплённый канал с fallback на систем��ый
+---
+>     // Ищем закреплённый канал с fallback на СЃРёСЃС‚РµРјпїЅпїЅС‹Р№
+5109,5110c5109
+<           name: 'exchange-setup',
+<           description: 'Настроить канал для публичной ленты биржи (только Manage Server)',
+---
+>           name: 'exchange-setup', description: 'Канал для ленты биржи (Manage Server)',
+5945a5945,5946
+> 
+> 

@@ -15,7 +15,7 @@ export interface PlotCardData {
   buildingName: string | null;
   buildingEmoji?: string | null;
   buildingLevel: number;
-  dailyRevenue: number;
+  hourlyRevenue: number;
   weeklyTax: number;
   isAuction: boolean;
   auctionBid: number;
@@ -610,7 +610,7 @@ function OccupancyHud({
         }}
       >
         <span style={{ fontSize: 9, fontWeight: 700, color: "#94a3b8" }}>Доход сети</span>
-        <span style={{ fontSize: 11, fontWeight: 900, color: "#fde68a" }}>+{fmt(income)}/сут</span>
+        <span style={{ fontSize: 11, fontWeight: 900, color: "#fde68a" }}>+{fmt(income)}/ч</span>
       </div>
       {taxAlerts > 0 ? (
         <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
@@ -770,7 +770,7 @@ function BuildingBadge({
   if (status === "auction") statusText = `Аукцион · ${fmt(plot?.auctionBid ?? 0)}`;
   else if (status === "sale") statusText = `${fmt(plot?.forSalePrice ?? 0)}`;
   else if (status === "free") statusText = `${fmt(plot?.basePrice ?? 2500)}`;
-  else if (isBuilt) statusText = `Ур.${plot?.buildingLevel ?? 1} · +${fmt(plot?.dailyRevenue ?? 0)}`;
+  else if (isBuilt) statusText = `Ур.${plot?.buildingLevel ?? 1} · +${fmt(plot?.hourlyRevenue ?? 0)}/ч · ${(plot?.buildingType ?? "").toUpperCase()}`;
   else statusText = "Ждёт стройку";
 
   const owner =
@@ -840,7 +840,7 @@ export const CityMapCard = ({
   const free = list.filter((p) => p.isFree).length;
   const forSale = list.filter((p) => p.forSalePrice != null && p.forSalePrice > 0).length;
   const auctions = list.filter((p) => p.isAuction).length;
-  const income = list.reduce((sum, p) => sum + (p.isFree ? 0 : p.dailyRevenue || 0), 0);
+  const income = list.reduce((sum, p) => sum + (p.isFree ? 0 : p.hourlyRevenue || 0), 0);
   const taxAlerts = list.filter((p) => p.hasUnpaidTaxes).length;
   const mapSvg = createIslandMapSvg(list);
   const mapSrc = `data:image/svg+xml;base64,${toBase64(mapSvg)}`;

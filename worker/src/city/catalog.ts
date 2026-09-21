@@ -31,7 +31,7 @@ export const PLOTS_CATALOG: PlotData[] = [
 
 /**
  * Параметры зданий: стоимость постройки, множитель апгрейда,
- * дневной доход и недельный налог по уровням 1-3.
+ * почасовой доход (целые монеты) и недельный налог по уровням 1-3.
  */
 export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
   mine: {
@@ -40,7 +40,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '⛏️',
     base_cost: 4000,
     upgrade_multiplier: 1.6,
-    daily_revenue: [300, 750, 1600],
+    hourly_revenue: [13, 31, 67],
     weekly_tax: [60, 150, 320],
   },
   farm: {
@@ -49,7 +49,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '🌾',
     base_cost: 3000,
     upgrade_multiplier: 1.6,
-    daily_revenue: [220, 550, 1200],
+    hourly_revenue: [9, 23, 50],
     weekly_tax: [45, 110, 240],
   },
   gas_station: {
@@ -58,7 +58,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '⛽',
     base_cost: 4500,
     upgrade_multiplier: 1.6,
-    daily_revenue: [350, 850, 1800],
+    hourly_revenue: [15, 35, 75],
     weekly_tax: [70, 170, 360],
   },
   shop: {
@@ -67,7 +67,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '🛒',
     base_cost: 3800,
     upgrade_multiplier: 1.6,
-    daily_revenue: [280, 700, 1500],
+    hourly_revenue: [12, 29, 62],
     weekly_tax: [55, 140, 300],
   },
   restaurant: {
@@ -76,7 +76,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '🍽️',
     base_cost: 4200,
     upgrade_multiplier: 1.6,
-    daily_revenue: [320, 800, 1700],
+    hourly_revenue: [14, 33, 71],
     weekly_tax: [65, 160, 340],
   },
   casino: {
@@ -85,7 +85,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '🎰',
     base_cost: 9000,
     upgrade_multiplier: 1.6,
-    daily_revenue: [800, 2000, 4500],
+    hourly_revenue: [33, 83, 188],
     weekly_tax: [180, 450, 1000],
   },
   bank: {
@@ -94,7 +94,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '🏛️',
     base_cost: 12000,
     upgrade_multiplier: 1.6,
-    daily_revenue: [1000, 2500, 5500],
+    hourly_revenue: [42, 104, 229],
     weekly_tax: [220, 550, 1200],
   },
   port: {
@@ -103,7 +103,7 @@ export const BUILDINGS_CONFIG: Record<BuildingType, BuildingConfig> = {
     emoji: '⚓',
     base_cost: 6500,
     upgrade_multiplier: 1.6,
-    daily_revenue: [500, 1250, 2700],
+    hourly_revenue: [21, 52, 112],
     weekly_tax: [100, 250, 540],
   },
 };

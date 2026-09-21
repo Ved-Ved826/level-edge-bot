@@ -230,7 +230,7 @@ async function plotBuild(
     `🗺️ Участок #${plotId} — **${catalog.title}**`,
     `**Владелец:** ${owner.label}`,
     `**Построено:** ${cfg.emoji} ${cfg.name} — уровень 1/3`,
-    `💵 Суточный доход: **${fmt(cfg.daily_revenue[0])} 🪙**`,
+    `💵 Доход: **${fmt(cfg.hourly_revenue[0])} 🪙/час**`,
     `🧾 Недельный налог: **${fmt(cfg.weekly_tax[0])} 🪙**`,
     `💰 Оплачено лично: **${fmt(cost)} 🪙**`,
   ];
@@ -330,7 +330,7 @@ async function plotUpgrade(
   const lines: string[] = [
     `🗺️ Участок #${plotId} — **${catalog.title}**`,
     `**Здание:** ${cfg.emoji} ${cfg.name} — уровень ${newLevel}/3`,
-    `💵 Суточный доход: **${fmt(cfg.daily_revenue[lvlIdx])} 🪙**`,
+    `💵 Доход: **${fmt(cfg.hourly_revenue[lvlIdx])} 🪙/час**`,
     `🧾 Недельный налог: **${fmt(cfg.weekly_tax[lvlIdx])} 🪙**`,
     `💰 Оплачено лично: **${fmt(cost)} 🪙**`,
   ];

@@ -174,7 +174,7 @@ async function plotInfo(db: any, guildId: string, plotId: number): Promise<Recor
     const lvlIdx = Math.min(level, 3) - 1;
     lines.push(
       `🏗️ **Постройка:** ${buildingCfg.emoji} ${buildingCfg.name} — уровень ${level}/3`,
-      `💵 Суточный доход: **${fmt(buildingCfg.daily_revenue[lvlIdx])} 🪙**`,
+      `💵 Доход в час: **${fmt(buildingCfg.hourly_revenue[lvlIdx])} 🪙/час**`,
       `🧾 Недельный налог: **${fmt(buildingCfg.weekly_tax[lvlIdx])} 🪙**`
     );
   } else {

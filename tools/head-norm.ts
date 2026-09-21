@@ -157,21 +157,21 @@ async function ensureCityPlots(db: any, bot: Client): Promise<void> {
 interface BuildingEconomy {
   name: string;
   emoji: string;
-  /** Почасовой доход по уровням 1-3 (🪙/час) */
-  hourlyRevenue: number[];
+  /** Суточный доход по уровням 1-3 (🪙) */
+  dailyRevenue: number[];
   /** Недельный налог по уровням 1-3 (🪙) */
   weeklyTax: number[];
 }
 
 const BUILDINGS_CONFIG: Record<string, BuildingEconomy> = {
-  mine: { name: 'Шахта', emoji: '⛏️', hourlyRevenue: [13, 31, 67], weeklyTax: [60, 150, 320] },
-  farm: { name: 'Ферма', emoji: '🌾', hourlyRevenue: [9, 23, 50], weeklyTax: [45, 110, 240] },
-  gas_station: { name: 'АЗС', emoji: '⛽', hourlyRevenue: [15, 35, 75], weeklyTax: [70, 170, 360] },
-  shop: { name: 'Супермаркет', emoji: '🛒', hourlyRevenue: [12, 29, 62], weeklyTax: [55, 140, 300] },
-  restaurant: { name: 'Ресторан', emoji: '🍽️', hourlyRevenue: [14, 33, 71], weeklyTax: [65, 160, 340] },
-  casino: { name: 'Казино', emoji: '🎰', hourlyRevenue: [33, 83, 188], weeklyTax: [180, 450, 1000] },
-  bank: { name: 'Банк', emoji: '🏛️', hourlyRevenue: [42, 104, 229], weeklyTax: [220, 550, 1200] },
-  port: { name: 'Морской порт', emoji: '⚓', hourlyRevenue: [21, 52, 112], weeklyTax: [100, 250, 540] },
+  mine: { name: 'Шахта', emoji: '⛏️', dailyRevenue: [300, 750, 1600], weeklyTax: [60, 150, 320] },
+  farm: { name: 'Ферма', emoji: '🌾', dailyRevenue: [220, 550, 1200], weeklyTax: [45, 110, 240] },
+  gas_station: { name: 'АЗС', emoji: '⛽', dailyRevenue: [350, 850, 1800], weeklyTax: [70, 170, 360] },
+  shop: { name: 'Супермаркет', emoji: '🛒', dailyRevenue: [280, 700, 1500], weeklyTax: [55, 140, 300] },
+  restaurant: { name: 'Ресторан', emoji: '🍽️', dailyRevenue: [320, 800, 1700], weeklyTax: [65, 160, 340] },
+  casino: { name: 'Казино', emoji: '🎰', dailyRevenue: [800, 2000, 4500], weeklyTax: [180, 450, 1000] },
+  bank: { name: 'Банк', emoji: '🏛️', dailyRevenue: [1000, 2500, 5500], weeklyTax: [220, 550, 1200] },
+  port: { name: 'Морской порт', emoji: '⚓', dailyRevenue: [500, 1250, 2700], weeklyTax: [100, 250, 540] },
 };
 
 /**
@@ -192,31 +192,27 @@ function economyValueByLevel(values: number[], buildingLevel: number): number {
 }
 
 // ============================================
-// Экономика города (Шаг 4): почасовой доход, недельный налог, аукционы
+// Экономика города (Шаг 4): суточный доход, недельный налог, аукционы
 // ============================================
 
 /**
- * Почасовой доход участков с постройками (catch-up).
- * Тик идемпотентен через last_revenue_at (СЕКУНДЫ, Math.floor(Date.now() / 1000)):
- * участок обрабатывается, только если с последнего начисления прошло >= 3600 секунд (1 час).
- * При простое бота (перезапуск) монеты не теряются: hours = floor(elapsed / 3600),
- * выплата = hours × почасовой доход, а last_revenue_at сдвигается ровно на hours × 3600 —
- * недостающий хвост < 1 часа не сгорает и добирается следующим тиком.
- * Начисление: СТРОГО в казну компании-владельца (companies.treasury) с WHERE id = ? AND guild_id = ?.
- * Единоличное владение запрещено — участки с владельцем-игроком (легаси) доход не приносят.
+ * Суточный доход участков с постройками.
+ * Захват суток идемпотентен через last_revenue_at (СЕКУНДЫ, Math.floor(Date.now() / 1000)):
+ * участок обрабатывается, только если с последнего начисления прошло >= 24 часов.
+ * Начисление: владельцу-пользователю — в users.coins, компании — в companies.treasury.
  */
-async function processHourlyPlotRevenue(db: any, bot: Client): Promise<void> {
+async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
-  const hourAgoSec = nowSec - 3600;
+  const dayAgoSec = nowSec - 24 * 3600;
 
   try {
     const plotsResult = await db.execute({
-      sql: `SELECT id, guild_id, owner_type, owner_id, building_type, building_level, last_revenue_at
+      sql: `SELECT id, guild_id, owner_type, owner_id, building_type, building_level
             FROM city_plots
             WHERE building_type IS NOT NULL
               AND building_level > 0
               AND (last_revenue_at IS NULL OR last_revenue_at < ?)`,
-      args: [hourAgoSec],
+      args: [dayAgoSec],
     });
 
     for (const plot of plotsResult.rows || []) {
@@ -229,42 +225,36 @@ async function processHourlyPlotRevenue(db: any, bot: Client): Promise<void> {
 
       if (!economy || !ownerType || !ownerId) continue;
 
-      if (ownerType !== 'company') {
-        // Легаси-владелец-игрок: доход в личный счёт запрещён
-        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: owner is a player (legacy) — income skipped, plot is company-only`);
-        continue;
-      }
-
-      const hourlyRevenue = economyValueByLevel(economy.hourlyRevenue, buildingLevel);
-
-      // Catch-up: целое число отработанных часов с прошлого начисления (>= 1)
-      const lastRevenueAt = plot.last_revenue_at != null ? Number(plot.last_revenue_at) : null;
-      // Легаси-участок без маркера: считаем, что отработан ровно 1 час, и якорим отсчёт на now
-      const startSec = lastRevenueAt != null && lastRevenueAt > 0 ? lastRevenueAt : hourAgoSec;
-      const hours = Math.floor((nowSec - startSec) / 3600);
-      if (hours < 1) continue;
-      const payout = hours * hourlyRevenue;
+      const revenue = economyValueByLevel(economy.dailyRevenue, buildingLevel);
 
       try {
-        // Мутации одного участка — атомарно в одном batch: казна + сдвиг маркера на hours * 3600
-        await db.batch([
-          {
+        if (ownerType === 'user') {
+          await db.execute({
+            sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
+            args: [revenue, ownerId, guildId],
+          });
+        } else if (ownerType === 'company') {
+          await db.execute({
             sql: 'UPDATE companies SET treasury = treasury + ? WHERE id = ? AND guild_id = ?',
-            args: [payout, Number(ownerId), guildId],
-          },
-          {
-            sql: 'UPDATE city_plots SET last_revenue_at = ? WHERE guild_id = ? AND id = ?',
-            args: [startSec + hours * 3600, guildId, plotId],
-          },
-        ], 'write');
+            args: [revenue, Number(ownerId), guildId],
+          });
+        } else {
+          continue;
+        }
 
-        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: +${payout} 🪙 (${hours} ч × ${hourlyRevenue}) to company ${ownerId} (${economy.name}, ур. ${buildingLevel})`);
+        // Захват суток — строго после успешного начисления (в СЕКУНДАХ)
+        await db.execute({
+          sql: 'UPDATE city_plots SET last_revenue_at = ? WHERE guild_id = ? AND id = ?',
+          args: [nowSec, guildId, plotId],
+        });
+
+        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: +${revenue} 🪙 (${economy.name}, ур. ${buildingLevel})`);
       } catch (e) {
         console.error('[CityRevenue] Error processing plot', plotId, e);
       }
     }
   } catch (err) {
-    console.error('[CityRevenue] Error in processHourlyPlotRevenue:', err);
+    console.error('[CityRevenue] Error in processDailyPlotRevenue:', err);
   }
 }
 
@@ -350,9 +340,7 @@ async function processWeeklyPlotTaxes(db: any, bot: Client): Promise<void> {
 /**
  * Завершение истёкших аукционов участков.
  * expires_at хранится в МИЛЛИСЕКУНДАХ (Date.now()). Атомарный db.batch:
- * передача участка КОМПАНИИ победителя (единоличное владение запрещено;
- * у победителя без компании ставка возвращается, участок никому не уходит),
- * выплата продавцу, закрытие аукциона.
+ * передача участка победителю, выплата продавцу, закрытие аукциона.
  * Без ставок — участок остаётся у владельца, с продажи снимается.
  */
 async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
@@ -382,72 +370,42 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
         const sellerType = plotResult.rows[0]?.owner_type as string | null;
         const sellerId = plotResult.rows[0]?.owner_id as string | null;
 
-        // Компания победителя: участок оформляется на компанию (единоличное
-        // владение запрещено). Глава компании имеет приоритет, далее — участник
-        // с наибольшим пакетом акций.
-        let winnerCompanyId: number | null = null;
-        if (winnerId && bid > 0) {
-          const winnerCompanyRes = await db.execute({
-            sql: `SELECT c.id
-                  FROM companies c
-                  WHERE c.guild_id = ?
-                    AND (c.owner_id = ?
-                      OR EXISTS (SELECT 1 FROM company_shares s
-                                 WHERE s.company_id = c.id AND s.user_id = ? AND s.guild_id = ? AND s.shares_count > 0))
-                  ORDER BY (CASE WHEN c.owner_id = ? THEN 0 ELSE 1 END), c.id ASC
-                  LIMIT 1`,
-            args: [guildId, winnerId, winnerId, guildId, winnerId],
-          });
-          const compId = winnerCompanyRes.rows[0]?.id;
-          winnerCompanyId = compId != null ? Number(compId) : null;
-        }
-
         const stmts: { sql: string; args: any[] }[] = [];
 
-        if (winnerId && bid > 0 && winnerCompanyId != null) {
-          // 1) Передача участка компании победителя — только если он всё ещё в продаже
-          //    и аукцион ещё активен (защита от прямой покупки /plot buy и гонок)
+        if (winnerId && bid > 0) {
+          // 1) Передача участка победителю — только если он всё ещё в продаже
+          //    (защита от прямой покупки /plot buy между истечением и закрытием)
           stmts.push({
             sql: `UPDATE city_plots
-                  SET owner_type = 'company', owner_id = ?, for_sale_price = NULL
-                  WHERE guild_id = ? AND id = ? AND for_sale_price IS NOT NULL
-                    AND EXISTS (SELECT 1 FROM plot_auctions WHERE id = ? AND status = 'active')`,
-            args: [winnerCompanyId, guildId, plotId, auctionId],
+                  SET owner_type = 'user', owner_id = ?, for_sale_price = NULL
+                  WHERE guild_id = ? AND id = ? AND for_sale_price IS NOT NULL`,
+            args: [winnerId, guildId, plotId],
           });
           // 2) Выплата продавцу — только если передача победителю прошла
-          const soldGuard =
-            "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_type = 'company' AND owner_id = ?)";
+          const soldGuard = 'EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)';
           if (sellerType === 'user' && sellerId) {
             stmts.push({
               sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ? AND ${soldGuard}`,
-              args: [bid, sellerId, guildId, guildId, plotId, winnerCompanyId],
+              args: [bid, sellerId, guildId, guildId, plotId, winnerId],
             });
           } else if (sellerType === 'company' && sellerId) {
             stmts.push({
               sql: `UPDATE companies SET treasury = treasury + ? WHERE id = ? AND guild_id = ? AND ${soldGuard}`,
-              args: [bid, Number(sellerId), guildId, guildId, plotId, winnerCompanyId],
+              args: [bid, Number(sellerId), guildId, guildId, plotId, winnerId],
             });
           }
           // 3) Возврат ставки победителю, если участок передать не удалось
           stmts.push({
             sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?
-                  AND NOT EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_type = 'company' AND owner_id = ?)`,
-            args: [bid, winnerId, guildId, guildId, plotId, winnerCompanyId],
+                  AND NOT EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)`,
+            args: [bid, winnerId, guildId, guildId, plotId, winnerId],
           });
         } else {
-          // Ставок не было, либо у победителя нет компании — участок остаётся
-          // у владельца, снимаем с продажи, ставку возвращаем победителю.
+          // Ставок не было — участок остаётся у владельца, снимаем с продажи
           stmts.push({
             sql: 'UPDATE city_plots SET for_sale_price = NULL WHERE guild_id = ? AND id = ?',
             args: [guildId, plotId],
           });
-          if (winnerId && bid > 0) {
-            stmts.push({
-              sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?
-                    AND EXISTS (SELECT 1 FROM plot_auctions WHERE id = ? AND status = 'active')`,
-              args: [bid, winnerId, guildId, auctionId],
-            });
-          }
         }
 
         // Закрытие аукциона (guard по status — защита от повторной обработки)
@@ -461,11 +419,7 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
 
         if (closed) {
           console.log(`[CityAuction] Auction #${auctionId} (plot #${plotId}, guild ${guildId}) completed` +
-            (winnerId && winnerCompanyId != null
-              ? ` — winner ${winnerId}, plot to company ${winnerCompanyId}, seller paid ${bid} 🪙`
-              : winnerId
-                ? ` — winner ${winnerId} has no company, bid refunded`
-                : ' — no bids'));
+            (winnerId ? ` — winner ${winnerId}, seller paid ${bid} 🪙` : ' — no bids'));
         }
       } catch (e) {
         console.error('[CityAuction] Error completing auction', auctionId, e);
@@ -810,27 +764,17 @@ async function unlockAchievement(db: any, userId: string, guildId: string, achie
         }
 
         if (channel) {
-          let unlockedCount = 1;
-          try {
-            const countRes = await db.execute({
-              sql: 'SELECT COUNT(*) as count FROM user_achievements WHERE user_id = ? AND guild_id = ?',
-              args: [userId, guildId],
-            });
-            unlockedCount = Number(countRes.rows[0]?.count) || 1;
-          } catch {}
-          const totalCount = ACHIEVEMENTS_LIST.length;
-
           const embed = {
             embeds: [{
               title: '🏆 СЕКРЕТНОЕ ДОСТИЖЕНИЕ РАЗБЛОКИРОВАНО!',
-              description: `<@${userId}> открыл(а) секретное достижение **«${achievement.title}»**!`,
+              description: `<@${userId}> открыл(а) достижение **\`«${achievement.title}»**!`,
               color: 0xF1C40F,
               fields: [
                 { name: 'Описание', value: achievement.description, inline: false },
                 { name: 'Цитата', value: `*${achievement.quote}*`, inline: false },
-                { name: 'Награда', value: `+${achievement.reward} XP`, inline: true },
+                { name: 'Награда', value: `**+${achievement.reward} XP**`, inline: true },
               ],
-              footer: { text: `Открыто секретов: ${unlockedCount}/${totalCount}` },
+              footer: { text: 'Отличная работа! Продолжай исследовать сервер...' },
             }],
           };
 
@@ -5120,22 +5064,19 @@ client.on('ready', async () => {
         console.warn(`[Commands] Failed to fetch commands cache for guild ${guild.id}:`, fetchErr);
       }
 
-      const gazetaCommand = {
-        name: 'test-gazeta',
-        description: 'Сгенерировать и выпустить AI-газету за неделю (только для администрации)',
-      };
       const existing = guild.commands.cache.find((cmd: any) => cmd.name === 'test-gazeta');
-      const testGazetaCmd = {
-        name: 'test-gazeta',
-        description: 'Сгенерировать и выпустить AI-газету за неделю (только для администрации)',
-      };
-      if (existing) {
-        await existing.edit(testGazetaCmd);
-      } else {
-        await guild.commands.create(testGazetaCmd);
+      if (!existing) {
+        await guild.commands.create({
+          name: 'test-gazeta',
+          description: 'Сгенерировать и выпустить AI-газету за неделю (только для администрации)',
+        });
         console.log(`[Gazeta] Slash command test-gazeta registered in guild ${guild.id}`);
       }
 
+      // ============================================
+      // Слэш-команды биржи (мгновенная гильдейская регистрация)
+      // type 3 = STRING, type 4 = INTEGER, type 7 = CHANNEL
+      // ============================================
       const exchangeCommands: any[] = [
         { name: 'stocks', description: 'Котировки акций компаний сервера' },
         { name: 'portfolio', description: 'Ваш инвестиционный портфель акций' },
@@ -5165,15 +5106,14 @@ client.on('ready', async () => {
           ],
         },
         {
-          name: 'exchange-setup',
-          description: 'Канал для публичной ленты биржи (Manage Server)',
+          name: 'exchange-setup', description: 'Канал для ленты биржи (Manage Server)',
           options: [
             { name: 'channel', description: 'Текстовый канал для событий биржи', type: 7, required: true },
           ],
         },
         {
           name: 'exchange-top',
-          description: 'Рейтинг инвесторов и компаний сезона по ROI',
+          description: 'Рейтинг инвесторов и компаний сезона по доходности (ROI)',
           options: [
             { name: 'season', description: 'ID сезона (по умолчанию текущий)', type: 3, required: false },
           ],
@@ -5183,9 +5123,7 @@ client.on('ready', async () => {
       for (const cmd of exchangeCommands) {
         try {
           const existingCmd = guild.commands.cache.find((c: any) => c.name === cmd.name);
-          if (existingCmd) {
-            await existingCmd.edit(cmd);
-          } else {
+          if (!existingCmd) {
             await guild.commands.create(cmd);
             console.log(`[Exchange] Slash command ${cmd.name} registered in guild ${guild.id}`);
           }
@@ -5194,9 +5132,13 @@ client.on('ready', async () => {
         }
       }
 
+      // ============================================
+      // Слэш-команда /plot (Город — Шаг 2: info, buy, sell)
+      // type 1 = SUB_COMMAND, type 3 = STRING, type 4 = INTEGER
+      // ============================================
       const plotCommand: any = {
         name: 'plot',
-        description: 'Город: управление участками недвижимости',
+        description: 'Город: участки недвижимости',
         options: [
           {
             name: 'info',
@@ -5208,11 +5150,11 @@ client.on('ready', async () => {
           },
           {
             name: 'buy',
-            description: 'Купить участок для своей компании (оплата лично)',
+            description: 'Купить участок (себе или компании)',
             type: 1,
             options: [
               { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
-              { name: 'company', description: 'Тикер компании (если состоите в нескольких)', type: 3, required: false },
+              { name: 'company', description: 'Тикер компании-покупателя (опционально)', type: 3, required: false },
             ],
           },
           {
@@ -5229,9 +5171,7 @@ client.on('ready', async () => {
 
       try {
         const existingPlot = guild.commands.cache.find((c: any) => c.name === 'plot');
-        if (existingPlot) {
-          await existingPlot.edit(plotCommand);
-        } else {
+        if (!existingPlot) {
           await guild.commands.create(plotCommand);
           console.log(`[City] Slash command plot registered in guild ${guild.id}`);
         }
@@ -5239,9 +5179,13 @@ client.on('ready', async () => {
         console.error(`[City] Failed to register slash command plot in guild ${guild.id}:`, plotErr);
       }
 
+      // ============================================
+      // Слэш-команды /build и /upgrade (Город — Шаг 3)
+      // type 3 = STRING, type 4 = INTEGER
+      // ============================================
       const buildCommand: any = {
         name: 'build',
-        description: 'Город: построить бизнес на своём участке',
+        description: 'Город: построить здание на участке',
         options: [
           { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
           {
@@ -5262,9 +5206,7 @@ client.on('ready', async () => {
 
       try {
         const existingBuild = guild.commands.cache.find((c: any) => c.name === 'build');
-        if (existingBuild) {
-          await existingBuild.edit(buildCommand);
-        } else {
+        if (!existingBuild) {
           await guild.commands.create(buildCommand);
           console.log(`[City] Slash command build registered in guild ${guild.id}`);
         }
@@ -5282,9 +5224,7 @@ client.on('ready', async () => {
 
       try {
         const existingUpgrade = guild.commands.cache.find((c: any) => c.name === 'upgrade');
-        if (existingUpgrade) {
-          await existingUpgrade.edit(upgradeCommand);
-        } else {
+        if (!existingUpgrade) {
           await guild.commands.create(upgradeCommand);
           console.log(`[City] Slash command upgrade registered in guild ${guild.id}`);
         }
@@ -5292,9 +5232,13 @@ client.on('ready', async () => {
         console.error(`[City] Failed to register slash command upgrade in guild ${guild.id}:`, upgradeErr);
       }
 
+      // ============================================
+      // Слэш-команда /auction (Город — Шаг 4: аукционы участков)
+      // type 1 = SUB_COMMAND, type 4 = INTEGER
+      // ============================================
       const auctionCommand: any = {
         name: 'auction',
-        description: 'Город: аукционы участков недвижимости',
+        description: 'Город: аукционы участков',
         options: [
           {
             name: 'list',
@@ -5315,9 +5259,7 @@ client.on('ready', async () => {
 
       try {
         const existingAuction = guild.commands.cache.find((c: any) => c.name === 'auction');
-        if (existingAuction) {
-          await existingAuction.edit(auctionCommand);
-        } else {
+        if (!existingAuction) {
           await guild.commands.create(auctionCommand);
           console.log(`[City] Slash command auction registered in guild ${guild.id}`);
         }
@@ -5325,6 +5267,9 @@ client.on('ready', async () => {
         console.error(`[City] Failed to register slash command auction in guild ${guild.id}:`, auctionCmdErr);
       }
 
+      // ============================================
+      // Слэш-команда /map (Город — Шаг 5: интерактивная карта)
+      // ============================================
       const mapCommand: any = {
         name: 'map',
         description: 'Город: интерактивная карта участков и недвижимости',
@@ -5332,9 +5277,7 @@ client.on('ready', async () => {
 
       try {
         const existingMap = guild.commands.cache.find((c: any) => c.name === 'map');
-        if (existingMap) {
-          await existingMap.edit(mapCommand);
-        } else {
+        if (!existingMap) {
           await guild.commands.create(mapCommand);
           console.log(`[City] Slash command map registered in guild ${guild.id}`);
         }
@@ -5566,21 +5509,21 @@ client.on('ready', async () => {
   }, 30 * 1000);
 
   // ============================================
-  // Экономика города (Шаг 4): почасовой доход, недельный налог, аукционы
+  // Экономика города (Шаг 4): суточный доход, недельный налог, аукционы
   // ============================================
   console.log('[CityEconomy] Starting city economy tickers...');
   try {
-    await processHourlyPlotRevenue(db, client); // Проверка сразу при старте
+    await processDailyPlotRevenue(db, client); // Проверка сразу при старте
   } catch (e) {
     console.error('[CityEconomy] Revenue startup error:', e);
   }
   setInterval(async () => {
     try {
-      await processHourlyPlotRevenue(db, client);
+      await processDailyPlotRevenue(db, client);
     } catch (e) {
       console.error('[CityEconomy] Revenue interval error:', e);
     }
-  }, 5 * 60 * 1000); // Каждые 5 минут: catch-up добирает все отработанные часы за один тик
+  }, 60 * 60 * 1000); // Каждый час
 
   try {
     await processWeeklyPlotTaxes(db, client); // Проверка сразу при старте
