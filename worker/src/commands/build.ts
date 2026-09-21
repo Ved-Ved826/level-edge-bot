@@ -25,16 +25,14 @@ interface CompanyRow {
   owner_id: string;
   name: string;
   ticker: string;
-  treasury: number;
 }
 
 /**
- * Дескриптор плательщика за постройку/апгрейд:
- * владелец-игрок (users.coins) или компания-владелец (companies.treasury).
+ * Результат проверки прав на участок. Оплата постройки/апгрейда всегда идёт
+ * с ЛИЧНОГО баланса игрока (users.coins), независимо от владельца участка.
  */
 type PlotOwner =
-  | { ok: true; ownerType: "user"; ownerId: string; label: string }
-  | { ok: true; ownerType: "company"; ownerId: string; label: string; treasury: number }
+  | { ok: true; ownerType: "user" | "company"; ownerId: string; label: string }
   | { ok: false; error: string };
 
 const COLOR_SUCCESS = 0x2ecc71;
@@ -74,35 +72,45 @@ function parseOptions(inter: CommandInteraction): Record<string, any> {
   return options;
 }
 
-async function getCompanyById(db: any, companyId: number): Promise<CompanyRow | null> {
+async function getCompanyById(db: any, guildId: string, companyId: number): Promise<CompanyRow | null> {
   if (!companyId || Number.isNaN(companyId)) return null;
   const res = await db.execute({
-    sql: "SELECT id, owner_id, name, ticker, treasury FROM companies WHERE id = ?",
-    args: [companyId],
+    sql: "SELECT id, owner_id, name, ticker FROM companies WHERE id = ? AND guild_id = ?",
+    args: [companyId, guildId],
   });
   return (res.rows[0] as CompanyRow | undefined) ?? null;
 }
 
 /**
- * Право управления участком: владелец-игрок или создатель компании-владельца.
+ * Право управления участком:
+ * - участок игрока — только сам владелец;
+ * - участок компании — глава (companies.owner_id) или участник/акционер (company_shares).
  */
-async function resolvePlotOwner(db: any, userId: string, row: CityPlotRow): Promise<PlotOwner> {
+async function resolvePlotOwner(db: any, guildId: string, userId: string, row: CityPlotRow): Promise<PlotOwner> {
   if (row.owner_id == null) {
     return { ok: false, error: "Участок свободен — сначала купите его через /plot buy." };
   }
 
   if (row.owner_type === "company") {
-    const comp = await getCompanyById(db, Number(row.owner_id));
+    const comp = await getCompanyById(db, guildId, Number(row.owner_id));
     if (!comp) return { ok: false, error: "Компания-владелец участка не найдена." };
     if (String(comp.owner_id) !== String(userId)) {
-      return { ok: false, error: "Управлять постройками компании может только её создатель." };
+      const memberRes = await db.execute({
+        sql: "SELECT 1 FROM company_shares WHERE guild_id = ? AND user_id = ? AND company_id = ? AND shares_count > 0 LIMIT 1",
+        args: [guildId, userId, Number(comp.id)],
+      });
+      if (memberRes.rows.length === 0) {
+        return {
+          ok: false,
+          error: `Участок принадлежит компании \`${comp.ticker}\`: строить и улучшать могут только её глава или участники.`,
+        };
+      }
     }
     return {
       ok: true,
       ownerType: "company",
       ownerId: String(comp.id),
       label: `🏢 **${comp.name}** (\`${comp.ticker}\`)`,
-      treasury: Number(comp.treasury) || 0,
     };
   }
 
@@ -113,21 +121,16 @@ async function resolvePlotOwner(db: any, userId: string, row: CityPlotRow): Prom
 }
 
 /**
- * Предварительная проверка средств — для точного сообщения об ошибке.
- * Финальная проверка всё равно выполняется атомарно внутри batch.
+ * Предварительная проверка ЛИЧНОГО баланса игрока — для точного сообщения
+ * об ошибке. Финальная проверка всё равно выполняется атомарно внутри batch.
  */
-async function ensureEnoughFunds(db: any, guildId: string, owner: PlotOwner, cost: number): Promise<string | null> {
-  if (!owner.ok) return null;
-  if (owner.ownerType === "user") {
-    const res = await db.execute({
-      sql: "SELECT coins FROM users WHERE user_id = ? AND guild_id = ?",
-      args: [owner.ownerId, guildId],
-    });
-    const coins = Number(res.rows[0]?.coins) || 0;
-    if (coins < cost) return `Недостаточно монет: **${fmt(coins)} / ${fmt(cost)} 🪙**.`;
-  } else if (owner.treasury < cost) {
-    return `В казне компании недостаточно монет: **${fmt(owner.treasury)} / ${fmt(cost)} 🪙**.`;
-  }
+async function ensureEnoughFunds(db: any, guildId: string, userId: string, cost: number): Promise<string | null> {
+  const res = await db.execute({
+    sql: "SELECT coins FROM users WHERE user_id = ? AND guild_id = ?",
+    args: [userId, guildId],
+  });
+  const coins = Number(res.rows[0]?.coins) || 0;
+  if (coins < cost) return `Недостаточно монет: **${fmt(coins)} / ${fmt(cost)} 🪙**.`;
   return null;
 }
 
@@ -178,7 +181,7 @@ async function plotBuild(
     return errEmbed("По этому участку идёт аукцион — постройка недоступна до завершения торгов.");
   }
 
-  const owner = await resolvePlotOwner(db, userId, row);
+  const owner = await resolvePlotOwner(db, guildId, userId, row);
   if (!owner.ok) return errEmbed(owner.error);
 
   if (row.building_type != null || (Number(row.building_level) || 0) >= 1) {
@@ -186,22 +189,14 @@ async function plotBuild(
   }
 
   const cost = cfg.base_cost;
-  const fundsError = await ensureEnoughFunds(db, guildId, owner, cost);
+  const fundsError = await ensureEnoughFunds(db, guildId, userId, cost);
   if (fundsError) return errEmbed(fundsError);
 
   const nowSec = Math.floor(Date.now() / 1000);
 
   // ---------- Атомарная постройка: один batch = одна транзакция ----------
-  // 1) claim участка — CAS по владельцу + отсутствие постройки + проверка средств;
-  // 2) списание — только если claim прошёл (building_type = ?).
-  const fundsSubquery =
-    owner.ownerType === "user"
-      ? "(SELECT coins FROM users WHERE user_id = ? AND guild_id = ?)"
-      : "(SELECT treasury FROM companies WHERE id = ?)";
-
-  const claimArgs: any[] = [cfg.type, nowSec, nowSec, 0, guildId, plotId, owner.ownerType, owner.ownerId, cost];
-  claimArgs.push(...(owner.ownerType === "user" ? [owner.ownerId, guildId] : [owner.ownerId]));
-
+  // 1) claim участка — CAS по владельцу + отсутствие постройки + проверка ЛИЧНОГО баланса;
+  // 2) списание с личного счёта — только если claim прошёл (building_type = ?).
   const claimStmt = {
     sql: `UPDATE city_plots
           SET building_type = ?, building_level = 1,
@@ -209,24 +204,18 @@ async function plotBuild(
           WHERE guild_id = ? AND id = ?
             AND owner_type = ? AND owner_id = ?
             AND building_type IS NULL
-            AND ? <= COALESCE(${fundsSubquery}, 0)`,
-    args: claimArgs,
+            AND ? <= COALESCE(
+              (SELECT coins FROM users WHERE user_id = ? AND guild_id = ?), 0)`,
+    args: [cfg.type, nowSec, nowSec, 0, guildId, plotId, owner.ownerType, owner.ownerId, cost, userId, guildId],
   };
 
   const claimOkGuard = "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND building_type = ?)";
 
-  const debitStmt =
-    owner.ownerType === "user"
-      ? {
-          sql: `UPDATE users SET coins = coins - ?
-                WHERE user_id = ? AND guild_id = ? AND coins >= ? AND ${claimOkGuard}`,
-          args: [cost, userId, guildId, cost, guildId, plotId, cfg.type],
-        }
-      : {
-          sql: `UPDATE companies SET treasury = treasury - ?
-                WHERE id = ? AND treasury >= ? AND ${claimOkGuard}`,
-          args: [cost, owner.ownerId, cost, guildId, plotId, cfg.type],
-        };
+  const debitStmt = {
+    sql: `UPDATE users SET coins = coins - ?
+          WHERE user_id = ? AND guild_id = ? AND coins >= ? AND ${claimOkGuard}`,
+    args: [cost, userId, guildId, cost, guildId, plotId, cfg.type],
+  };
 
   const results = await db.batch([claimStmt, debitStmt], "write");
 
@@ -234,7 +223,7 @@ async function plotBuild(
     return errEmbed("Постройка не удалась: не хватает монет либо состояние участка изменилось. Попробуйте ещё раз.");
   }
   if ((results[1].rowsAffected as number) !== 1) {
-    console.error(`[Build] Debit failed after claim (plot ${plotId}, guild ${guildId}, owner ${owner.ownerId})`);
+    console.error(`[Build] Debit failed after claim (plot ${plotId}, guild ${guildId}, user ${userId})`);
   }
 
   const lines: string[] = [
@@ -243,7 +232,7 @@ async function plotBuild(
     `**Построено:** ${cfg.emoji} ${cfg.name} — уровень 1/3`,
     `💵 Суточный доход: **${fmt(cfg.daily_revenue[0])} 🪙**`,
     `🧾 Недельный налог: **${fmt(cfg.weekly_tax[0])} 🪙**`,
-    `💰 Затрачено: **${fmt(cost)} 🪙**`,
+    `💰 Оплачено лично: **${fmt(cost)} 🪙**`,
   ];
 
   return {
@@ -285,7 +274,7 @@ async function plotUpgrade(
     return errEmbed("По этому участку идёт аукцион — апгрейд недоступен до завершения торгов.");
   }
 
-  const owner = await resolvePlotOwner(db, userId, row);
+  const owner = await resolvePlotOwner(db, guildId, userId, row);
   if (!owner.ok) return errEmbed(owner.error);
 
   const level = Number(row.building_level) || 0;
@@ -300,23 +289,15 @@ async function plotUpgrade(
   if (!cfg) return errEmbed("Тип постройки на участке не найден в каталоге.");
 
   const cost = Math.round(cfg.base_cost * Math.pow(cfg.upgrade_multiplier, level));
-  const fundsError = await ensureEnoughFunds(db, guildId, owner, cost);
+  const fundsError = await ensureEnoughFunds(db, guildId, userId, cost);
   if (fundsError) return errEmbed(fundsError);
 
   const newLevel = level + 1;
   const lvlIdx = newLevel - 1;
 
   // ---------- Атомарный апгрейд: один batch = одна транзакция ----------
-  // 1) claim уровня — CAS по текущему уровню + проверка средств;
-  // 2) списание — только если claim прошёл (building_level = newLevel).
-  const fundsSubquery =
-    owner.ownerType === "user"
-      ? "(SELECT coins FROM users WHERE user_id = ? AND guild_id = ?)"
-      : "(SELECT treasury FROM companies WHERE id = ?)";
-
-  const claimArgs: any[] = [newLevel, guildId, plotId, owner.ownerType, owner.ownerId, level, cost];
-  claimArgs.push(...(owner.ownerType === "user" ? [owner.ownerId, guildId] : [owner.ownerId]));
-
+  // 1) claim уровня — CAS по текущему уровню + проверка ЛИЧНОГО баланса;
+  // 2) списание с личного счёта — только если claim прошёл (building_level = newLevel).
   const claimStmt = {
     sql: `UPDATE city_plots
           SET building_level = ?
@@ -324,24 +305,18 @@ async function plotUpgrade(
             AND owner_type = ? AND owner_id = ?
             AND building_type IS NOT NULL
             AND building_level = ?
-            AND ? <= COALESCE(${fundsSubquery}, 0)`,
-    args: claimArgs,
+            AND ? <= COALESCE(
+              (SELECT coins FROM users WHERE user_id = ? AND guild_id = ?), 0)`,
+    args: [newLevel, guildId, plotId, owner.ownerType, owner.ownerId, level, cost, userId, guildId],
   };
 
   const claimOkGuard = "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND building_level = ?)";
 
-  const debitStmt =
-    owner.ownerType === "user"
-      ? {
-          sql: `UPDATE users SET coins = coins - ?
-                WHERE user_id = ? AND guild_id = ? AND coins >= ? AND ${claimOkGuard}`,
-          args: [cost, userId, guildId, cost, guildId, plotId, newLevel],
-        }
-      : {
-          sql: `UPDATE companies SET treasury = treasury - ?
-                WHERE id = ? AND treasury >= ? AND ${claimOkGuard}`,
-          args: [cost, owner.ownerId, cost, guildId, plotId, newLevel],
-        };
+  const debitStmt = {
+    sql: `UPDATE users SET coins = coins - ?
+          WHERE user_id = ? AND guild_id = ? AND coins >= ? AND ${claimOkGuard}`,
+    args: [cost, userId, guildId, cost, guildId, plotId, newLevel],
+  };
 
   const results = await db.batch([claimStmt, debitStmt], "write");
 
@@ -349,7 +324,7 @@ async function plotUpgrade(
     return errEmbed("Апгрейд не удался: не хватает монет либо состояние участка изменилось. Попробуйте ещё раз.");
   }
   if ((results[1].rowsAffected as number) !== 1) {
-    console.error(`[Upgrade] Debit failed after claim (plot ${plotId}, guild ${guildId}, owner ${owner.ownerId})`);
+    console.error(`[Upgrade] Debit failed after claim (plot ${plotId}, guild ${guildId}, user ${userId})`);
   }
 
   const lines: string[] = [
@@ -357,7 +332,7 @@ async function plotUpgrade(
     `**Здание:** ${cfg.emoji} ${cfg.name} — уровень ${newLevel}/3`,
     `💵 Суточный доход: **${fmt(cfg.daily_revenue[lvlIdx])} 🪙**`,
     `🧾 Недельный налог: **${fmt(cfg.weekly_tax[lvlIdx])} 🪙**`,
-    `💰 Затрачено: **${fmt(cost)} 🪙**`,
+    `💰 Оплачено лично: **${fmt(cost)} 🪙**`,
   ];
 
   return {
