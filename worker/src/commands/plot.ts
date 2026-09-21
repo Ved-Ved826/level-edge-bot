@@ -86,6 +86,60 @@ async function getCompanyByTicker(db: any, guildId: string, ticker: string): Pro
   return (res.rows[0] as CompanyRow | undefined) ?? null;
 }
 
+/**
+ * Резолв компании-получателя участка (единоличное владение запрещено):
+ * участок всегда оформляется на компанию покупателя.
+ * - Явный тикер: компания должна быть компанией покупателя (глава или участник).
+ * - Без тикера: компания, где покупатель глава; иначе единственное членство.
+ * Возвращает CompanyRow или текст ошибки.
+ */
+async function resolveBuyerCompany(
+  db: any,
+  guildId: string,
+  userId: string,
+  companyTicker?: string
+): Promise<CompanyRow | string> {
+  if (companyTicker) {
+    const comp = await getCompanyByTicker(db, guildId, companyTicker);
+    if (!comp) return `Компания \`${companyTicker}\` не найдена на этом сервере.`;
+    if (String(comp.owner_id) !== String(userId)) {
+      const memberRes = await db.execute({
+        sql: "SELECT 1 FROM company_shares WHERE guild_id = ? AND user_id = ? AND company_id = ? AND shares_count > 0 LIMIT 1",
+        args: [guildId, userId, Number(comp.id)],
+      });
+      if (memberRes.rows.length === 0) {
+        return `Вы не состоите в компании \`${comp.ticker}\`: участок могут купить только её глава или участники (оформляется на компанию).`;
+      }
+    }
+    return comp;
+  }
+
+  // Без тикера: компания, где покупатель — глава
+  const leaderRes = await db.execute({
+    sql: "SELECT id, owner_id, name, ticker, treasury FROM companies WHERE guild_id = ? AND owner_id = ? LIMIT 1",
+    args: [guildId, userId],
+  });
+  const leaderComp = leaderRes.rows[0] as CompanyRow | undefined;
+  if (leaderComp) return leaderComp;
+
+  // Иначе — компании, где покупатель держит акции
+  const memberRes = await db.execute({
+    sql: `SELECT c.id, c.owner_id, c.name, c.ticker, c.treasury
+          FROM company_shares s
+          JOIN companies c ON c.id = s.company_id
+          WHERE s.guild_id = ? AND s.user_id = ? AND s.shares_count > 0
+          ORDER BY s.shares_count DESC, c.id ASC`,
+    args: [guildId, userId],
+  });
+  if (memberRes.rows.length === 0) {
+    return "Покупка участка доступна только главам и участникам компаний — участок оформляется на компанию. Создайте компанию (/company-create) или купите акции /invest.";
+  }
+  if (memberRes.rows.length > 1) {
+    return "Вы состоите в нескольких компаниях — укажите тикер компании опцией `company`.";
+  }
+  return memberRes.rows[0] as CompanyRow;
+}
+
 // ============================================
 // /plot info
 // ============================================
@@ -198,35 +252,25 @@ async function plotBuy(
 
   const price = isFree ? Math.max(0, Number(row.price) || 0) : forSale;
 
-  // ---------- Покупатель: компания или игрок ----------
-  let buyerType: "user" | "company";
-  let buyerId: string;
-  let buyerLabel: string;
+  // ---------- Покупатель: всегда игрок, участок оформляется на его компанию ----------
+  // Единоличное владение запрещено: участок может купить только глава компании
+  // или участник, покупающий участок в подарок своей компании.
+  // Оплата ВСЕГДА с личного баланса покупателя (users.coins).
+  const companyOrError = await resolveBuyerCompany(db, guildId, userId, companyTicker);
+  if (typeof companyOrError === "string") {
+    return errEmbed(companyOrError);
+  }
+  const buyerCompany = companyOrError;
+  const buyerCompanyId = String(buyerCompany.id);
+  const buyerLabel = `🏢 **${buyerCompany.name}** (\`${buyerCompany.ticker}\`)`;
 
-  if (companyTicker) {
-    const comp = await getCompanyByTicker(db, guildId, companyTicker);
-    if (!comp) return errEmbed(`Компания \`${companyTicker}\` не найдена на этом сервере.`);
-    if (String(comp.owner_id) !== String(userId)) {
-      return errEmbed("Покупать за компанию может только её создатель.");
-    }
-    if (Number(comp.treasury) < price) {
-      return errEmbed(`В казне компании недостаточно монет: **${fmt(Number(comp.treasury))} / ${fmt(price)} 🪙**.`);
-    }
-    buyerType = "company";
-    buyerId = String(comp.id);
-    buyerLabel = `🏢 **${comp.name}** (\`${comp.ticker}\`)`;
-  } else {
-    const userRes = await db.execute({
-      sql: "SELECT coins FROM users WHERE user_id = ? AND guild_id = ?",
-      args: [userId, guildId],
-    });
-    const coins = Number(userRes.rows[0]?.coins) || 0;
-    if (coins < price) {
-      return errEmbed(`Недостаточно монет: **${fmt(coins)} / ${fmt(price)} 🪙**.`);
-    }
-    buyerType = "user";
-    buyerId = String(userId);
-    buyerLabel = `👤 <@${userId}>`;
+  const userRes = await db.execute({
+    sql: "SELECT coins FROM users WHERE user_id = ? AND guild_id = ?",
+    args: [userId, guildId],
+  });
+  const coins = Number(userRes.rows[0]?.coins) || 0;
+  if (coins < price) {
+    return errEmbed(`Недостаточно монет на личном балансе: **${fmt(coins)} / ${fmt(price)} 🪙**.`);
   }
 
   // ---------- Продавец (если участок занят) ----------
@@ -235,7 +279,7 @@ async function plotBuy(
     if (row.owner_type === "company") {
       const sellerCompany = await getCompanyById(db, Number(row.owner_id));
       if (!sellerCompany) return errEmbed("Компания-владелец участка не найдена.");
-      if (buyerType === "company" && String(sellerCompany.id) === buyerId) {
+      if (String(sellerCompany.id) === buyerCompanyId) {
         return errEmbed("Эта компания уже владеет участком.");
       }
       seller = {
@@ -245,7 +289,7 @@ async function plotBuy(
       };
     } else {
       const sellerId = String(row.owner_id);
-      if (buyerType === "user" && sellerId === String(userId)) {
+      if (sellerId === String(userId)) {
         return errEmbed("Вы уже владеете этим участком.");
       }
       seller = { type: "user", id: sellerId, label: `👤 <@${sellerId}>` };
@@ -254,22 +298,21 @@ async function plotBuy(
 
   // ---------- Атомарная покупка: один batch = одна транзакция ----------
   // Guard-условия защищают от гонок между покупателями:
-  // 1) claim участка — CAS по текущему состоянию + проверка средств покупателя;
-  // 2) списание у покупателя — только если claim прошёл (owner_id = покупатель);
+  // 1) claim участка — CAS по текущему состоянию + проверка ЛИЧНЫХ средств покупателя;
+  //    владелец фиксируется как компания покупателя (owner_type = 'company');
+  // 2) списание личного баланса покупателя — только если claim прошёл
+  //    (owner_id = компания покупателя);
   // 3) выплата продавцу — только если claim прошёл.
   const ownedGuard = isFree ? "owner_id IS NULL" : "owner_id IS NOT NULL AND for_sale_price = ?";
-  const fundsSubquery =
-    buyerType === "user"
-      ? "(SELECT coins FROM users WHERE user_id = ? AND guild_id = ?)"
-      : "(SELECT treasury FROM companies WHERE id = ?)";
+  const fundsSubquery = "(SELECT coins FROM users WHERE user_id = ? AND guild_id = ?)";
 
-  const claimArgs: any[] = [buyerType, buyerId, guildId, plotId];
+  const claimArgs: any[] = [buyerCompanyId, guildId, plotId];
   if (!isFree) claimArgs.push(price);
-  claimArgs.push(price, ...(buyerType === "user" ? [buyerId, guildId] : [buyerId]));
+  claimArgs.push(price, userId, guildId);
 
   const claimStmt = {
     sql: `UPDATE city_plots
-          SET owner_type = ?, owner_id = ?, for_sale_price = NULL
+          SET owner_type = 'company', owner_id = ?, for_sale_price = NULL
           WHERE guild_id = ? AND id = ?
             AND ${ownedGuard}
             AND ? <= COALESCE(${fundsSubquery}, 0)`,
@@ -277,22 +320,13 @@ async function plotBuy(
   };
 
   const claimOkGuard =
-    buyerType === "user"
-      ? "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ? AND owner_type = 'user')"
-      : "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ? AND owner_type = 'company')";
+    "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_type = 'company' AND owner_id = ?)";
 
-  const debitStmt =
-    buyerType === "user"
-      ? {
-          sql: `UPDATE users SET coins = coins - ?
-                WHERE user_id = ? AND guild_id = ? AND coins >= ? AND ${claimOkGuard}`,
-          args: [price, userId, guildId, price, guildId, plotId, buyerId],
-        }
-      : {
-          sql: `UPDATE companies SET treasury = treasury - ?
-                WHERE id = ? AND treasury >= ? AND ${claimOkGuard}`,
-          args: [price, buyerId, price, guildId, plotId, buyerId],
-        };
+  const debitStmt = {
+    sql: `UPDATE users SET coins = coins - ?
+          WHERE user_id = ? AND guild_id = ? AND coins >= ? AND ${claimOkGuard}`,
+    args: [price, userId, guildId, price, guildId, plotId, buyerCompanyId],
+  };
 
   const stmts: { sql: string; args: any[] }[] = [claimStmt, debitStmt];
 
@@ -302,12 +336,12 @@ async function plotBuy(
         ? {
             sql: `UPDATE users SET coins = coins + ?
                   WHERE user_id = ? AND guild_id = ? AND ${claimOkGuard}`,
-            args: [price, seller.id, guildId, guildId, plotId, buyerId],
+            args: [price, seller.id, guildId, guildId, plotId, buyerCompanyId],
           }
         : {
             sql: `UPDATE companies SET treasury = treasury + ?
                   WHERE id = ? AND ${claimOkGuard}`,
-            args: [price, seller.id, guildId, plotId, buyerId],
+            args: [price, seller.id, guildId, plotId, buyerCompanyId],
           };
     stmts.push(creditStmt);
   }
@@ -318,7 +352,7 @@ async function plotBuy(
     return errEmbed("Сделка не состоялась: участок только что был занят кем-то другим или цена изменилась. Попробуйте ещё раз.");
   }
   if ((results[1].rowsAffected as number) !== 1) {
-    console.error(`[Plot] Buyer debit failed after claim (plot ${plotId}, guild ${guildId}, buyer ${buyerId})`);
+    console.error(`[Plot] Buyer debit failed after claim (plot ${plotId}, guild ${guildId}, buyer ${userId}, company ${buyerCompanyId})`);
   }
   if (seller && (results[2].rowsAffected as number) !== 1) {
     console.error(`[Plot] Seller credit failed (plot ${plotId}, guild ${guildId}, seller ${seller.id})`);
@@ -327,6 +361,7 @@ async function plotBuy(
   const lines: string[] = [
     `🗺️ Участок #${plotId} — **${catalog.title}**`,
     `**Новый владелец:** ${buyerLabel}`,
+    `👤 Покупатель: <@${userId}> — оплачено лично **${fmt(price)} 🪙**`,
   ];
   if (seller) {
     lines.push(`**Продавец:** ${seller.label} получает **${fmt(price)} 🪙**`);

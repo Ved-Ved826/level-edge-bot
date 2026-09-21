@@ -199,7 +199,8 @@ function economyValueByLevel(values: number[], buildingLevel: number): number {
  * Суточный доход участков с постройками.
  * Захват суток идемпотентен через last_revenue_at (СЕКУНДЫ, Math.floor(Date.now() / 1000)):
  * участок обрабатывается, только если с последнего начисления прошло >= 24 часов.
- * Начисление: владельцу-пользователю — в users.coins, компании — в companies.treasury.
+ * Начисление: СТРОГО в казну компании-владельца (companies.treasury). Единоличное
+ * владение запрещено — участки с владельцем-игроком (легаси) доход не приносят.
  */
 async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -225,22 +226,19 @@ async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
 
       if (!economy || !ownerType || !ownerId) continue;
 
+      if (ownerType !== 'company') {
+        // Легаси-владелец-игрок: доход в личный счёт запрещён
+        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: owner is a player (legacy) — income skipped, plot is company-only`);
+        continue;
+      }
+
       const revenue = economyValueByLevel(economy.dailyRevenue, buildingLevel);
 
       try {
-        if (ownerType === 'user') {
-          await db.execute({
-            sql: 'UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?',
-            args: [revenue, ownerId, guildId],
-          });
-        } else if (ownerType === 'company') {
-          await db.execute({
-            sql: 'UPDATE companies SET treasury = treasury + ? WHERE id = ? AND guild_id = ?',
-            args: [revenue, Number(ownerId), guildId],
-          });
-        } else {
-          continue;
-        }
+        await db.execute({
+          sql: 'UPDATE companies SET treasury = treasury + ? WHERE id = ? AND guild_id = ?',
+          args: [revenue, Number(ownerId), guildId],
+        });
 
         // Захват суток — строго после успешного начисления (в СЕКУНДАХ)
         await db.execute({
@@ -248,7 +246,7 @@ async function processDailyPlotRevenue(db: any, bot: Client): Promise<void> {
           args: [nowSec, guildId, plotId],
         });
 
-        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: +${revenue} 🪙 (${economy.name}, ур. ${buildingLevel})`);
+        console.log(`[CityRevenue] Plot #${plotId} guild ${guildId}: +${revenue} 🪙 to company ${ownerId} (${economy.name}, ур. ${buildingLevel})`);
       } catch (e) {
         console.error('[CityRevenue] Error processing plot', plotId, e);
       }
@@ -340,7 +338,9 @@ async function processWeeklyPlotTaxes(db: any, bot: Client): Promise<void> {
 /**
  * Завершение истёкших аукционов участков.
  * expires_at хранится в МИЛЛИСЕКУНДАХ (Date.now()). Атомарный db.batch:
- * передача участка победителю, выплата продавцу, закрытие аукциона.
+ * передача участка КОМПАНИИ победителя (единоличное владение запрещено;
+ * у победителя без компании ставка возвращается, участок никому не уходит),
+ * выплата продавцу, закрытие аукциона.
  * Без ставок — участок остаётся у владельца, с продажи снимается.
  */
 async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
@@ -370,42 +370,72 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
         const sellerType = plotResult.rows[0]?.owner_type as string | null;
         const sellerId = plotResult.rows[0]?.owner_id as string | null;
 
+        // Компания победителя: участок оформляется на компанию (единоличное
+        // владение запрещено). Глава компании имеет приоритет, далее — участник
+        // с наибольшим пакетом акций.
+        let winnerCompanyId: number | null = null;
+        if (winnerId && bid > 0) {
+          const winnerCompanyRes = await db.execute({
+            sql: `SELECT c.id
+                  FROM companies c
+                  WHERE c.guild_id = ?
+                    AND (c.owner_id = ?
+                      OR EXISTS (SELECT 1 FROM company_shares s
+                                 WHERE s.company_id = c.id AND s.user_id = ? AND s.guild_id = ? AND s.shares_count > 0))
+                  ORDER BY (CASE WHEN c.owner_id = ? THEN 0 ELSE 1 END), c.id ASC
+                  LIMIT 1`,
+            args: [guildId, winnerId, winnerId, guildId, winnerId],
+          });
+          const compId = winnerCompanyRes.rows[0]?.id;
+          winnerCompanyId = compId != null ? Number(compId) : null;
+        }
+
         const stmts: { sql: string; args: any[] }[] = [];
 
-        if (winnerId && bid > 0) {
-          // 1) Передача участка победителю — только если он всё ещё в продаже
-          //    (защита от прямой покупки /plot buy между истечением и закрытием)
+        if (winnerId && bid > 0 && winnerCompanyId != null) {
+          // 1) Передача участка компании победителя — только если он всё ещё в продаже
+          //    и аукцион ещё активен (защита от прямой покупки /plot buy и гонок)
           stmts.push({
             sql: `UPDATE city_plots
-                  SET owner_type = 'user', owner_id = ?, for_sale_price = NULL
-                  WHERE guild_id = ? AND id = ? AND for_sale_price IS NOT NULL`,
-            args: [winnerId, guildId, plotId],
+                  SET owner_type = 'company', owner_id = ?, for_sale_price = NULL
+                  WHERE guild_id = ? AND id = ? AND for_sale_price IS NOT NULL
+                    AND EXISTS (SELECT 1 FROM plot_auctions WHERE id = ? AND status = 'active')`,
+            args: [winnerCompanyId, guildId, plotId, auctionId],
           });
           // 2) Выплата продавцу — только если передача победителю прошла
-          const soldGuard = 'EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)';
+          const soldGuard =
+            "EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_type = 'company' AND owner_id = ?)";
           if (sellerType === 'user' && sellerId) {
             stmts.push({
               sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ? AND ${soldGuard}`,
-              args: [bid, sellerId, guildId, guildId, plotId, winnerId],
+              args: [bid, sellerId, guildId, guildId, plotId, winnerCompanyId],
             });
           } else if (sellerType === 'company' && sellerId) {
             stmts.push({
               sql: `UPDATE companies SET treasury = treasury + ? WHERE id = ? AND guild_id = ? AND ${soldGuard}`,
-              args: [bid, Number(sellerId), guildId, guildId, plotId, winnerId],
+              args: [bid, Number(sellerId), guildId, guildId, plotId, winnerCompanyId],
             });
           }
           // 3) Возврат ставки победителю, если участок передать не удалось
           stmts.push({
             sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?
-                  AND NOT EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_id = ?)`,
-            args: [bid, winnerId, guildId, guildId, plotId, winnerId],
+                  AND NOT EXISTS (SELECT 1 FROM city_plots WHERE guild_id = ? AND id = ? AND owner_type = 'company' AND owner_id = ?)`,
+            args: [bid, winnerId, guildId, guildId, plotId, winnerCompanyId],
           });
         } else {
-          // Ставок не было — участок остаётся у владельца, снимаем с продажи
+          // Ставок не было, либо у победителя нет компании — участок остаётся
+          // у владельца, снимаем с продажи, ставку возвращаем победителю.
           stmts.push({
             sql: 'UPDATE city_plots SET for_sale_price = NULL WHERE guild_id = ? AND id = ?',
             args: [guildId, plotId],
           });
+          if (winnerId && bid > 0) {
+            stmts.push({
+              sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ?
+                    AND EXISTS (SELECT 1 FROM plot_auctions WHERE id = ? AND status = 'active')`,
+              args: [bid, winnerId, guildId, auctionId],
+            });
+          }
         }
 
         // Закрытие аукциона (guard по status — защита от повторной обработки)
@@ -419,7 +449,11 @@ async function processExpiredAuctions(db: any, bot: Client): Promise<void> {
 
         if (closed) {
           console.log(`[CityAuction] Auction #${auctionId} (plot #${plotId}, guild ${guildId}) completed` +
-            (winnerId ? ` — winner ${winnerId}, seller paid ${bid} 🪙` : ' — no bids'));
+            (winnerId && winnerCompanyId != null
+              ? ` — winner ${winnerId}, plot to company ${winnerCompanyId}, seller paid ${bid} 🪙`
+              : winnerId
+                ? ` — winner ${winnerId} has no company, bid refunded`
+                : ' — no bids'));
         }
       } catch (e) {
         console.error('[CityAuction] Error completing auction', auctionId, e);
@@ -5162,11 +5196,11 @@ client.on('ready', async () => {
           },
           {
             name: 'buy',
-            description: 'Купить участок (себе или компании)',
+            description: 'Купить участок для своей компании (оплата лично)',
             type: 1,
             options: [
               { name: 'plot_id', description: 'ID участка (1-12)', type: 4, required: true },
-              { name: 'company', description: 'Тикер компании-покупателя (опционально)', type: 3, required: false },
+              { name: 'company', description: 'Тикер компании (если состоите в нескольких)', type: 3, required: false },
             ],
           },
           {

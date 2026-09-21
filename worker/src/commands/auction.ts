@@ -89,7 +89,7 @@ async function handleList(db: any, guildId: string): Promise<Response> {
           title: "🔨 Аукционы участков",
           description: description.slice(0, 4000),
           color: 0xF1C40F,
-          footer: { text: "Ставка: /auction bid plot_id amount • Победитель забирает участок" },
+          footer: { text: "Ставка: /auction bid plot_id amount • Участок оформляется на компанию победителя" },
         },
       ],
     },
@@ -114,6 +114,24 @@ async function handleBid(db: any, inter: CommandInteraction, guildId: string, us
   }
   if (!Number.isInteger(amount) || amount <= 0) {
     return Response.json({ type: 4, data: { content: "❌ Размер ставки должен быть целым числом больше нуля.", flags: 64 } });
+  }
+
+  // Единоличное владение запрещено: участок уходит компании победителя,
+  // поэтому ставить могут только главы и участники компаний.
+  const membershipRes = await db.execute({
+    sql: `SELECT 1 FROM companies c
+          WHERE c.guild_id = ?
+            AND (c.owner_id = ?
+              OR EXISTS (SELECT 1 FROM company_shares s
+                         WHERE s.company_id = c.id AND s.user_id = ? AND s.guild_id = ? AND s.shares_count > 0))
+          LIMIT 1`,
+    args: [guildId, userId, userId, guildId],
+  });
+  if (membershipRes.rows.length === 0) {
+    return Response.json({
+      type: 4,
+      data: { content: "❌ Ставки доступны только главам и участникам компаний — участок оформляется на компанию победителя.", flags: 64 },
+    });
   }
 
   const auctionResult = await db.execute({
