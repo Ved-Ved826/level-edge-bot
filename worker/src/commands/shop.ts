@@ -7,7 +7,7 @@ import { UNIQUE_ITEMS, findItemById, getRarityEmoji } from "../itemsCatalog";
 
 // ============================================
 // Ротационный магазин сервера (ограниченный глобальный сток)
-// Завоз: каждую среду в 16:00 UTC. Сток слота: 0..2 шт. на весь сервер.
+// Завоз: каждую среду в 16:00 UTC. Сток слота: строго 1 шт. — единственный экземпляр на весь сервер.
 // ============================================
 
 interface ShopOffer {
@@ -39,8 +39,8 @@ const SHOP_BANNERS: Array<{ item_id: string; item_name: string; price: number }>
 
 const EXCLUSIVE_THEME_IDS = SHOP_BANNERS.map((b) => b.item_id);
 
-function formatTimer(targetTs: number, nowMs: number): string {
-  const diff = Math.max(0, targetTs * 1000 - nowMs);
+function formatTimer(targetMs: number, nowMs: number): string {
+  const diff = Math.max(0, targetMs - nowMs);
   const days = Math.floor(diff / 86400000);
   const hours = Math.floor((diff % 86400000) / 3600000);
   const mins = Math.floor((diff % 3600000) / 60000);
@@ -55,6 +55,11 @@ function getLastResetBoundary(nowMs: number): number {
   let boundary = reset - diffDays * 86400000;
   if (boundary > nowMs) boundary -= 7 * 86400000;
   return Math.floor(boundary / 1000);
+}
+
+// Следующий завоз (ближайшая среда 16:00 UTC) в миллисекундах
+function getNextResetMs(nowMs: number): number {
+  return getLastResetBoundary(nowMs) * 1000 + 7 * 86400000;
 }
 
 function pickWeightedEquipment(excludeIds: Set<string>): (typeof UNIQUE_ITEMS)[number] | undefined {
@@ -195,7 +200,7 @@ async function getShopRowsOrRotate(db: ReturnType<typeof createClient>, gid: str
         { sql: 'DELETE FROM server_shop WHERE guild_id = ?', args: [gid] },
         ...offers.map((o, idx) => ({
           sql: 'INSERT INTO server_shop (guild_id, slot, item_type, item_id, item_name, item_rarity, price, stock_remaining, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          args: [gid, idx + 1, o.item_type, o.item_id, o.item_name, o.item_rarity, o.price, Math.floor(Math.random() * 3), nowSec],
+          args: [gid, idx + 1, o.item_type, o.item_id, o.item_name, o.item_rarity, o.price, 1, nowSec],
         })),
       ],
       'write'
@@ -220,7 +225,7 @@ function offerDetailsByRow(row: any): string {
 
 async function buildShopPayload(db: ReturnType<typeof createClient>, gid: string) {
   const rows = await getShopRowsOrRotate(db, gid);
-  const nextReset = getLastResetBoundary(Date.now()) + 7 * 86400000;
+  const nextResetMs = getNextResetMs(Date.now());
 
   let description = '';
   const buttons: any[] = [];
@@ -228,7 +233,7 @@ async function buildShopPayload(db: ReturnType<typeof createClient>, gid: string
     const slot = (row.slot as number) || idx + 1;
     const stock = (row.stock_remaining as number) || 0;
     const rarityLabel = row.item_type === 'equipment' ? `${getRarityEmoji(row.item_rarity as string)} ${row.item_rarity}` : '✨ Эксклюзив';
-    const stockLabel = stock > 0 ? `📦 В наличии: **${stock}/2 шт.**` : '🔴 **РАСПРОДАНО**';
+    const stockLabel = stock > 0 ? `📦 В наличии: **${stock} шт.**` : '🔴 **РАСПРОДАНО**';
     description +=
       `**Слот ${slot}** — ${row.item_name}\n` +
       `└ ${rarityLabel} • 💰 **${(row.price as number).toLocaleString()} 🪙** • ${stockLabel}\n` +
@@ -249,7 +254,7 @@ async function buildShopPayload(db: ReturnType<typeof createClient>, gid: string
         description: description || 'Витрина пуста. Загляните позже!',
         color: 0xf1c40f,
         footer: {
-          text: `Новый завоз через: ${formatTimer(nextReset, Date.now())} (Каждую среду в 16:00 UTC)`,
+          text: `Новый завоз через: ${formatTimer(nextResetMs, Date.now())} (Каждую среду в 16:00 UTC)`,
         },
       },
     ],
@@ -478,7 +483,7 @@ export async function handleShopAdminReroll(
             { sql: 'DELETE FROM server_shop WHERE guild_id = ?', args: [gid] },
             ...offers.map((o, idx) => ({
               sql: 'INSERT INTO server_shop (guild_id, slot, item_type, item_id, item_name, item_rarity, price, stock_remaining, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              args: [gid, idx + 1, o.item_type, o.item_id, o.item_name, o.item_rarity, o.price, Math.floor(Math.random() * 3), nowSec],
+              args: [gid, idx + 1, o.item_type, o.item_id, o.item_name, o.item_rarity, o.price, 1, nowSec],
             })),
           ],
           'write'
