@@ -44,6 +44,31 @@ export const THEMES = {
     barGlow: 'rgba(241, 196, 15, 0.6)',
     borderColor: '#27ae60',
   },
+  // Эксклюзивные темы — продаются только в ротационном магазине /shop
+  aurora: {
+    name: 'Северное Сияние',
+    bg: '#071019',
+    accent: '#00e5ff',
+    barGradient: 'linear-gradient(90deg, #00e5ff 0%, #7c4dff 100%)',
+    barGlow: 'rgba(0, 229, 255, 0.6)',
+    borderColor: '#00e5ff',
+  },
+  blood_moon: {
+    name: 'Кровавая Луна',
+    bg: '#14060a',
+    accent: '#dc2626',
+    barGradient: 'linear-gradient(90deg, #b91c1c 0%, #f97316 100%)',
+    barGlow: 'rgba(220, 38, 38, 0.6)',
+    borderColor: '#b91c1c',
+  },
+  gold_tsar: {
+    name: 'Царское Золото',
+    bg: '#171205',
+    accent: '#ffd700',
+    barGradient: 'linear-gradient(90deg, #ffd700 0%, #ff8c00 100%)',
+    barGlow: 'rgba(255, 215, 0, 0.6)',
+    borderColor: '#ffd700',
+  },
 };
 
 export interface CardProps {

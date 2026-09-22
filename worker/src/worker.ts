@@ -37,7 +37,7 @@ import { handlePrestige, handlePrestigeButtons } from "./commands/prestige";
 import { handleQuests } from "./commands/quests";
 import { handleRank, handleRankToday } from "./commands/rank";
 import { handleSettings } from "./commands/settings";
-import { handleCardCustomize, handleCardSelectTheme, handleShop } from "./commands/shop";
+import { handleCardCustomize, handleCardSelectTheme, handleShop, handleShopAdminReroll, handleShopBuy } from "./commands/shop";
 import { handleGiveRelic, handleTrade } from "./commands/trade";
 import { handleTestGazeta } from "./commands/gazeta";
 import { handleCourt } from "./commands/court";
@@ -954,9 +954,19 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
 
 
-      // 27. Слэш-команда /shop (Элитный магазин титулов и заморозок)
+      // 27. Слэш-команда /shop (Ротационный магазин с ограниченным серверным стоком)
 
       if (inter.type === 2 && inter.data?.name === "shop") { return handleShop(inter as CommandInteraction, env, ctx); }
+
+
+      // 27a. Кнопки покупки в ротационном магазине (Type 3)
+
+      if (inter.type === 3 && inter.data?.custom_id?.startsWith("shop_buy_")) { return handleShopBuy(inter as ButtonInteraction, env, ctx); }
+
+
+      // 27b. Слэш-команда /shop-admin reroll (принудительный завоз витрины, только администраторы)
+
+      if (inter.type === 2 && inter.data?.name === "shop-admin") { return handleShopAdminReroll(inter as CommandInteraction, env, ctx); }
 
 
 

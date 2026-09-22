@@ -5355,6 +5355,32 @@ client.on('ready', async () => {
       } catch (mapCmdErr) {
         console.error(`[City] Failed to register slash command map in guild ${guild.id}:`, mapCmdErr);
       }
+
+      const shopAdminCommand: any = {
+        name: 'shop-admin',
+        description: 'Магазин: принудительная перегенерация ротационной витрины',
+        default_member_permissions: '8',
+        dm_permission: false,
+        options: [
+          {
+            name: 'reroll',
+            description: 'Моментально сгенерировать новый ассортимент и сбросить серверный сток',
+            type: 1,
+          },
+        ],
+      };
+
+      try {
+        const existingShopAdmin = guild.commands.cache.find((c: any) => c.name === 'shop-admin');
+        if (existingShopAdmin) {
+          await existingShopAdmin.edit(shopAdminCommand);
+        } else {
+          await guild.commands.create(shopAdminCommand);
+          console.log(`[Shop] Slash command shop-admin registered in guild ${guild.id}`);
+        }
+      } catch (shopAdminErr) {
+        console.error(`[Shop] Failed to register slash command shop-admin in guild ${guild.id}:`, shopAdminErr);
+      }
     }
   } catch (err) {
     console.error('[Gazeta] Failed to register slash command test-gazeta:', err);
