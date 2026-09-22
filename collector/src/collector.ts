@@ -5178,6 +5178,20 @@ client.on('ready', async () => {
             { name: 'season', description: 'ID сезона (по умолчанию текущий)', type: 3, required: false },
           ],
         },
+        {
+          name: 'company',
+          description: 'Управление вашей компанией',
+          options: [
+            {
+              name: 'dividend',
+              description: 'Выплатить дивиденды акционерам из казны компании (только глава)',
+              type: 1,
+              options: [
+                { name: 'amount', description: 'Общая сумма выплаты из казны (целое число)', type: 4, required: true },
+              ],
+            },
+          ],
+        },
       ];
 
       for (const cmd of exchangeCommands) {

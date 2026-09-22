@@ -41,7 +41,7 @@ import { handleCardCustomize, handleCardSelectTheme, handleShop } from "./comman
 import { handleGiveRelic, handleTrade } from "./commands/trade";
 import { handleTestGazeta } from "./commands/gazeta";
 import { handleCourt } from "./commands/court";
-import { handleCompanyCreate } from "./commands/company";
+import { handleCompanyCreate, handleCompanyDividend } from "./commands/company";
 import { handlePortfolio, handleStocks } from "./commands/stocks";
 import { handleInvest, handleDivest } from "./commands/invest";
 import { handleExchangeSetup } from "./commands/exchange-setup";
@@ -991,6 +991,9 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
       // 38. Слэш-команда /exchange-top [season] (Биржа — рейтинг ROI сезона)
       if (inter.type === 2 && inter.data?.name === "exchange-top") { return handleExchangeTop(inter as CommandInteraction, env, ctx); }
+
+      // 38a. Слэш-команда /company dividend amount (Биржа — дивиденды акционерам из казны)
+      if (inter.type === 2 && inter.data?.name === "company") { return handleCompanyDividend(inter as CommandInteraction, env, ctx); }
 
       // 37. Кнопки кризисов компаний (Type 3 — события компаний теперь автоматические)
       if (inter.type === 3 && inter.data?.custom_id?.startsWith("crisis:")) { return Response.json({ type: 4, data: { content: "События компаний теперь происходят автоматически!", flags: 64 } }); }

@@ -1,4 +1,5 @@
 // Команда /company-create: основание компании на бирже сервера.
+// Команда /company dividend: выплата дивидендов акционерам из казны компании.
 
 import { createClient } from "@libsql/client";
 import { CommandInteraction, Env, ExecutionContext } from "../types";
@@ -9,6 +10,15 @@ async function patchOriginal(env: Env, token: string, content: string): Promise<
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content, flags: 64 }),
+  });
+}
+
+/** PATCH @original — обновление отложенного ответа произвольным payload (флаги задаёт вызывающий). */
+async function patchOriginalBody(env: Env, token: string, body: Record<string, unknown>): Promise<Response> {
+  return fetch(`https://discord.com/api/v10/webhooks/${env.DISCORD_APPLICATION_ID}/${token}/messages/@original`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 }
 
@@ -165,4 +175,125 @@ export async function handleCompanyCreate(
     })()
   );
   return Response.json({ type: 5, data: { flags: 64 } });
+}
+
+/** Формат монет: целое с разделителями разрядов. */
+function fmtCoins(n: number): string {
+  return Math.round(n).toLocaleString("ru-RU");
+}
+
+/** /company dividend amount — глава компании распределяет часть казны между акционерами. */
+export async function handleCompanyDividend(
+  inter: CommandInteraction,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const gid = inter.guild_id;
+        const callerUser = inter.member?.user;
+        if (!gid || !callerUser) throw new Error("Команда доступна только на сервере");
+        const userId = callerUser.id;
+
+        // Разбор подкоманды: Discord присылает один option типа 1 (SUB_COMMAND)
+        const top = (inter.data?.options?.[0] ?? null) as any;
+        if (!top || top.type !== 1 || String(top.name) !== "dividend") {
+          throw new Error("Неизвестная подкоманда команды /company");
+        }
+        const amount = Number((top.options ?? []).find((o: any) => o.name === "amount")?.value ?? 0);
+        if (!Number.isInteger(amount) || amount <= 0) {
+          throw new Error("Сумма дивидендов должна быть целым числом больше 0");
+        }
+
+        const db = createClient({ url: env.DATABASE_URL, authToken: env.DATABASE_AUTH_TOKEN });
+
+        // Выплачивать дивиденды может только глава компании
+        const compRes = await db.execute({
+          sql: "SELECT id, name, ticker, treasury FROM companies WHERE guild_id = ? AND owner_id = ?",
+          args: [gid, userId],
+        });
+        const comp = compRes.rows[0];
+        if (!comp) throw new Error("Вы не являетесь главой компании на этом сервере. Глава объявляется при создании (/company-create).");
+
+        const companyId = Number(comp.id);
+        const treasury = Math.max(0, Number(comp.treasury) || 0);
+        if (amount > treasury) {
+          throw new Error(`В казне компании недостаточно средств: **${fmtCoins(treasury)} 🪙** из запрошенных **${fmtCoins(amount)} 🪙**. Пополните казну или укажите меньшую сумму.`);
+        }
+
+        // Акционеры компании: только фактические держатели в обращении
+        const holdersRes = await db.execute({
+          sql: "SELECT user_id, shares_count FROM company_shares WHERE company_id = ? AND guild_id = ? AND shares_count > 0",
+          args: [companyId, gid],
+        });
+        let totalShares = 0;
+        for (const r of holdersRes.rows) totalShares += Number(r.shares_count) || 0;
+        if (totalShares <= 0) throw new Error("В обращении нет акций этой компании — выплачивать некому");
+
+        // Расчет выплат: floor по доле акций; выплаты <= 0 отсекаются,
+        // неделимый остаток от округления остается в казне (списывается только реальная сумма)
+        const payouts = holdersRes.rows
+          .map((r) => ({
+            userId: String(r.user_id),
+            shares: Number(r.shares_count) || 0,
+            payout: Math.floor((amount * (Number(r.shares_count) || 0)) / totalShares),
+          }))
+          .filter((p) => p.payout > 0);
+        const realTotal = payouts.reduce((sum, p) => sum + p.payout, 0);
+        if (realTotal <= 0) throw new Error("Расчетная выплата каждому акционеру — 0 🪙. Укажите большую сумму.");
+
+        // Атомарная выплата: один batch = одна транзакция.
+        // CAS по казне: списание только при treasury = treasuryBefore (защита от гонок),
+        // начисления акционерам выполняются только если списание прошло
+        // (guard: казна стала ровно treasuryBefore - realTotal).
+        const expectedAfter = treasury - realTotal;
+        const payoutOkGuard = "EXISTS (SELECT 1 FROM companies WHERE id = ? AND guild_id = ? AND treasury = ?)";
+        const guardArgs = [companyId, gid, expectedAfter];
+        const stmts: { sql: string; args: any[] }[] = [
+          {
+            sql: "UPDATE companies SET treasury = treasury - ? WHERE id = ? AND guild_id = ? AND treasury = ?",
+            args: [realTotal, companyId, gid, treasury],
+          },
+          ...payouts.map((p) => ({
+            sql: `UPDATE users SET coins = coins + ? WHERE user_id = ? AND guild_id = ? AND ${payoutOkGuard}`,
+            args: [p.payout, p.userId, gid, ...guardArgs],
+          })),
+        ];
+        const results = await db.batch(stmts, "write");
+
+        if ((results[0].rowsAffected as number) !== 1) {
+          throw new Error("Казна компании только что изменилась — попробуйте ещё раз");
+        }
+
+        // Топ-5 получателей по сумме выплаты
+        const top5 = [...payouts].sort((a, b) => b.payout - a.payout || b.shares - a.shares).slice(0, 5);
+        const fields = top5.map((p) => ({
+          name: `<@${p.userId}>`,
+          value: `Акций: **${p.shares}** • Выплата: **${fmtCoins(p.payout)} 🪙**`,
+          inline: true,
+        }));
+
+        const embed = {
+          title: `💰 Дивиденды — ${comp.name} (\`${comp.ticker}\`)`,
+          description: `Глава <@${userId}> распределил **${fmtCoins(amount)} 🪙** из казны между **${payouts.length}** акционером(ами) (в обращении ${totalShares} акций).`,
+          color: 0x57f287,
+          fields,
+          footer: { text: `Выплачено: ${fmtCoins(realTotal)} 🪙 • Остаток в казне: ${fmtCoins(expectedAfter)} 🪙` },
+        };
+        const resp = await patchOriginalBody(env, inter.token, { embeds: [embed] });
+        if (!resp.ok) console.error("[Company] Dividend followUp fail:", await resp.text());
+      } catch (e) {
+        console.error("[Company] dividend error:", e);
+        try {
+          const errText = e instanceof Error && e.message ? `❌ ${e.message}` : "❌ Не удалось выплатить дивиденды.";
+          const resp = await patchOriginalBody(env, inter.token, { content: errText, flags: 64 });
+          if (!resp.ok) console.error("[Company] Error followUp fail:", await resp.text());
+        } catch (patchErr) {
+          console.error("[Company] Failed to patch @original:", patchErr);
+        }
+      }
+    })()
+  );
+  return Response.json({ type: 5 });
 }
